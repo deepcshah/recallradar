@@ -6,7 +6,7 @@
   <meta name="description" content="RecallRadar — find out which stores near you sold recalled products (FDA, USDA, CPSC) and which products to avoid.">
   <title>RecallRadar — Recalled products near you</title>
   <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📡&lt;/text&gt;&lt;/svg&gt;">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" crossorigin="">
   <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
@@ -76,15 +76,22 @@
 
       <!-- Stores -->
       <section class="card section" id="stores-section">
-        <h2>🏪 Stores near you linked to active recalls</h2>
+        <div class="section-head">
+          <h2>🏪 Stores near you linked to active recalls</h2>
+          <button id="btn-toggle-list" class="btn btn-secondary btn-small" type="button" aria-pressed="true" hidden>Hide list</button>
+        </div>
         <p class="section-sub">
           These stores belong to retail chains named in active recall notices for your area.
           A recall notice naming a chain means recalled lots were shipped to that chain —
           <strong>not necessarily to this specific store</strong>. Check the product list before you shop.
         </p>
-        <div id="map" class="map" hidden></div>
         <div id="stores-status" class="status-line" role="status" aria-live="polite"></div>
-        <ul id="stores-list" class="stores-list"></ul>
+        <div class="map-layout" id="map-layout">
+          <div id="map" class="map" hidden></div>
+          <div id="stores-panel" class="stores-panel">
+            <ul id="stores-list" class="stores-list"></ul>
+          </div>
+        </div>
       </section>
 
       <!-- Products -->
@@ -135,7 +142,7 @@
     </div>
   </footer>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin=""></script>
   <script src="js/states.js"></script>
   <script src="js/retailers.js"></script>
   <script src="js/geo.js"></script>

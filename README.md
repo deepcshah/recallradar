@@ -9,7 +9,7 @@ RecallRadar is a responsive, single-page web app. Give it your location (browser
    - [USDA FSIS recall API](https://www.fsis.usda.gov/science-data/developer-resources/recall-api) — meat, poultry, and egg-product recalls
    - [CPSC recall API](https://www.cpsc.gov/Recalls/CPSC-Recalls-Application-Program-Interface-API-Information) — consumer-product recalls
 2. **Detects retail chains named in those notices** (Walmart, Costco, Trader Joe's, CVS, Home Depot, … ~90 chains) by scanning the recall text, distribution pattern, and CPSC "sold at" data.
-3. **Finds real store locations of those chains near you** via the OpenStreetMap [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), shows them on a Leaflet map with distances, and links each store to the recalls that name its chain.
+3. **Finds real store locations of those chains near you** via the OpenStreetMap [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), and shows them on a dynamic [MapLibre GL](https://maplibre.org/) vector map (the open-source Mapbox GL engine, using [OpenFreeMap](https://openfreemap.org/)'s keyless style) — numbered pins synced two-way with a store list that sits beside the map on desktop, below it on mobile, and can be toggled off for a full-width map.
 4. **Lists every recalled product to avoid**, sorted by severity (FDA Class I / FSIS high-risk first), with search and per-source filtering, lot/code details, and links to the official notices.
 
 Everything runs client-side against free, key-less public APIs. There is no server, no build step, no tracking — your location never leaves your browser except as query parameters to the public APIs above.
@@ -58,7 +58,7 @@ Design notes:
 - **Per-source resilience:** each feed is fetched with `Promise.allSettled`; a failed or CORS-blocked feed shows as "unavailable" in the Data sources panel instead of breaking the page. openFDA's "no results" 404 is treated as an empty set.
 - **Politeness:** responses are cached in `sessionStorage` for 30 minutes; Overpass has a fallback mirror; Nominatim is only called once per search.
 - **Severity model:** FDA Class I / FSIS High Risk → red, Class II / default → amber, Class III / low → gray.
-- **Leaflet is optional:** if the map CDN is unreachable the map hides and the store list still works.
+- **The map is optional:** if the MapLibre CDN is unreachable the map hides and the store list still works; if the vector style fails to load, the map falls back to raster OSM tiles. To use actual Mapbox instead, swap the style URL in `js/ui.js` for a Mapbox style + token.
 
 ## Disclaimer
 

@@ -60,7 +60,7 @@
     if (!stores.length) return;
 
     const frag = document.createDocumentFragment();
-    for (const store of stores) {
+    stores.forEach((store, index) => {
       const recalls = [];
       const seen = new Set();
       for (const id of store.chainIds) {
@@ -71,6 +71,7 @@
 
       const li = document.createElement("li");
       li.className = "store-item";
+      li.dataset.index = String(index);
       const chainLabels = store.chainIds
         .map((id) => window.RRRetailers.byId(id))
         .filter(Boolean)
@@ -80,7 +81,7 @@
 
       li.innerHTML = `
         <div class="store-head">
-          <span class="store-name">${esc(store.name)}</span>
+          <span class="store-name">${index + 1}. ${esc(store.name)}</span>
           ${chainLabels}
           <span class="store-dist">${store.distanceMiles.toFixed(1)} mi</span>
         </div>
@@ -94,49 +95,128 @@
             ${recalls.length > 8 ? `<li>…and ${recalls.length - 8} more in the product list below.</li>` : ""}
           </ul>
         </details>
-        <p class="store-links"><a href="${esc(mapsUrl)}" target="_blank" rel="noopener">View on map ↗</a></p>
+        <p class="store-links"><a href="${esc(mapsUrl)}" target="_blank" rel="noopener">Open in OpenStreetMap ↗</a></p>
       `;
       frag.appendChild(li);
-    }
+    });
     list.appendChild(frag);
   }
 
+  /** Highlight one store card (map -> list sync). */
+  function setActiveStore(i, { scroll = false } = {}) {
+    const items = document.querySelectorAll("#stores-list .store-item");
+    items.forEach((li) => li.classList.toggle("active", li.dataset.index === String(i)));
+    if (scroll && items[i]) items[i].scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
   // ------------------------------------------------------------------- map
+  // MapLibre GL (open-source Mapbox GL engine) with OpenFreeMap's keyless
+  // vector style; falls back to raster OSM tiles if the vector style fails.
+  const MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
+  const RASTER_FALLBACK = {
+    version: 8,
+    sources: {
+      osm: {
+        type: "raster",
+        tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+        tileSize: 256,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      },
+    },
+    layers: [{ id: "osm", type: "raster", source: "osm" }],
+  };
+
   let map = null;
-  let markerLayer = null;
+  let markers = [];
+  let youMarker = null;
+  let onMarkerClick = null; // set by the app to sync map -> list
+
+  function hasMapLib() {
+    return typeof maplibregl !== "undefined";
+  }
+
+  function pinEl(label, isYou) {
+    const div = document.createElement("div");
+    div.className = "map-pin" + (isYou ? " you" : "");
+    if (label) {
+      const span = document.createElement("span");
+      span.className = "map-pin-label";
+      span.textContent = label;
+      div.appendChild(span);
+    }
+    return div;
+  }
+
+  function ensureMap(loc) {
+    if (map) return map;
+    map = new maplibregl.Map({
+      container: $("#map"),
+      style: MAP_STYLE,
+      center: [loc.lon, loc.lat],
+      zoom: 11,
+    });
+    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+    map.on("error", () => {
+      // Vector style unreachable -> swap to plain raster tiles, once.
+      if (!map.isStyleLoaded() && map.getStyle()?.name !== "rr-raster-fallback") {
+        map.setStyle({ ...RASTER_FALLBACK, name: "rr-raster-fallback" });
+      }
+    });
+    return map;
+  }
+
+  function popupHtml(s) {
+    return `<strong>${esc(s.name)}</strong>${s.address ? "<br>" + esc(s.address) : ""}<br>${s.distanceMiles.toFixed(1)} mi away`;
+  }
 
   function renderMap(loc, stores) {
     const el = $("#map");
-    if (typeof L === "undefined") { el.hidden = true; return; } // Leaflet CDN blocked/offline
+    const layout = $("#map-layout");
+    if (!hasMapLib()) { el.hidden = true; layout.classList.remove("has-map"); return; }
     el.hidden = false;
+    layout.classList.add("has-map");
 
-    if (!map) {
-      map = L.map(el, { scrollWheelZoom: false });
-      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 19,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-      }).addTo(map);
-      markerLayer = L.layerGroup().addTo(map);
-    }
-    markerLayer.clearLayers();
+    ensureMap(loc);
+    markers.forEach((m) => m.remove());
+    markers = [];
+    if (youMarker) youMarker.remove();
 
-    const you = L.circleMarker([loc.lat, loc.lon], {
-      radius: 8, color: "#0b5d69", fillColor: "#12889a", fillOpacity: 0.9,
-    }).bindPopup("You are here");
-    markerLayer.addLayer(you);
+    youMarker = new maplibregl.Marker({ element: pinEl("", true) })
+      .setLngLat([loc.lon, loc.lat])
+      .setPopup(new maplibregl.Popup({ offset: 14 }).setHTML("You are here"))
+      .addTo(map);
 
-    const bounds = [[loc.lat, loc.lon]];
-    for (const s of stores) {
-      const m = L.marker([s.lat, s.lon]).bindPopup(
-        `<strong>${esc(s.name)}</strong>${s.address ? "<br>" + esc(s.address) : ""}<br>${s.distanceMiles.toFixed(1)} mi`
-      );
-      markerLayer.addLayer(m);
-      bounds.push([s.lat, s.lon]);
-    }
+    const bounds = new maplibregl.LngLatBounds();
+    bounds.extend([loc.lon, loc.lat]);
 
-    if (bounds.length > 1) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 14 });
-    else map.setView([loc.lat, loc.lon], 12);
-    setTimeout(() => map.invalidateSize(), 60);
+    stores.forEach((s, i) => {
+      const el = pinEl(String(i + 1), false);
+      el.addEventListener("click", () => { if (onMarkerClick) onMarkerClick(i); });
+      const m = new maplibregl.Marker({ element: el, anchor: "bottom" })
+        .setLngLat([s.lon, s.lat])
+        .setPopup(new maplibregl.Popup({ offset: 18 }).setHTML(popupHtml(s)))
+        .addTo(map);
+      markers.push(m);
+      bounds.extend([s.lon, s.lat]);
+    });
+
+    map.fitBounds(bounds, { padding: 48, maxZoom: 14, duration: 800 });
+    resizeMap();
+  }
+
+  /** Fly to a store and open its popup (list -> map sync). */
+  function focusStore(i, stores) {
+    if (!map || !markers[i]) return;
+    const s = stores[i];
+    map.flyTo({ center: [s.lon, s.lat], zoom: Math.max(map.getZoom(), 13.5), duration: 700 });
+    markers.forEach((m, j) => { if (j !== i && m.getPopup().isOpen()) m.togglePopup(); });
+    if (!markers[i].getPopup().isOpen()) markers[i].togglePopup();
+  }
+
+  function setMarkerClickHandler(fn) { onMarkerClick = fn; }
+
+  function resizeMap() {
+    if (map) setTimeout(() => map.resize(), 60);
   }
 
   // -------------------------------------------------------------- products
@@ -221,6 +301,7 @@
 
   window.RRUI = {
     $, esc, setStatus, renderStats, renderStores, renderMap,
+    focusStore, setActiveStore, setMarkerClickHandler, resizeMap, hasMapLib,
     renderProducts, renderSourceChips, renderSources, emptyNote,
   };
 })();

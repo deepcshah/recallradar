@@ -122,6 +122,8 @@
         "None of the active recalls for your area name a major retail chain, so there are no specific stores to flag. " +
         "Check the product list below — recalled items may still have been sold near you through smaller or unnamed retailers.");
       $("#map").hidden = true;
+      $("#map-layout").classList.remove("has-map");
+      $("#btn-toggle-list").hidden = true;
       return;
     }
 
@@ -141,9 +143,12 @@
           chains.map((c) => window.RRUI.esc(c.label)).join(", ") +
           ") were found within your radius in OpenStreetMap. Try a larger radius — and still check the product list below.");
         $("#map").hidden = true;
+        $("#map-layout").classList.remove("has-map");
+        $("#btn-toggle-list").hidden = true;
       } else {
         window.RRUI.renderStores(stores, byChain);
         window.RRUI.renderMap(state.loc, stores);
+        $("#btn-toggle-list").hidden = !window.RRUI.hasMapLib();
       }
 
       window.RRUI.renderStats({
@@ -197,6 +202,30 @@
   // ----------------------------------------------------------------- init
   function init() {
     $("#btn-geolocate").addEventListener("click", useGeolocation);
+
+    // map -> list: clicking a pin highlights and scrolls to its card
+    window.RRUI.setMarkerClickHandler((i) => {
+      window.RRUI.setActiveStore(i, { scroll: true });
+    });
+
+    // list -> map: clicking a card flies the map to that store
+    $("#stores-list").addEventListener("click", (e) => {
+      if (e.target.closest("a, summary")) return; // keep links/expanders native
+      const li = e.target.closest(".store-item[data-index]");
+      if (!li) return;
+      const i = parseInt(li.dataset.index, 10);
+      window.RRUI.setActiveStore(i);
+      window.RRUI.focusStore(i, state.stores);
+    });
+
+    $("#btn-toggle-list").addEventListener("click", () => {
+      const layout = $("#map-layout");
+      const btn = $("#btn-toggle-list");
+      const hidden = layout.classList.toggle("list-hidden");
+      btn.textContent = hidden ? "Show list" : "Hide list";
+      btn.setAttribute("aria-pressed", String(!hidden));
+      window.RRUI.resizeMap();
+    });
 
     $("#form-search").addEventListener("submit", (e) => {
       e.preventDefault();
