@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Crosshair, ExternalLink, Loader2, MapPin, Plus, Radar, Search } from "lucide-react";
+import { Crosshair, ExternalLink, Loader2, MapPin, MapPinOff, Plus, Radar, Search, SearchX, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -28,6 +28,53 @@ function fmtDate(d) {
 function truncate(s, n) {
   s = String(s || "");
   return s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s;
+}
+
+function Bar({ w }) {
+  return <div className="h-3 animate-pulse rounded-full bg-white/[0.07]" style={{ width: w }} />;
+}
+
+function RecallSkeleton({ delay = 0 }) {
+  return (
+    <li className="fade-item rounded-xl border border-line bg-panel-2 p-4" style={{ animationDelay: `${delay}ms` }}>
+      <div className="flex gap-1.5">
+        <div className="h-5 w-16 animate-pulse rounded-full bg-mint/10" />
+        <div className="h-5 w-14 animate-pulse rounded-full bg-white/[0.07]" />
+        <div className="ml-auto h-4 w-16 animate-pulse rounded bg-white/[0.05]" />
+      </div>
+      <div className="mt-3 flex flex-col gap-2">
+        <Bar w="72%" /><Bar w="45%" /><Bar w="58%" />
+      </div>
+    </li>
+  );
+}
+
+function StoreSkeleton({ delay = 0 }) {
+  return (
+    <li className="fade-item rounded-xl border border-line bg-panel-2 p-3.5" style={{ animationDelay: `${delay}ms` }}>
+      <div className="flex items-center gap-2">
+        <Bar w="55%" />
+        <div className="ml-auto h-3 w-10 animate-pulse rounded bg-white/[0.05]" />
+      </div>
+      <div className="mt-2.5 flex gap-1.5">
+        <div className="h-5 w-16 animate-pulse rounded-full bg-mint/10" />
+        <div className="h-5 w-12 animate-pulse rounded-full bg-mint/10" />
+      </div>
+    </li>
+  );
+}
+
+function EmptyState({ icon: Icon, label, title, children }) {
+  return (
+    <div className="fade-item flex flex-col items-center gap-2 rounded-xl border border-dashed border-line bg-panel-2/50 px-6 py-10 text-center">
+      <span className="flex size-11 items-center justify-center rounded-full border border-mint/30 bg-mint/10">
+        <Icon className="size-5 text-mint" />
+      </span>
+      {label && <p className="microlabel mt-1">{label}</p>}
+      <p className="font-semibold">{title}</p>
+      <p className="max-w-md text-sm text-fog">{children}</p>
+    </div>
+  );
 }
 
 /** Top chains named in the given recalls, newest recall first (Overpass cap: 24). */
@@ -80,9 +127,9 @@ export default function App() {
     setActiveStore(-1);
     if (!chainList.length) {
       setStores([]);
-      setStoresStatus({ msg: recallList.length
-        ? "None of the active recalls for your area name a major retail chain — check the product list below."
-        : "" });
+      setStoresStatus(recallList.length
+        ? { empty: true, title: "no chains named", msg: "None of the active recalls for your area name a major retail chain — check the product list below." }
+        : null);
       return;
     }
     setStoresStatus({
@@ -95,6 +142,8 @@ export default function App() {
       const found = await findStores(chainList, locArg, radiusArg);
       setStores(found);
       setStoresStatus(found.length ? null : {
+        empty: true,
+        title: "nothing in range",
         msg: "No locations of the affected chains were found within this radius — try a larger one, and still check the product list below.",
       });
     } catch (err) {
@@ -329,7 +378,7 @@ export default function App() {
                   <span className="text-paper">not necessarily this specific store</span>.
                 </p>
 
-                {storesStatus && (
+                {storesStatus && !storesStatus.empty && (
                   <div id="stores-status" role="status" aria-live="polite"
                        className={"mt-3 flex flex-wrap items-center gap-2 text-sm " + (storesStatus.error ? "text-alert" : "text-fog")}>
                     {storesStatus.busy && <Loader2 className="size-3.5 animate-spin" />}
@@ -342,12 +391,34 @@ export default function App() {
                   </div>
                 )}
 
+                {storesStatus?.empty && (
+                  <div id="stores-status" role="status" className="mt-4">
+                    <EmptyState icon={MapPinOff} label="store radar" title={storesStatus.title}>
+                      {storesStatus.msg}
+                    </EmptyState>
+                  </div>
+                )}
+
                 <div id="map-layout" className="mt-4 flex flex-col gap-4 md:flex-row md:items-stretch">
-                  <div className="min-w-0 flex-1">
+                  <div className="relative min-w-0 flex-1">
                     <MapView ref={mapRef} loc={loc} stores={stores} onMarkerClick={onMarkerClick} />
+                    {storesStatus?.busy && (
+                      <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center overflow-hidden rounded-xl bg-ink/45">
+                        <span className="radar-ring" />
+                        <span className="radar-ring" style={{ animationDelay: "0.66s" }} />
+                        <span className="radar-ring" style={{ animationDelay: "1.33s" }} />
+                        <span className="radar-dot" />
+                        <p className="microlabel absolute bottom-5 text-mint">scanning area…</p>
+                      </div>
+                    )}
                   </div>
                   {!listHidden && (
                     <div id="stores-panel" className="min-w-0 md:max-h-[520px] md:w-[340px] md:shrink-0 md:overflow-y-auto md:pr-0.5">
+                      {storesStatus?.busy && !stores.length && (
+                        <ul className="flex flex-col gap-2.5">
+                          {[0, 1, 2, 3].map((i) => <StoreSkeleton key={i} delay={i * 90} />)}
+                        </ul>
+                      )}
                       <ul id="stores-list" className="flex flex-col gap-2.5">
                         {stores.map((s, i) => {
                           const rs = storeRecalls(s);
@@ -356,9 +427,10 @@ export default function App() {
                               key={`${s.name}-${s.lat}-${s.lon}`}
                               ref={(el) => (storeItemRefs.current[i] = el)}
                               data-index={i}
+                              style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
                               onClick={(e) => { if (!e.target.closest("a, summary")) focusFromList(i); }}
                               className={
-                                "store-item cursor-pointer rounded-xl border bg-panel-2 p-3.5 transition-colors " +
+                                "store-item fade-item cursor-pointer rounded-xl border bg-panel-2 p-3.5 transition-colors " +
                                 (activeStore === i ? "active border-mint" : "border-line hover:border-mint/40")
                               }
                             >
@@ -444,29 +516,40 @@ export default function App() {
                 </div>
 
                 {productsBusy && (
-                  <p id="products-status" role="status" className="mt-4 flex items-center gap-2 text-sm text-fog">
-                    <Loader2 className="size-3.5 animate-spin" /> Fetching active recalls from FDA, USDA and CPSC…
-                  </p>
+                  <div className="mt-4">
+                    <p id="products-status" role="status" className="mb-3 flex items-center gap-2 text-sm text-fog">
+                      <Loader2 className="size-3.5 animate-spin" /> Fetching active recalls from FDA, USDA and CPSC…
+                    </p>
+                    <ul className="flex flex-col gap-3">
+                      {[0, 1, 2].map((i) => <RecallSkeleton key={i} delay={i * 90} />)}
+                    </ul>
+                  </div>
                 )}
 
                 {!productsBusy && recalls.length === 0 && (
-                  <p className="mt-4 rounded-xl border border-line bg-panel-2 p-4 text-sm text-fog">
-                    No active recalls matched your area in the past year — or the recall feeds were unreachable (see data sources below).
-                  </p>
+                  <div className="mt-4">
+                    <EmptyState icon={ShieldCheck} label="avoid list" title="all clear — for now">
+                      No active recalls matched your area in the past year. If the data sources panel below shows a feed as
+                      unavailable, some recalls may not be visible — check back shortly.
+                    </EmptyState>
+                  </div>
                 )}
 
                 {!productsBusy && recalls.length > 0 && filtered.length === 0 && (
-                  <p className="mt-4 rounded-xl border border-line bg-panel-2 p-4 text-sm text-fog">
-                    No recalls match the current filter.
-                  </p>
+                  <div className="mt-4">
+                    <EmptyState icon={SearchX} label="avoid list" title="no matches">
+                      Nothing matches the current filter — clear the search or re-enable a source chip above.
+                    </EmptyState>
+                  </div>
                 )}
 
                 <ul id="products-list" className="mt-4 flex flex-col gap-3">
-                  {filtered.slice(0, limit).map((r) => (
+                  {filtered.slice(0, limit).map((r, i) => (
                     <li
                       key={r.id}
+                      style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
                       className={
-                        "recall-item rounded-xl border border-line bg-panel-2 p-4 border-l-4 " +
+                        "recall-item fade-item rounded-xl border border-line bg-panel-2 p-4 border-l-4 " +
                         (r.severity === "high" ? "border-l-alert" : r.severity === "med" ? "border-l-amber" : "border-l-line")
                       }
                     >
