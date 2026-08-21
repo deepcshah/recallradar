@@ -25,23 +25,39 @@ function buildQuery(pattern, lat, lon, radius) {
   `;
 }
 
-async function tryEndpoint(endpoint, query, timeoutMs) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      body: "data=" + encodeURIComponent(query),
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "RecallRadar/1.0 (recall lookup; github.com/deepcshah/recallradar)",
-      },
-      signal: ctrl.signal,
-    });
+function fetchEndpoint(endpoint, query, signal) {
+  return fetch(endpoint, {
+    method: "POST",
+    body: "data=" + encodeURIComponent(query),
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "RecallRadar/1.0 (recall lookup; github.com/deepcshah/recallradar)",
+    },
+    signal,
+  }).then((res) => {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
+    return res.json();
+  });
+}
+
+/* Race every mirror in parallel under one budget. Sequential tries at 25s
+ * each could exceed the function's 60s maxDuration and get killed mid-flight;
+ * a single 40s parallel wave always finishes inside it. */
+async function raceMirrors(query, budgetMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), budgetMs);
+  try {
+    return await Promise.any(ENDPOINTS.map((e) => fetchEndpoint(e, query, ctrl.signal)));
+  } catch (err) {
+    const detail = err instanceof AggregateError
+      ? err.errors.map((e, i) => `${new URL(ENDPOINTS[i]).host}: ${e.name === "AbortError" ? "timeout" : e.message}`)
+      : [String(err && err.message)];
+    const failure = new Error(ctrl.signal.aborted ? "all mirrors timed out" : "all mirrors failed");
+    failure.detail = detail;
+    throw failure;
   } finally {
     clearTimeout(timer);
+    ctrl.abort();
   }
 }
 
@@ -59,17 +75,15 @@ export default async function handler(req, res) {
   }
 
   const query = buildQuery(pattern, lat, lon, radius);
-  const errors = [];
-  for (const endpoint of ENDPOINTS) {
-    try {
-      const data = await tryEndpoint(endpoint, query, 25000);
-      res.setHeader("Cache-Control", "public, s-maxage=1800, stale-while-revalidate=86400");
-      return res.status(200).json(data);
-    } catch (err) {
-      errors.push(`${new URL(endpoint).host}: ${err.name === "AbortError" ? "timeout" : err.message}`);
-    }
+  try {
+    const data = await raceMirrors(query, 40000);
+    // Store locations change on the order of months — cache aggressively:
+    // 7 days fresh at the edge, stale-while-revalidate for 30 more.
+    res.setHeader("Cache-Control", "public, s-maxage=604800, stale-while-revalidate=2592000");
+    return res.status(200).json(data);
+  } catch (err) {
+    return res.status(502).json({ error: err.message, detail: err.detail || [] });
   }
-  return res.status(502).json({ error: "all Overpass mirrors failed", detail: errors });
 }
 
 export const config = { maxDuration: 60 };

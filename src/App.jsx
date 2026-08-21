@@ -75,7 +75,7 @@ export default function App() {
 
   const { chains, byChain } = useMemo(() => chainsFor(recalls), [recalls]);
 
-  const loadStores = useCallback(async (recallList, locArg, radiusArg) => {
+  const loadStores = useCallback(async (recallList, locArg, radiusArg, attempt = 0) => {
     const { chains: chainList } = chainsFor(recallList);
     setActiveStore(-1);
     if (!chainList.length) {
@@ -86,7 +86,9 @@ export default function App() {
       return;
     }
     setStoresStatus({
-      msg: `Searching for nearby locations of ${chainList.length} recalled-product chain${chainList.length === 1 ? "" : "s"}… first search can take ~15s`,
+      msg: attempt === 0
+        ? `Searching for nearby locations of ${chainList.length} recalled-product chain${chainList.length === 1 ? "" : "s"}… first search can take ~15s`
+        : "First attempt failed — retrying the store search…",
       busy: true,
     });
     try {
@@ -96,8 +98,16 @@ export default function App() {
         msg: "No locations of the affected chains were found within this radius — try a larger one, and still check the product list below.",
       });
     } catch (err) {
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 3000));
+        return loadStores(recallList, locArg, radiusArg, 1);
+      }
       setStores([]);
-      setStoresStatus({ msg: `Store lookup failed (${err.message}). The recalled-product list below is unaffected.`, error: true });
+      setStoresStatus({
+        msg: `Store lookup failed (${err.message}). The recalled-product list below is unaffected.`,
+        error: true,
+        retry: () => loadStores(recallList, locArg, radiusArg),
+      });
     }
   }, []);
 
@@ -320,11 +330,16 @@ export default function App() {
                 </p>
 
                 {storesStatus && (
-                  <p id="stores-status" role="status" aria-live="polite"
-                     className={"mt-3 flex items-center gap-2 text-sm " + (storesStatus.error ? "text-alert" : "text-fog")}>
+                  <div id="stores-status" role="status" aria-live="polite"
+                       className={"mt-3 flex flex-wrap items-center gap-2 text-sm " + (storesStatus.error ? "text-alert" : "text-fog")}>
                     {storesStatus.busy && <Loader2 className="size-3.5 animate-spin" />}
-                    {storesStatus.msg}
-                  </p>
+                    <span>{storesStatus.msg}</span>
+                    {storesStatus.retry && (
+                      <Button id="btn-retry-stores" variant="outline" size="sm" onClick={storesStatus.retry}>
+                        retry
+                      </Button>
+                    )}
+                  </div>
                 )}
 
                 <div id="map-layout" className="mt-4 flex flex-col gap-4 md:flex-row md:items-stretch">

@@ -59,10 +59,14 @@ async function overpassDirect(query) {
 }
 
 async function overpassViaProxy(pattern, lat, lon, radiusMeters) {
+  // Snap the center to a ~0.7 mi grid and pad the radius to compensate, so
+  // everyone in the same neighborhood shares one edge-cache entry instead of
+  // each search being a cold Overpass query. True distances are computed
+  // client-side from the exact location.
   const params = new URLSearchParams({
-    lat: lat.toFixed(3),
-    lon: lon.toFixed(3),
-    radius: String(Math.round(radiusMeters)),
+    lat: (Math.round(lat * 100) / 100).toFixed(2),
+    lon: (Math.round(lon * 100) / 100).toFixed(2),
+    radius: String(Math.round(radiusMeters) + 2000),
     pattern,
   });
   const ctrl = new AbortController();
@@ -132,8 +136,11 @@ export async function findStores(chains, loc, radiusMeters) {
     });
   }
 
+  // The snapped/padded proxy query can return stores slightly beyond the
+  // user's radius — trim by true distance.
+  const maxMiles = radiusMeters / 1609.34 + 0.5;
   stores.sort((a, b) => a.distanceMiles - b.distanceMiles);
-  const result = stores.slice(0, 60);
+  const result = stores.filter((s) => s.distanceMiles <= maxMiles).slice(0, 60);
   try { sessionStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), v: result })); } catch (_) { /* quota */ }
   return result;
 }
