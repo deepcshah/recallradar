@@ -1,154 +1,17 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="RecallRadar — find out which stores near you sold recalled products (FDA, USDA, CPSC) and which products to avoid.">
-  <title>RecallRadar — Recalled products near you</title>
-  <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📡&lt;/text&gt;&lt;/svg&gt;">
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" crossorigin="">
-  <link rel="stylesheet" href="css/styles.css">
-</head>
-<body>
-  <header class="site-header">
-    <div class="wrap header-inner">
-      <div class="brand">
-        <span class="brand-icon" aria-hidden="true">📡</span>
-        <span class="brand-name">Recall<em>Radar</em></span>
-      </div>
-      <p class="tagline">Recalled products &amp; the stores that sold them — near you</p>
-    </div>
-  </header>
-
-  <main class="wrap">
-    <!-- ============ Locator ============ -->
-    <section class="card locator-card" id="locator">
-      <h1 class="locator-title">Where should we check?</h1>
-      <p class="locator-sub">We combine active recall notices from <strong>FDA</strong>, <strong>USDA&nbsp;FSIS</strong> and <strong>CPSC</strong> with your location to show recalls affecting your area and nearby stores that carried the recalled brands.</p>
-
-      <div class="locator-controls">
-        <button id="btn-geolocate" class="btn btn-primary" type="button">
-          <span aria-hidden="true">📍</span> Use my location
-        </button>
-        <span class="or">or</span>
-        <form id="form-search" class="search-form" autocomplete="off">
-          <label class="visually-hidden" for="input-location">ZIP code or address</label>
-          <input id="input-location" type="text" inputmode="text"
-                 placeholder="ZIP code or address (e.g. 94103)" required>
-          <button class="btn btn-secondary" type="submit">Search</button>
-        </form>
-      </div>
-
-      <div class="locator-row">
-        <div id="location-chip" class="location-chip" hidden>
-          <span aria-hidden="true">🧭</span>
-          <span id="location-label"></span>
-        </div>
-        <label class="radius-label" for="radius-select">Store search radius
-          <select id="radius-select">
-            <option value="8047">5 miles</option>
-            <option value="16093" selected>10 miles</option>
-            <option value="40234">25 miles</option>
-          </select>
-        </label>
-      </div>
-
-      <p id="locator-status" class="status-line" role="status" aria-live="polite"></p>
-    </section>
-
-    <!-- ============ Results ============ -->
-    <div id="results" hidden>
-
-      <section class="stats-row" id="stats-row" aria-label="Summary">
-        <div class="stat card">
-          <span class="stat-num" id="stat-recalls">–</span>
-          <span class="stat-label">active recalls affecting your area</span>
-        </div>
-        <div class="stat card">
-          <span class="stat-num" id="stat-high">–</span>
-          <span class="stat-label">high-risk (Class I) recalls</span>
-        </div>
-        <div class="stat card">
-          <span class="stat-num" id="stat-stores">–</span>
-          <span class="stat-label">nearby stores that carried recalled brands</span>
-        </div>
-      </section>
-
-      <!-- Stores -->
-      <section class="card section" id="stores-section">
-        <div class="section-head">
-          <h2>🏪 Stores near you linked to active recalls</h2>
-          <button id="btn-toggle-list" class="btn btn-secondary btn-small" type="button" aria-pressed="true" hidden>Hide list</button>
-        </div>
-        <p class="section-sub">
-          These stores belong to retail chains named in active recall notices for your area.
-          A recall notice naming a chain means recalled lots were shipped to that chain —
-          <strong>not necessarily to this specific store</strong>. Check the product list before you shop.
-        </p>
-        <div id="stores-status" class="status-line" role="status" aria-live="polite"></div>
-        <div class="map-layout" id="map-layout">
-          <div id="map" class="map" hidden></div>
-          <div id="stores-panel" class="stores-panel">
-            <ul id="stores-list" class="stores-list"></ul>
-          </div>
-        </div>
-      </section>
-
-      <!-- Products -->
-      <section class="card section" id="products-section">
-        <h2>⚠️ Recalled products to avoid</h2>
-        <p class="section-sub">Active recalls distributed nationwide or specifically to your state, newest first.</p>
-
-        <div class="filters" id="filters">
-          <input type="search" id="filter-text" placeholder="Filter products (e.g. lettuce, listeria, batteries)…" aria-label="Filter recalled products">
-          <div class="filter-chips" id="source-chips" role="group" aria-label="Filter by source"></div>
-        </div>
-
-        <div id="products-status" class="status-line" role="status" aria-live="polite"></div>
-        <ul id="products-list" class="products-list"></ul>
-        <button id="btn-more" class="btn btn-secondary btn-more" type="button" hidden>Show more recalls</button>
-      </section>
-
-      <!-- Source health -->
-      <section class="card section" id="sources-section">
-        <h2>📶 Data sources</h2>
-        <ul id="sources-list" class="sources-list"></ul>
-      </section>
-    </div>
-
-    <section class="card disclaimer">
-      <h2>About this data</h2>
-      <p>
-        RecallRadar aggregates public recall data directly in your browser from
-        <a href="https://open.fda.gov/apis/food/enforcement/" rel="noopener" target="_blank">openFDA enforcement reports</a> (food, drugs, medical devices),
-        the <a href="https://www.fsis.usda.gov/science-data/developer-resources/recall-api" rel="noopener" target="_blank">USDA FSIS recall API</a> (meat, poultry, egg products) and the
-        <a href="https://www.cpsc.gov/Recalls/CPSC-Recalls-Application-Program-Interface-API-Information" rel="noopener" target="_blank">CPSC recall API</a> (consumer products).
-        Store locations come from <a href="https://www.openstreetmap.org/copyright" rel="noopener" target="_blank">OpenStreetMap</a> contributors via the Overpass API.
-      </p>
-      <p>
-        <strong>This is an informational tool, not an official source.</strong> Recall notices name the chains that received
-        recalled lots, but government data does not track store-level inventory — a listed store may never have stocked the
-        recalled lot, and stores not listed may have. Always verify against the linked official notice, and when in doubt,
-        don't consume or use the product. For USDA recalls, store-level retail distribution lists are often published as
-        PDFs linked from the official notice.
-      </p>
-      <p>Your location is used only in your browser to query the public APIs above; RecallRadar has no server and stores nothing.</p>
-    </section>
-  </main>
-
-  <footer class="site-footer">
-    <div class="wrap">
-      <p>RecallRadar · data: openFDA · USDA FSIS · CPSC · © OpenStreetMap contributors</p>
-    </div>
-  </footer>
-
-  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js" crossorigin=""></script>
-  <script src="js/states.js"></script>
-  <script src="js/retailers.js"></script>
-  <script src="js/geo.js"></script>
-  <script src="js/sources.js"></script>
-  <script src="js/stores.js"></script>
-  <script src="js/ui.js"></script>
-  <script src="js/app.js"></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="RecallRadar — find out which stores near you sold recalled products (FDA, USDA, CPSC) and which products to avoid." />
+    <title>RecallRadar — Recalled products near you</title>
+    <link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;📡&lt;/text&gt;&lt;/svg&gt;" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
 </html>

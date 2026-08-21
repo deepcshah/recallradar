@@ -1,0 +1,85 @@
+@import "tailwindcss";
+@import "maplibre-gl/dist/maplibre-gl.css";
+
+@theme {
+  --color-ink: #0b0d0b;
+  --color-panel: #101410;
+  --color-panel-2: #141a15;
+  --color-line: rgba(255, 255, 255, 0.09);
+  --color-mint: #57f287;
+  --color-mint-dim: #2e7d4f;
+  --color-fog: #8b948d;
+  --color-paper: #e9efe9;
+  --color-alert: #ff6b5e;
+  --color-amber: #f5c451;
+  --font-display: "Space Grotesk", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-ink text-paper font-display antialiased;
+}
+
+/* mono uppercase micro-label, à la "CUSTOM STUDY NAME" */
+.microlabel {
+  @apply font-mono text-[11px] uppercase tracking-[0.18em] text-fog;
+}
+
+/* map pins */
+.map-pin {
+  width: 22px;
+  height: 22px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  background: var(--color-mint);
+  border: 2px solid #0b0d0b;
+  box-shadow: 0 0 10px rgba(87, 242, 135, 0.5);
+  cursor: pointer;
+}
+.map-pin.you {
+  border-radius: 50%;
+  transform: none;
+  background: #f5c451;
+  box-shadow: 0 0 10px rgba(245, 196, 81, 0.6);
+}
+.map-pin-label {
+  transform: rotate(45deg);
+  display: block;
+  color: #0b0d0b;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  line-height: 18px;
+  pointer-events: none;
+  font-family: var(--font-mono);
+}
+
+.maplibregl-popup-content {
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  background: #141a15;
+  color: #e9efe9;
+  border: 1px solid rgba(87, 242, 135, 0.35);
+  border-radius: 10px;
+  padding: 0.55rem 0.75rem;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.5);
+}
+.maplibregl-popup-tip {
+  border-top-color: rgba(87, 242, 135, 0.35) !important;
+  border-bottom-color: rgba(87, 242, 135, 0.35) !important;
+}
+.maplibregl-popup-close-button {
+  color: #8b948d;
+  font-size: 16px;
+}
+.maplibregl-ctrl-group {
+  background: #141a15 !important;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.maplibregl-ctrl-group button {
+  filter: invert(1) hue-rotate(180deg);
+}
