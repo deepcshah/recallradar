@@ -116,19 +116,29 @@ export function slimCpsc(raw) {
 
 // ---------------------------------------------------------------- openFDA
 async function fetchOpenFda(kind, loc) {
-  const now = new Date();
-  const start = new Date(now.getTime() - LOOKBACK_DAYS * DAY_MS);
-  const parts = [`distribution_pattern:"nationwide"`];
-  if (loc.stateAbbr) parts.push(`distribution_pattern:"${loc.stateAbbr}"`);
-  if (loc.state) parts.push(`distribution_pattern:"${loc.state}"`);
-  const search =
-    `status:"Ongoing"+AND+report_date:[${fmtFdaDate(start)}+TO+${fmtFdaDate(now)}]` +
-    `+AND+(${parts.join("+OR+")})`;
-  const url =
-    `https://api.fda.gov/${kind}/enforcement.json?search=${search}` +
-    `&sort=report_date:desc&limit=100`;
-
-  const data = await cachedFetchJSON(url.replace(/ /g, "+"));
+  // Proxy first: /api/fda attaches the server-side API key (higher quota)
+  // and is edge-cached per kind+state. Direct keyless call is the fallback
+  // for bare static deployments.
+  let data;
+  try {
+    const qs = new URLSearchParams({ kind });
+    if (loc.state) qs.set("state", loc.state);
+    if (loc.stateAbbr) qs.set("abbr", loc.stateAbbr);
+    data = await cachedFetchJSON(`/api/fda?${qs}`);
+  } catch (_) {
+    const now = new Date();
+    const start = new Date(now.getTime() - LOOKBACK_DAYS * DAY_MS);
+    const parts = [`distribution_pattern:"nationwide"`];
+    if (loc.stateAbbr) parts.push(`distribution_pattern:"${loc.stateAbbr}"`);
+    if (loc.state) parts.push(`distribution_pattern:"${loc.state}"`);
+    const search =
+      `status:"Ongoing"+AND+report_date:[${fmtFdaDate(start)}+TO+${fmtFdaDate(now)}]` +
+      `+AND+(${parts.join("+OR+")})`;
+    const url =
+      `https://api.fda.gov/${kind}/enforcement.json?search=${search}` +
+      `&sort=report_date:desc&limit=100`;
+    data = await cachedFetchJSON(url.replace(/ /g, "+"));
+  }
   const results = (data && data.results) || [];
   const label = { food: "FDA Food", drug: "FDA Drug", device: "FDA Device" }[kind];
 

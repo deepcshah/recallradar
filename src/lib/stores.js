@@ -58,16 +58,15 @@ async function overpassDirect(query) {
   }
 }
 
-async function overpassViaProxy(pattern, lat, lon, radiusMeters) {
+async function overpassViaProxy(lat, lon, radiusMeters) {
   // Snap the center to a ~0.7 mi grid and pad the radius to compensate, so
-  // everyone in the same neighborhood shares one edge-cache entry instead of
-  // each search being a cold Overpass query. True distances are computed
-  // client-side from the exact location.
+  // everyone in the same neighborhood shares one tile. The proxy stores each
+  // tile's stores (for ALL known chains) in Vercel Blob, so a tile only ever
+  // hits Overpass once a month; which chains matter is filtered client-side.
   const params = new URLSearchParams({
     lat: (Math.round(lat * 100) / 100).toFixed(2),
     lon: (Math.round(lon * 100) / 100).toFixed(2),
     radius: String(Math.round(radiusMeters) + 2000),
-    pattern,
   });
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 55000);
@@ -92,11 +91,11 @@ export async function findStores(chains, loc, radiusMeters) {
     if (hit && Date.now() - hit.t < CACHE_TTL_MS) return hit.v;
   } catch (_) { /* cache is best-effort */ }
 
-  const pattern = chains.map((c) => c.osm).join("|");
   let data;
   try {
-    data = await overpassViaProxy(pattern, loc.lat, loc.lon, radiusMeters);
+    data = await overpassViaProxy(loc.lat, loc.lon, radiusMeters);
   } catch (_) {
+    const pattern = chains.map((c) => c.osm).join("|");
     data = await overpassDirect(buildOverpassQuery(pattern, loc.lat, loc.lon, radiusMeters));
   }
 
