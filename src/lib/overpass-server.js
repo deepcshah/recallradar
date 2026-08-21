@@ -1,7 +1,7 @@
 /* Overpass helpers shared by the serverless functions (api/stores.js and
  * api/refresh-tiles.js). Server-side only — nothing here touches the DOM.
  */
-import { CHAINS } from "./retailers.js";
+import { CHAINS, osmPosix } from "./retailers.js";
 
 export const OVERPASS_ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
@@ -9,7 +9,7 @@ export const OVERPASS_ENDPOINTS = [
   "https://overpass.kumi.systems/api/interpreter",
 ];
 
-export const ALL_CHAINS_PATTERN = CHAINS.map((c) => c.osm).join("|");
+export const ALL_CHAINS_PATTERN = CHAINS.map((c) => osmPosix(c.osm)).join("|");
 const KEPT_TAGS = ["name", "brand", "addr:housenumber", "addr:street", "addr:city"];
 
 export function buildTileQuery(lat, lon, radius) {
@@ -48,8 +48,13 @@ function fetchEndpoint(endpoint, query, signal) {
       "User-Agent": "RecallRadar/1.0 (recall lookup; github.com/deepcshah/recallradar)",
     },
     signal,
-  }).then((res) => {
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  }).then(async (res) => {
+    if (!res.ok) {
+      // Overpass explains rejections (rate limit, parse error) in the body.
+      const text = await res.text().catch(() => "");
+      const detail = (text.match(/error[^<\n]*/i) || [])[0];
+      throw new Error(`HTTP ${res.status}${detail ? ` — ${detail.slice(0, 160)}` : ""}`);
+    }
     return res.json();
   });
 }
@@ -61,8 +66,12 @@ export async function raceMirrors(query, budgetMs) {
   const timer = setTimeout(() => ctrl.abort(), budgetMs);
   try {
     return await Promise.any(OVERPASS_ENDPOINTS.map((e) => fetchEndpoint(e, query, ctrl.signal)));
-  } catch (_) {
-    throw new Error(ctrl.signal.aborted ? "all Overpass mirrors timed out" : "all Overpass mirrors failed");
+  } catch (err) {
+    if (ctrl.signal.aborted) throw new Error("all Overpass mirrors timed out");
+    const details = (err && err.errors ? err.errors : [])
+      .map((e, i) => `${new URL(OVERPASS_ENDPOINTS[i]).host}: ${e.message}`)
+      .join("; ");
+    throw new Error(`all Overpass mirrors failed${details ? ` (${details})` : ""}`);
   } finally {
     clearTimeout(timer);
     ctrl.abort();

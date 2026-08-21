@@ -120,8 +120,18 @@ function byId(id) {
   return compiled.find((c) => c.id === id) || null;
 }
 
+/* Overpass QL rejects backslash escapes inside its quoted strings (\b, \.
+ * are "unknown escaped character" parse errors — every mirror 400s), and its
+ * POSIX regex engine has no \b anyway. Patterns embedded in Overpass queries
+ * must therefore be backslash-free. Precision there doesn't matter: results
+ * are re-filtered with the real JS regexes, so \b is dropped and \. is
+ * loosened to "." (broader match, never a missed one). */
+function osmPosix(pattern) {
+  return pattern.replace(/\\b/g, "").replace(/\\\./g, ".");
+}
+
 
 
 
 export const CHAINS = compiled;
-export { chainsInText, byId };
+export { chainsInText, byId, osmPosix };

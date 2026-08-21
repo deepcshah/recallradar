@@ -7,6 +7,7 @@
  * directly from the browser, racing them.
  */
 import { distanceMiles } from "./geo.js";
+import { osmPosix } from "./retailers.js";
 
 const ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
@@ -95,7 +96,7 @@ export async function findStores(chains, loc, radiusMeters) {
   try {
     data = await overpassViaProxy(loc.lat, loc.lon, radiusMeters);
   } catch (_) {
-    const pattern = chains.map((c) => c.osm).join("|");
+    const pattern = chains.map((c) => osmPosix(c.osm)).join("|");
     data = await overpassDirect(buildOverpassQuery(pattern, loc.lat, loc.lon, radiusMeters));
   }
 
