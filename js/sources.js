@@ -30,7 +30,10 @@
     return new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T00:00:00`);
   }
 
-  async function cachedFetchJSON(url, { timeoutMs = 20000 } = {}) {
+  // `transform` slims the raw response BEFORE caching — the full FSIS/CPSC
+  // payloads are megabytes and would blow the sessionStorage quota, which
+  // silently disables caching and makes every search slow.
+  async function cachedFetchJSON(url, { timeoutMs = 20000, transform } = {}) {
     const key = "rr-cache:" + url;
     try {
       const hit = JSON.parse(sessionStorage.getItem(key) || "null");
@@ -43,9 +46,12 @@
       const res = await fetch(url, { signal: ctrl.signal, headers: { Accept: "application/json" } });
       if (res.status === 404) return null; // openFDA returns 404 for "no matches"
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const v = await res.json();
+      let v = await res.json();
+      if (transform) v = transform(v);
       try { sessionStorage.setItem(key, JSON.stringify({ t: Date.now(), v })); } catch (_) { /* quota */ }
       return v;
+    } catch (err) {
+      throw err && err.name === "AbortError" ? new Error("timed out") : err;
     } finally {
       clearTimeout(timer);
     }
@@ -117,12 +123,32 @@
 
   // -------------------------------------------------------------- USDA FSIS
   async function fetchFsis(loc) {
-    const data = await cachedFetchJSON("https://www.fsis.usda.gov/fsis/api/recall/v/1?format=json");
-    const list = Array.isArray(data) ? data : (data && data.results) || [];
+    const data = await cachedFetchJSON("https://www.fsis.usda.gov/fsis/api/recall/v/1?format=json", {
+      timeoutMs: 30000,
+      transform: (raw) => {
+        const all = Array.isArray(raw) ? raw : (raw && raw.results) || [];
+        return all
+          .filter((r) => String(r.field_active_notice).toLowerCase() === "true")
+          .map((r) => ({
+            field_title: r.field_title,
+            field_recall_number: r.field_recall_number,
+            field_states: r.field_states,
+            field_recall_date: r.field_recall_date,
+            field_risk_level: r.field_risk_level,
+            field_recall_reason: r.field_recall_reason,
+            field_recall_classification: r.field_recall_classification,
+            field_summary: String(r.field_summary || "").slice(0, 500),
+            field_product_items: String(r.field_product_items || "").slice(0, 500),
+            field_recall_url: r.field_recall_url,
+            field_establishment: r.field_establishment,
+            field_qty_recovered: r.field_qty_recovered,
+          }));
+      },
+    });
+    const list = data || [];
     const cutoff = Date.now() - LOOKBACK_DAYS * 2 * DAY_MS; // active notices can be older
 
     return list
-      .filter((r) => String(r.field_active_notice).toLowerCase() === "true")
       .map((r) => {
         const states = String(r.field_states || "");
         let scope = null;
@@ -160,10 +186,26 @@
 
   // ------------------------------------------------------------------- CPSC
   async function fetchCpsc(loc) {
-    const start = new Date(Date.now() - LOOKBACK_DAYS * DAY_MS).toISOString().slice(0, 10);
+    // 180-day window: recent enough to matter in stores, half the payload.
+    const start = new Date(Date.now() - 180 * DAY_MS).toISOString().slice(0, 10);
     const url = `https://www.saferproducts.gov/RestWebServices/Recall?format=json&RecallDateStart=${start}`;
-    const data = await cachedFetchJSON(url, { timeoutMs: 30000 });
-    const list = Array.isArray(data) ? data : [];
+    const data = await cachedFetchJSON(url, {
+      timeoutMs: 30000,
+      transform: (raw) => (Array.isArray(raw) ? raw : []).map((r) => ({
+        RecallID: r.RecallID,
+        RecallNumber: r.RecallNumber,
+        RecallDate: r.RecallDate,
+        Title: r.Title,
+        URL: r.URL,
+        Description: String(r.Description || "").slice(0, 400),
+        Products: (r.Products || []).slice(0, 4).map((p) => ({ Name: p.Name })),
+        Hazards: (r.Hazards || []).map((h) => ({ Name: h.Name || h.HazardType })),
+        Manufacturers: (r.Manufacturers || []).slice(0, 3).map((m) => ({ Name: m.Name })),
+        Retailers: (r.Retailers || []).map((x) => ({ Name: (x && x.Name) || "" })),
+        SoldAtLabel: r.SoldAtLabel || "",
+      })),
+    });
+    const list = data || [];
 
     return list.map((r) => {
       const products = (r.Products || []).map((p) => p.Name).filter(Boolean);

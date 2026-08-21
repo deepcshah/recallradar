@@ -59,6 +59,7 @@
       setStatus("#locator-status", "", {});
     }
     $("#results").hidden = false;
+    window.RRUI.showMap(loc); // map appears immediately; pins arrive with data
     await loadRecalls();
   }
 
@@ -107,9 +108,17 @@
 
   async function loadStores() {
     const byChain = recallsByChain();
-    const chains = [...byChain.keys()]
-      .map((id) => window.RRRetailers.byId(id))
-      .filter(Boolean);
+    // Cap the Overpass query to the 24 chains with the most recent recalls —
+    // an unbounded regex over dozens of chains times out the public servers.
+    const chains = [...byChain.entries()]
+      .map(([id, rs]) => ({
+        chain: window.RRRetailers.byId(id),
+        newest: Math.max(...rs.map((r) => (r.date ? r.date.getTime() : 0))),
+      }))
+      .filter((x) => x.chain)
+      .sort((a, b) => b.newest - a.newest)
+      .slice(0, 24)
+      .map((x) => x.chain);
 
     if (!chains.length) {
       window.RRUI.renderStats({
@@ -121,15 +130,14 @@
       window.RRUI.emptyNote("#stores-list",
         "None of the active recalls for your area name a major retail chain, so there are no specific stores to flag. " +
         "Check the product list below — recalled items may still have been sold near you through smaller or unnamed retailers.");
-      $("#map").hidden = true;
-      $("#map-layout").classList.remove("has-map");
       $("#btn-toggle-list").hidden = true;
       return;
     }
 
     const radius = parseInt($("#radius-select").value, 10);
     setStatus("#stores-status",
-      `Searching OpenStreetMap for nearby ${chains.length === 1 ? chains[0].label : chains.length + " chains"} named in recalls…`,
+      `Searching OpenStreetMap for nearby ${chains.length === 1 ? chains[0].label : chains.length + " chains"} named in recalls… ` +
+      "(the free public servers can take up to ~30 seconds on the first search)",
       { busy: true });
 
     try {
@@ -142,8 +150,6 @@
           "No locations of the recalled-product retail chains (" +
           chains.map((c) => window.RRUI.esc(c.label)).join(", ") +
           ") were found within your radius in OpenStreetMap. Try a larger radius — and still check the product list below.");
-        $("#map").hidden = true;
-        $("#map-layout").classList.remove("has-map");
         $("#btn-toggle-list").hidden = true;
       } else {
         window.RRUI.renderStores(stores, byChain);

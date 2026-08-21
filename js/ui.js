@@ -169,7 +169,9 @@
     return `<strong>${esc(s.name)}</strong>${s.address ? "<br>" + esc(s.address) : ""}<br>${s.distanceMiles.toFixed(1)} mi away`;
   }
 
-  function renderMap(loc, stores) {
+  /** Show the map centered on the user as soon as a location is known —
+   *  before recalls/stores have loaded. Pins arrive later via renderMap. */
+  function showMap(loc) {
     const el = $("#map");
     const layout = $("#map-layout");
     if (!hasMapLib()) { el.hidden = true; layout.classList.remove("has-map"); return; }
@@ -177,14 +179,20 @@
     layout.classList.add("has-map");
 
     ensureMap(loc);
-    markers.forEach((m) => m.remove());
-    markers = [];
     if (youMarker) youMarker.remove();
-
     youMarker = new maplibregl.Marker({ element: pinEl("", true) })
       .setLngLat([loc.lon, loc.lat])
       .setPopup(new maplibregl.Popup({ offset: 14 }).setHTML("You are here"))
       .addTo(map);
+    map.jumpTo({ center: [loc.lon, loc.lat], zoom: 11 });
+    resizeMap();
+  }
+
+  function renderMap(loc, stores) {
+    if (!hasMapLib()) { $("#map").hidden = true; $("#map-layout").classList.remove("has-map"); return; }
+    showMap(loc);
+    markers.forEach((m) => m.remove());
+    markers = [];
 
     const bounds = new maplibregl.LngLatBounds();
     bounds.extend([loc.lon, loc.lat]);
@@ -300,7 +308,7 @@
   }
 
   window.RRUI = {
-    $, esc, setStatus, renderStats, renderStores, renderMap,
+    $, esc, setStatus, renderStats, renderStores, renderMap, showMap,
     focusStore, setActiveStore, setMarkerClickHandler, resizeMap, hasMapLib,
     renderProducts, renderSourceChips, renderSources, emptyNote,
   };

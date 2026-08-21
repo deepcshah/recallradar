@@ -6,8 +6,10 @@
 
   const ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
   ];
+  const CACHE_TTL_MS = 30 * 60 * 1000;
 
   /**
    * Query Overpass for stores of the given chains around a point.
@@ -16,44 +18,62 @@
    * @param {number} radiusMeters
    * @returns {Promise<Array<{name, brand, lat, lon, address, distanceMiles, chainIds}>>}
    */
+  function fetchEndpoint(endpoint, query, signal) {
+    return fetch(endpoint, {
+      method: "POST",
+      body: "data=" + encodeURIComponent(query),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      signal,
+    }).then((res) => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    });
+  }
+
+  /** Race the public Overpass mirrors; first success wins, losers are aborted. */
+  async function overpass(query) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 45000);
+    try {
+      return await Promise.any(ENDPOINTS.map((e) => fetchEndpoint(e, query, ctrl.signal)));
+    } catch (_) {
+      throw new Error(ctrl.signal.aborted
+        ? "OpenStreetMap store search timed out — try again or use a smaller radius"
+        : "OpenStreetMap store search is unavailable right now");
+    } finally {
+      clearTimeout(timer);
+      ctrl.abort();
+    }
+  }
+
   async function findStores(chains, loc, radiusMeters) {
     if (!chains.length) return [];
 
+    const cacheKey = "rr-stores:" + [
+      loc.lat.toFixed(3), loc.lon.toFixed(3), Math.round(radiusMeters),
+      chains.map((c) => c.id).sort().join(","),
+    ].join("|");
+    try {
+      const hit = JSON.parse(sessionStorage.getItem(cacheKey) || "null");
+      if (hit && Date.now() - hit.t < CACHE_TTL_MS) return hit.v;
+    } catch (_) { /* cache is best-effort */ }
+
     const pattern = chains.map((c) => c.osm).join("|");
     const around = `(around:${Math.round(radiusMeters)},${loc.lat},${loc.lon})`;
-    // Match on either the shop name or its brand tag; restrict to shop-ish POIs.
+    // Name-only match on nodes and ways (no relations, no brand-only scans):
+    // markedly faster on the public Overpass servers.
     const query = `
-      [out:json][timeout:25];
+      [out:json][timeout:40];
       (
-        nwr["shop"]["name"~"${pattern}",i]${around};
-        nwr["shop"]["brand"~"${pattern}",i]${around};
-        nwr["amenity"="pharmacy"]["name"~"${pattern}",i]${around};
-        nwr["amenity"="fuel"]["brand"~"${pattern}",i]${around};
+        node["shop"]["name"~"${pattern}",i]${around};
+        way["shop"]["name"~"${pattern}",i]${around};
+        node["amenity"="pharmacy"]["name"~"${pattern}",i]${around};
+        way["amenity"="pharmacy"]["name"~"${pattern}",i]${around};
       );
       out center tags 120;
     `;
 
-    let data = null;
-    let lastError = null;
-    for (const endpoint of ENDPOINTS) {
-      try {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 30000);
-        const res = await fetch(endpoint, {
-          method: "POST",
-          body: "data=" + encodeURIComponent(query),
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          signal: ctrl.signal,
-        });
-        clearTimeout(timer);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        data = await res.json();
-        break;
-      } catch (err) {
-        lastError = err;
-      }
-    }
-    if (!data) throw lastError || new Error("Overpass unavailable");
+    const data = await overpass(query);
 
     const seen = new Set();
     const stores = [];
@@ -92,7 +112,9 @@
     }
 
     stores.sort((a, b) => a.distanceMiles - b.distanceMiles);
-    return stores.slice(0, 60);
+    const result = stores.slice(0, 60);
+    try { sessionStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), v: result })); } catch (_) { /* quota */ }
+    return result;
   }
 
   window.RRStores = { findStores };
