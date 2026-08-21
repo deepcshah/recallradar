@@ -11,6 +11,7 @@ export default async function handler(req, res) {
   if (!upstream.ok) return res.status(502).json({ error: `CPSC HTTP ${upstream.status}` });
   const raw = await upstream.json();
   const slim = (Array.isArray(raw) ? raw : []).map((r) => ({
+    Image: (((r.Images || [])[0] || {}).URL) || "",
     RecallID: r.RecallID,
     RecallNumber: r.RecallNumber,
     RecallDate: r.RecallDate,

@@ -7,6 +7,7 @@ export const OVERPASS_ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.private.coffee/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ];
 
 export const ALL_CHAINS_PATTERN = CHAINS.map((c) => osmPosix(c.osm)).join("|");
@@ -22,8 +23,10 @@ export function buildTileQuery(lat, lon, radius) {
       node["amenity"="pharmacy"]["name"~"${ALL_CHAINS_PATTERN}",i]${around};
       way["amenity"="pharmacy"]["name"~"${ALL_CHAINS_PATTERN}",i]${around};
     );
-    out center tags 400;
+    out center 400;
   `;
+  // NB: "out center 400", not "out center tags 400" — the tags verbosity level
+  // omits node coordinates entirely, which silently drops every point store.
 }
 
 /** Keep the overpass element shape the client parses, minus unused tags. */
@@ -59,21 +62,35 @@ function fetchEndpoint(endpoint, query, signal) {
   });
 }
 
+function describe(err) {
+  const details = (err && err.errors ? err.errors : [])
+    .map((e, i) => `${new URL(OVERPASS_ENDPOINTS[i]).host}: ${e.message}`)
+    .join("; ");
+  return details ? ` (${details})` : "";
+}
+
 /* Race every mirror in parallel under one budget — sequential tries could
- * exceed the function's maxDuration and get killed mid-flight. */
+ * exceed the function's maxDuration and get killed mid-flight. If the first
+ * wave fails fast (rate limits are the usual reason) and there is budget
+ * left, wait a few seconds and race once more. */
 export async function raceMirrors(query, budgetMs) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), budgetMs);
-  try {
-    return await Promise.any(OVERPASS_ENDPOINTS.map((e) => fetchEndpoint(e, query, ctrl.signal)));
-  } catch (err) {
-    if (ctrl.signal.aborted) throw new Error("all Overpass mirrors timed out");
-    const details = (err && err.errors ? err.errors : [])
-      .map((e, i) => `${new URL(OVERPASS_ENDPOINTS[i]).host}: ${e.message}`)
-      .join("; ");
-    throw new Error(`all Overpass mirrors failed${details ? ` (${details})` : ""}`);
-  } finally {
-    clearTimeout(timer);
-    ctrl.abort();
+  const started = Date.now();
+  let lastErr = null;
+  for (let wave = 0; wave < 2; wave++) {
+    const remaining = budgetMs - (Date.now() - started);
+    if (remaining < 8000) break;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), remaining);
+    try {
+      return await Promise.any(OVERPASS_ENDPOINTS.map((e) => fetchEndpoint(e, query, ctrl.signal)));
+    } catch (err) {
+      if (ctrl.signal.aborted) throw new Error("all Overpass mirrors timed out");
+      lastErr = new Error(`all Overpass mirrors failed${describe(err)}`);
+    } finally {
+      clearTimeout(timer);
+      ctrl.abort();
+    }
+    await new Promise((r) => setTimeout(r, 4000));
   }
+  throw lastErr || new Error("all Overpass mirrors failed");
 }

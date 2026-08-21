@@ -13,6 +13,7 @@ const ENDPOINTS = [
   "https://overpass-api.de/api/interpreter",
   "https://overpass.private.coffee/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 ];
 const CACHE_TTL_MS = 30 * 60 * 1000;
 
@@ -27,8 +28,10 @@ export function buildOverpassQuery(pattern, lat, lon, radiusMeters) {
       node["amenity"="pharmacy"]["name"~"${pattern}",i]${around};
       way["amenity"="pharmacy"]["name"~"${pattern}",i]${around};
     );
-    out center tags 120;
+    out center 120;
   `;
+  // NB: "out center", not "out center tags" — the tags verbosity level omits
+  // node coordinates entirely, which silently drops every point store.
 }
 
 function fetchEndpoint(endpoint, query, signal) {
@@ -73,7 +76,15 @@ async function overpassViaProxy(lat, lon, radiusMeters) {
   const timer = setTimeout(() => ctrl.abort(), 55000);
   try {
     const res = await fetch(`/api/stores?${params}`, { signal: ctrl.signal });
-    if (!res.ok) throw new Error(`proxy HTTP ${res.status}`);
+    if (!res.ok) {
+      // The proxy's 502 body names each mirror's actual error — keep it so
+      // the user-facing message (and bug reports) say what really happened.
+      let detail = "";
+      try { detail = String((await res.json()).error || ""); } catch (_) { /* not JSON */ }
+      const err = new Error(`proxy HTTP ${res.status}${detail ? ` — ${detail}` : ""}`);
+      err.detail = detail;
+      throw err;
+    }
     return await res.json();
   } finally {
     clearTimeout(timer);
@@ -95,9 +106,14 @@ export async function findStores(chains, loc, radiusMeters) {
   let data;
   try {
     data = await overpassViaProxy(loc.lat, loc.lon, radiusMeters);
-  } catch (_) {
+  } catch (proxyErr) {
     const pattern = chains.map((c) => osmPosix(c.osm)).join("|");
-    data = await overpassDirect(buildOverpassQuery(pattern, loc.lat, loc.lon, radiusMeters));
+    try {
+      data = await overpassDirect(buildOverpassQuery(pattern, loc.lat, loc.lon, radiusMeters));
+    } catch (directErr) {
+      if (proxyErr && proxyErr.detail) directErr.message += ` · server said: ${proxyErr.detail}`;
+      throw directErr;
+    }
   }
 
   const seen = new Set();

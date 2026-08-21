@@ -166,6 +166,7 @@ export function normalizeCpsc(list) {
       scope: "nationwide", // CPSC recalls are national
       distribution: [retailerNames, soldAt].filter(Boolean).join(" · ") || "Nationwide (consumer product)",
       url: r.URL || "https://www.cpsc.gov/Recalls",
+      image: r.Image || "",
       retailerIds: retailerIdsFor(retailerNames, soldAt, r.Description, r.Title),
       quantity: "",
       codeInfo: "",
@@ -208,6 +209,7 @@ export function slimFsis(raw) {
 
 export function slimCpsc(raw) {
   return (Array.isArray(raw) ? raw : []).map((r) => ({
+    Image: (((r.Images || [])[0] || {}).URL) || "",
     RecallID: r.RecallID,
     RecallNumber: r.RecallNumber,
     RecallDate: r.RecallDate,

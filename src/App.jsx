@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Crosshair, ExternalLink, Loader2, MapPin, MapPinOff, Plus, Radar, Search, SearchX, ShieldCheck } from "lucide-react";
+import {
+  Armchair, Baby, Beef, Bike, Candy, Carrot, Crosshair, CupSoda, ExternalLink, Fish,
+  Loader2, MapPin, MapPinOff, Milk, Package, PawPrint, Pill, Plug, Plus, Radar,
+  Search, SearchX, ShieldCheck, Soup, Stethoscope, UtensilsCrossed, Wheat, Zap,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -9,6 +13,14 @@ import { browserPosition, reverseGeocode, geocodeInput } from "@/lib/geo";
 import { fetchAll } from "@/lib/sources";
 import { findStores } from "@/lib/stores";
 import { byId } from "@/lib/retailers";
+import { categoryFor } from "@/lib/category";
+
+const CATEGORY_ICONS = {
+  pet: PawPrint, kids: Baby, supplement: Pill, drug: Pill, device: Stethoscope,
+  electrical: Zap, appliance: Plug, home: Armchair, sports: Bike,
+  meat: Beef, seafood: Fish, dairy: Milk, produce: Carrot, grains: Wheat,
+  snacks: Candy, beverage: CupSoda, pantry: Soup, food: UtensilsCrossed, product: Package,
+};
 
 const RADII = [
   { value: 8047, label: "5 mi" },
@@ -239,6 +251,32 @@ export default function App() {
   const highCount = recalls.filter((r) => r.severity === "high").length;
   const sourceNames = useMemo(() => [...new Set(recalls.map((r) => r.source))], [recalls]);
   const remaining = filtered.length - limit;
+
+  // Nearest found store per chain (stores arrive sorted by distance), so each
+  // recall can link straight to the closest place its chain has around you.
+  const nearestByChain = useMemo(() => {
+    const m = new Map();
+    stores.forEach((s, i) => {
+      for (const id of s.chainIds) if (!m.has(id)) m.set(id, i);
+    });
+    return m;
+  }, [stores]);
+
+  function nearbyStoresFor(r) {
+    const seen = new Set();
+    const out = [];
+    for (const id of r.retailerIds || []) {
+      const i = nearestByChain.get(id);
+      if (i != null && !seen.has(i)) { seen.add(i); out.push(i); }
+    }
+    return out.slice(0, 4);
+  }
+
+  function goToStore(i) {
+    focusFromList(i);
+    const el = document.getElementById("map");
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
 
   function storeRecalls(store) {
     const seen = new Set();
@@ -544,14 +582,17 @@ export default function App() {
                 )}
 
                 <ul id="products-list" className="mt-4 flex flex-col gap-3">
-                  {filtered.slice(0, limit).map((r, i) => (
+                  {filtered.slice(0, limit).map((r, i) => {
+                    const cat = categoryFor(r);
+                    const CatIcon = CATEGORY_ICONS[cat.key] || Package;
+                    const nearby = nearbyStoresFor(r);
+                    const linkedStores = new Set(nearby.flatMap((si) => stores[si].chainIds));
+                    const unlinkedChains = (r.retailerIds || []).filter((id) => !linkedStores.has(id));
+                    return (
                     <li
                       key={r.id}
                       style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
-                      className={
-                        "recall-item fade-item rounded-xl border border-line bg-panel-2 p-4 border-l-4 " +
-                        (r.severity === "high" ? "border-l-alert" : r.severity === "med" ? "border-l-amber" : "border-l-line")
-                      }
+                      className="recall-item fade-item rounded-xl border border-line bg-panel-2 p-4"
                     >
                       <div className="flex flex-wrap items-center gap-1.5">
                         <Badge variant="source">{r.source}</Badge>
@@ -559,12 +600,39 @@ export default function App() {
                         <Badge variant="scope">{r.scope === "nationwide" ? "nationwide" : "your state"}</Badge>
                         <span className="ml-auto font-mono text-xs text-fog">{fmtDate(r.date)}</span>
                       </div>
-                      <p className="recall-product mt-2 font-semibold [overflow-wrap:anywhere]">{truncate(r.product, 220)}</p>
-                      {r.firm && <p className="mt-0.5 text-xs text-fog">recalled by {r.firm}</p>}
-                      {r.reason && <p className="mt-1.5 text-sm text-paper/90 [overflow-wrap:anywhere]">{truncate(r.reason, 300)}</p>}
-                      {(r.retailerIds || []).length > 0 && (
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {r.retailerIds.map((id) => byId(id)).filter(Boolean).map((c) => (
+                      <div className="mt-2.5 flex items-start gap-3">
+                        <span
+                          className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-mint/25 bg-mint/10"
+                          title={cat.label} aria-label={cat.label}
+                        >
+                          <CatIcon className="size-4 text-mint" aria-hidden="true" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="microlabel">{cat.label}</p>
+                          <p className="recall-product mt-0.5 font-semibold [overflow-wrap:anywhere]">{truncate(r.product, 220)}</p>
+                          {r.firm && <p className="mt-0.5 text-xs text-fog">recalled by {r.firm}</p>}
+                          {r.reason && <p className="mt-1.5 text-sm text-paper/90 [overflow-wrap:anywhere]">{truncate(r.reason, 300)}</p>}
+                        </div>
+                        {r.image && (
+                          <img
+                            src={r.image} alt="" loading="lazy" referrerPolicy="no-referrer"
+                            className="hidden size-20 shrink-0 rounded-lg border border-line bg-panel object-cover sm:block"
+                            onError={(e) => { e.currentTarget.style.display = "none"; }}
+                          />
+                        )}
+                      </div>
+                      {(nearby.length > 0 || unlinkedChains.length > 0) && (
+                        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                          {nearby.length > 0 && <span className="microlabel mr-0.5">near you →</span>}
+                          {nearby.map((si) => (
+                            <button
+                              key={si} type="button" onClick={() => goToStore(si)}
+                              className="inline-flex items-center gap-1 rounded-full border border-mint/40 bg-mint/10 px-2.5 py-0.5 text-[11px] font-semibold text-mint transition-colors hover:bg-mint/20"
+                            >
+                              <MapPin className="size-3" /> {stores[si].name} · {stores[si].distanceMiles.toFixed(1)} mi
+                            </button>
+                          ))}
+                          {unlinkedChains.map((id) => byId(id)).filter(Boolean).map((c) => (
                             <Badge key={c.id} variant="chain">sold at {c.label}</Badge>
                           ))}
                         </div>
@@ -588,7 +656,8 @@ export default function App() {
                         {r.searchHint && <span className="ml-2 font-mono text-[11px] text-fog">recall # {r.searchHint}</span>}
                       </p>
                     </li>
-                  ))}
+                    );
+                  })}
                 </ul>
 
                 {remaining > 0 && (
