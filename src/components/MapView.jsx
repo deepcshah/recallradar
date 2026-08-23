@@ -99,7 +99,7 @@ const MapView = forwardRef(function MapView({ loc, stores, onMarkerClick }, ref)
       markersRef.current.push(m);
       bounds.extend([s.lon, s.lat]);
     });
-    map.fitBounds(bounds, { padding: 48, maxZoom: 14, duration: 800 });
+    map.fitBounds(bounds, { padding: 64, maxZoom: 14, duration: 800 });
   }, [stores, loc]);
 
   useImperativeHandle(ref, () => ({
@@ -116,7 +116,8 @@ const MapView = forwardRef(function MapView({ loc, stores, onMarkerClick }, ref)
     },
   }));
 
-  return <div id="map" ref={containerRef} className="h-[340px] w-full rounded-xl border border-line overflow-hidden md:h-[520px]" />;
+  // Fills whatever the parent gives it — the shell decides the size now.
+  return <div id="map" ref={containerRef} className="h-full w-full" />;
 });
 
 export default MapView;
