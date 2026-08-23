@@ -298,7 +298,7 @@ export default function App() {
     setMobileTab("products");
     const el = storeItemRefs.current[i];
     if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, []);
+  }, [scopeForStore]);
 
   useEffect(() => {
     mapRef.current && mapRef.current.resize();
