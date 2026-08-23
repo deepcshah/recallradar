@@ -1,91 +1,36 @@
 /* Find nearby store locations for the retail chains named in active recalls.
  *
- * Primary path: same-origin serverless proxy (/api/stores) which queries the
- * Overpass mirrors server-side and is edge-cached by Vercel — this avoids
- * browser CORS issues and the aggressive per-IP rate limits on the public
- * mirrors. Fallback (e.g. running as a bare static site): query the mirrors
- * directly from the browser, racing them.
+ * All POI lookups go through /api/stores, which queries Mapbox Search with a
+ * server-side token and caches results in Vercel Blob. There is deliberately
+ * no direct browser fallback: the token must not ship to the client, and the
+ * public keyless alternatives we used before proved unreliable.
  */
 import { distanceMiles } from "./geo.js";
-import { osmPosix } from "./retailers.js";
 
-const ENDPOINTS = [
-  "https://overpass-api.de/api/interpreter",
-  "https://overpass.private.coffee/api/interpreter",
-  "https://overpass.kumi.systems/api/interpreter",
-  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
-];
 const CACHE_TTL_MS = 30 * 60 * 1000;
 
-export function buildOverpassQuery(pattern, lat, lon, radiusMeters) {
-  const around = `(around:${Math.round(radiusMeters)},${lat},${lon})`;
-  // Name-only match on nodes and ways (no relations, no brand-only scans).
-  return `
-    [out:json][timeout:40];
-    (
-      node["shop"]["name"~"${pattern}",i]${around};
-      way["shop"]["name"~"${pattern}",i]${around};
-      node["amenity"="pharmacy"]["name"~"${pattern}",i]${around};
-      way["amenity"="pharmacy"]["name"~"${pattern}",i]${around};
-    );
-    out center 120;
-  `;
-  // NB: "out center", not "out center tags" — the tags verbosity level omits
-  // node coordinates entirely, which silently drops every point store.
-}
-
-function fetchEndpoint(endpoint, query, signal) {
-  return fetch(endpoint, {
-    method: "POST",
-    body: "data=" + encodeURIComponent(query),
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    signal,
-  }).then((res) => {
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.json();
-  });
-}
-
-/** Race the public Overpass mirrors; first success wins, losers are aborted. */
-async function overpassDirect(query) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 45000);
-  try {
-    return await Promise.any(ENDPOINTS.map((e) => fetchEndpoint(e, query, ctrl.signal)));
-  } catch (_) {
-    throw new Error(ctrl.signal.aborted
-      ? "OpenStreetMap store search timed out — try again or use a smaller radius"
-      : "OpenStreetMap store search is unavailable right now");
-  } finally {
-    clearTimeout(timer);
-    ctrl.abort();
-  }
-}
-
-async function overpassViaProxy(lat, lon, radiusMeters) {
-  // Snap the center to a ~0.7 mi grid and pad the radius to compensate, so
-  // everyone in the same neighborhood shares one tile. The proxy stores each
-  // tile's stores (for ALL known chains) in Vercel Blob, so a tile only ever
-  // hits Overpass once a month; which chains matter is filtered client-side.
+async function fetchStores(chains, loc) {
+  // Snap the center to a ~0.7 mi grid so everyone in the same neighborhood
+  // shares one cached result per chain.
   const params = new URLSearchParams({
-    lat: (Math.round(lat * 100) / 100).toFixed(2),
-    lon: (Math.round(lon * 100) / 100).toFixed(2),
-    radius: String(Math.round(radiusMeters) + 2000),
+    lat: (Math.round(loc.lat * 100) / 100).toFixed(2),
+    lon: (Math.round(loc.lon * 100) / 100).toFixed(2),
+    chains: chains.map((c) => c.id).join(","),
   });
+
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 55000);
   try {
     const res = await fetch(`/api/stores?${params}`, { signal: ctrl.signal });
+    let body = null;
+    try { body = await res.json(); } catch (_) { /* non-JSON error page */ }
     if (!res.ok) {
-      // The proxy's 502 body names each mirror's actual error — keep it so
-      // the user-facing message (and bug reports) say what really happened.
-      let detail = "";
-      try { detail = String((await res.json()).error || ""); } catch (_) { /* not JSON */ }
-      const err = new Error(`proxy HTTP ${res.status}${detail ? ` — ${detail}` : ""}`);
-      err.detail = detail;
-      throw err;
+      throw new Error((body && body.error) || `store service returned HTTP ${res.status}`);
     }
-    return await res.json();
+    return body;
+  } catch (err) {
+    if (err.name === "AbortError") throw new Error("the store search timed out");
+    throw err;
   } finally {
     clearTimeout(timer);
   }
@@ -94,7 +39,7 @@ async function overpassViaProxy(lat, lon, radiusMeters) {
 export async function findStores(chains, loc, radiusMeters) {
   if (!chains.length) return [];
 
-  const cacheKey = "rr-stores:" + [
+  const cacheKey = "rr-stores:v2:" + [
     loc.lat.toFixed(3), loc.lon.toFixed(3), Math.round(radiusMeters),
     chains.map((c) => c.id).sort().join(","),
   ].join("|");
@@ -103,57 +48,38 @@ export async function findStores(chains, loc, radiusMeters) {
     if (hit && Date.now() - hit.t < CACHE_TTL_MS) return hit.v;
   } catch (_) { /* cache is best-effort */ }
 
-  let data;
-  try {
-    data = await overpassViaProxy(loc.lat, loc.lon, radiusMeters);
-  } catch (proxyErr) {
-    const pattern = chains.map((c) => osmPosix(c.osm)).join("|");
-    try {
-      data = await overpassDirect(buildOverpassQuery(pattern, loc.lat, loc.lon, radiusMeters));
-    } catch (directErr) {
-      if (proxyErr && proxyErr.detail) directErr.message += ` · server said: ${proxyErr.detail}`;
-      throw directErr;
-    }
-  }
+  const data = await fetchStores(chains, loc);
 
   const seen = new Set();
   const stores = [];
-  for (const el of data.elements || []) {
-    const tags = el.tags || {};
-    const lat = el.lat ?? (el.center && el.center.lat);
-    const lon = el.lon ?? (el.center && el.center.lon);
-    if (lat == null || lon == null) continue;
+  for (const s of (data && data.stores) || []) {
+    const lat = Number(s.lat);
+    const lon = Number(s.lon);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || !s.name) continue;
 
-    const name = tags.name || tags.brand || "Unnamed store";
-    const hay = `${tags.name || ""} ${tags.brand || ""}`;
-    const chainIds = chains
-      .filter((c) => new RegExp(c.osm, "i").test(hay))
-      .map((c) => c.id);
-    if (!chainIds.length) continue;
+    // Mapbox proximity search is fuzzy — keep only results whose name really
+    // is the chain we asked for, using the chain's own matching regex.
+    const chain = chains.find((c) => c.id === s.chainId);
+    if (!chain || !new RegExp(chain.osm, "i").test(s.name)) continue;
 
-    // Dedup same-name stores at nearly identical coordinates (node + way pairs).
-    const key = `${name.toLowerCase()}|${lat.toFixed(3)}|${lon.toFixed(3)}`;
+    // Dedup the same storefront returned at nearly identical coordinates.
+    const key = `${s.name.toLowerCase()}|${lat.toFixed(3)}|${lon.toFixed(3)}`;
     if (seen.has(key)) continue;
     seen.add(key);
 
-    const address = [
-      [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" "),
-      tags["addr:city"],
-    ].filter(Boolean).join(", ");
-
     stores.push({
-      name,
-      brand: tags.brand || "",
+      name: s.name,
+      brand: "",
       lat,
       lon,
-      address,
+      address: s.address || "",
       distanceMiles: distanceMiles(loc.lat, loc.lon, lat, lon),
-      chainIds,
+      chainIds: [s.chainId],
     });
   }
 
-  // The snapped/padded proxy query can return stores slightly beyond the
-  // user's radius — trim by true distance.
+  // The cached search covers a wider area than any single radius choice —
+  // trim to what the user actually asked for.
   const maxMiles = radiusMeters / 1609.34 + 0.5;
   stores.sort((a, b) => a.distanceMiles - b.distanceMiles);
   const result = stores.filter((s) => s.distanceMiles <= maxMiles).slice(0, 60);

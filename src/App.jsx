@@ -89,7 +89,8 @@ function EmptyState({ icon: Icon, label, title, children }) {
   );
 }
 
-/** Top chains named in the given recalls, newest recall first (Overpass cap: 24). */
+/** Top chains named in the given recalls, newest recall first.
+ *  Capped at 24: the store service does one Mapbox lookup per chain. */
 function chainsFor(recalls) {
   const byChain = new Map();
   for (const r of recalls) {
@@ -146,7 +147,7 @@ export default function App() {
     }
     setStoresStatus({
       msg: attempt === 0
-        ? `Searching for nearby locations of ${chainList.length} recalled-product chain${chainList.length === 1 ? "" : "s"}… first search can take ~15s`
+        ? `Searching for nearby locations of ${chainList.length} recalled-product chain${chainList.length === 1 ? "" : "s"}… the first search in a new area takes a few seconds`
         : "First attempt failed — retrying the store search…",
       busy: true,
     });
@@ -699,7 +700,9 @@ export default function App() {
               <a className="text-mint hover:underline" href="https://www.fsis.usda.gov/science-data/developer-resources/recall-api" target="_blank" rel="noopener noreferrer">USDA FSIS recall API</a>{" "}
               (meat, poultry, egg products) and the{" "}
               <a className="text-mint hover:underline" href="https://www.cpsc.gov/Recalls/CPSC-Recalls-Application-Program-Interface-API-Information" target="_blank" rel="noopener noreferrer">CPSC recall API</a>{" "}
-              (consumer products). Store locations © <a className="text-mint hover:underline" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors.
+              (consumer products). Store locations come from{" "}
+              <a className="text-mint hover:underline" href="https://www.mapbox.com/about/maps/" target="_blank" rel="noopener noreferrer">Mapbox Search</a>;
+              the map itself is © <a className="text-mint hover:underline" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors and CARTO.
             </p>
             <p className="mt-2.5">
               <span className="text-paper">This is an informational tool, not an official source.</span>{" "}
@@ -713,7 +716,7 @@ export default function App() {
         </Card>
 
         <p className="microlabel mt-8 text-center">
-          recallradar · openFDA · USDA FSIS · CPSC · © openstreetmap © carto
+          recallradar · openFDA · USDA FSIS · CPSC · mapbox · © openstreetmap © carto
         </p>
       </main>
     </div>

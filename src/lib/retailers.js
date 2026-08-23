@@ -1,7 +1,8 @@
 /* Known US retail chains: used to (a) spot chains named in recall notice text
- * and (b) find matching store locations in OpenStreetMap via Overpass.
+ * and (b) confirm that a place returned by Mapbox Search really is that chain.
  * `match`  — regex fragment applied (case-insensitive, word-bounded) to recall text.
- * `osm`    — regex fragment matched against OSM `name` / `brand` tags.
+ * `label`  — the human name we hand to Mapbox as the search query.
+ * `osm`    — regex fragment matched against the returned place name.
  */
 
 
@@ -120,18 +121,5 @@ function byId(id) {
   return compiled.find((c) => c.id === id) || null;
 }
 
-/* Overpass QL rejects backslash escapes inside its quoted strings (\b, \.
- * are "unknown escaped character" parse errors — every mirror 400s), and its
- * POSIX regex engine has no \b anyway. Patterns embedded in Overpass queries
- * must therefore be backslash-free. Precision there doesn't matter: results
- * are re-filtered with the real JS regexes, so \b is dropped and \. is
- * loosened to "." (broader match, never a missed one). */
-function osmPosix(pattern) {
-  return pattern.replace(/\\b/g, "").replace(/\\\./g, ".");
-}
-
-
-
-
 export const CHAINS = compiled;
-export { chainsInText, byId, osmPosix };
+export { chainsInText, byId };

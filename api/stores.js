@@ -1,18 +1,24 @@
-/* Store-location lookup backed by Vercel Blob (lazy build-through dataset).
+/* Store-location lookup, backed by Mapbox Search and cached in Vercel Blob.
  *
- * Flow per area tile (snapped lat/lon + radius, chain-independent):
- *   1. Fresh Blob copy (< 30 days old)  -> serve it, Overpass never touched.
- *   2. Missing or stale                 -> query the Overpass mirrors once for
- *      ALL known chains, slim the result, write it to Blob, serve it.
- *   3. Overpass down and a stale copy exists -> serve the stale copy.
+ * The Mapbox token (env var MAPBOX_TOKEN) is read here and never leaves the
+ * server. Results are cached per (neighborhood, chain) so a given chain in a
+ * given area costs exactly one Mapbox request per month, shared by everyone:
  *
- * The Vercel edge cache (1 day) sits in front, and api/refresh-tiles.js
- * re-warms the oldest tiles daily so refreshes rarely land on a user.
+ *   key: stores/v2/{lat2}_{lon2}/{chainId}.json      (lat2/lon2 = 2 decimals)
+ *
+ * A chain that fails degrades on its own — the rest of the lookup still
+ * returns — and a stale cached copy always beats an error.
  */
 import { head, put } from "@vercel/blob";
-import { buildTileQuery, raceMirrors, slimElements } from "../src/lib/overpass-server.js";
+import { byId } from "../src/lib/retailers.js";
+import { findChainLocations, pooled } from "../src/lib/mapbox-server.js";
 
-const STALE_MS = 30 * 24 * 60 * 60 * 1000; // refresh a tile monthly
+const STALE_MS = 30 * 24 * 60 * 60 * 1000; // refresh a chain's tile monthly
+const MAX_CHAINS = 24;
+
+export function tileKey(lat, lon, chainId) {
+  return `stores/v2/${lat.toFixed(2)}_${lon.toFixed(2)}/${chainId}.json`;
+}
 
 async function readBlob(key) {
   try {
@@ -21,7 +27,7 @@ async function readBlob(key) {
     if (!res.ok) return null;
     return { body: await res.json(), uploadedAt: new Date(meta.uploadedAt).getTime() };
   } catch (_) {
-    return null; // missing blob, or Blob not configured — fall through to Overpass
+    return null; // missing, or Blob not configured — fall through to Mapbox
   }
 }
 
@@ -34,41 +40,71 @@ async function writeBlob(key, body) {
       contentType: "application/json",
       cacheControlMaxAge: 3600,
     });
-  } catch (_) { /* Blob write is best-effort; the response still succeeds */ }
+  } catch (_) { /* best-effort; the response still succeeds */ }
 }
 
 export default async function handler(req, res) {
   const lat = parseFloat(req.query.lat);
   const lon = parseFloat(req.query.lon);
-  const radius = parseInt(req.query.radius, 10);
+  const ids = String(req.query.chains || "")
+    .split(",").map((s) => s.trim()).filter(Boolean).slice(0, MAX_CHAINS);
 
   if (!Number.isFinite(lat) || lat < -90 || lat > 90 ||
-      !Number.isFinite(lon) || lon < -180 || lon > 180 ||
-      !Number.isFinite(radius) || radius < 100 || radius > 45000) {
-    return res.status(400).json({ error: "bad parameters" });
+      !Number.isFinite(lon) || lon < -180 || lon > 180) {
+    return res.status(400).json({ error: "bad coordinates" });
+  }
+  const chains = ids.map(byId).filter(Boolean);
+  if (!chains.length) return res.status(400).json({ error: "no valid chains requested" });
+
+  const token = process.env.MAPBOX_TOKEN;
+  if (!token) {
+    return res.status(503).json({
+      error: "Mapbox is not configured on the server (missing MAPBOX_TOKEN environment variable).",
+    });
   }
 
-  const key = `stores/v1/${lat.toFixed(2)}_${lon.toFixed(2)}_${radius}.json`;
-  const cached = await readBlob(key);
-  const fresh = cached && Date.now() - cached.uploadedAt < STALE_MS;
+  const now = Date.now();
+  const settled = await pooled(chains, async (chain) => {
+    const key = tileKey(lat, lon, chain.id);
+    const cached = await readBlob(key);
+    if (cached && now - cached.uploadedAt < STALE_MS) {
+      return { stores: cached.body.stores || [], source: "blob" };
+    }
+    try {
+      const stores = await findChainLocations(token, chain, lat, lon);
+      await writeBlob(key, { fetchedAt: new Date(now).toISOString(), stores });
+      return { stores, source: "mapbox" };
+    } catch (err) {
+      if (cached) return { stores: cached.body.stores || [], source: "blob-stale" };
+      throw err;
+    }
+  });
 
-  const ok = (body, source) => {
-    res.setHeader("Cache-Control", "public, s-maxage=86400, stale-while-revalidate=604800");
-    res.setHeader("X-RR-Source", source);
-    return res.status(200).json(body);
-  };
+  const stores = [];
+  const perChain = {};
+  let failures = 0;
+  settled.forEach((r, i) => {
+    const id = chains[i].id;
+    if (r.ok) {
+      stores.push(...r.value.stores);
+      perChain[id] = { ok: true, count: r.value.stores.length, source: r.value.source };
+    } else {
+      failures++;
+      perChain[id] = { ok: false, error: r.error };
+    }
+  });
 
-  if (fresh) return ok(cached.body, "blob");
-
-  try {
-    const data = await raceMirrors(buildTileQuery(lat.toFixed(2), lon.toFixed(2), radius), 40000);
-    const slim = slimElements(data);
-    await writeBlob(key, slim);
-    return ok(slim, "overpass");
-  } catch (err) {
-    if (cached) return ok(cached.body, "blob-stale"); // stale beats an error
-    return res.status(502).json({ error: err.message });
+  // Every chain failing means the token or the API is broken, not the data.
+  if (failures === chains.length) {
+    const sample = Object.values(perChain).find((c) => c.error);
+    return res.status(502).json({
+      error: `Mapbox lookup failed for all ${chains.length} chains — ${sample ? sample.error : "unknown error"}`,
+      chains: perChain,
+    });
   }
+
+  res.setHeader("Cache-Control", "public, s-maxage=86400, stale-while-revalidate=604800");
+  return res.status(200).json({ stores, chains: perChain });
 }
 
 export const config = { maxDuration: 60 };
