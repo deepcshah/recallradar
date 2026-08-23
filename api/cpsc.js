@@ -2,11 +2,13 @@
  * the fields the app uses, and lets Vercel edge-cache it for 30 minutes.
  * Keep the slimming logic in sync with slimCpsc() in src/lib/sources.js.
  */
+import { FEED_HEADERS } from "../src/lib/feeds.js";
+
 export default async function handler(req, res) {
   const start = new Date(Date.now() - 180 * 86400000).toISOString().slice(0, 10);
   const upstream = await fetch(
     `https://www.saferproducts.gov/RestWebServices/Recall?format=json&RecallDateStart=${start}`,
-    { headers: { Accept: "application/json", "User-Agent": "RecallRadar/1.0" } }
+    { headers: FEED_HEADERS }
   );
   if (!upstream.ok) return res.status(502).json({ error: `CPSC HTTP ${upstream.status}` });
   const raw = await upstream.json();

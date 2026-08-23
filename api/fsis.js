@@ -3,9 +3,11 @@
  * lets Vercel edge-cache the slim result for 30 minutes.
  * Keep the slimming logic in sync with slimFsis() in src/lib/sources.js.
  */
+import { FEED_HEADERS } from "../src/lib/feeds.js";
+
 export default async function handler(req, res) {
   const upstream = await fetch("https://www.fsis.usda.gov/fsis/api/recall/v/1?format=json", {
-    headers: { Accept: "application/json", "User-Agent": "RecallRadar/1.0" },
+    headers: FEED_HEADERS,
   });
   if (!upstream.ok) return res.status(502).json({ error: `FSIS HTTP ${upstream.status}` });
   const raw = await upstream.json();

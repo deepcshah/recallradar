@@ -6,8 +6,52 @@
  */
 import { byId } from "../src/lib/retailers.js";
 import { findChainLocations, searchUrl } from "../src/lib/mapbox-server.js";
+import { FEED_HEADERS } from "../src/lib/feeds.js";
+import { fdaSearchQuery, CPSC_LOOKBACK_DAYS } from "../src/lib/sources.js";
 
 const PROBE_CHAINS = ["cvs", "safeway", "walmart"];
+
+/* Hit each recall feed exactly as api/recalls.js does and report the raw
+ * outcome, so a WAF block (403) or a bad key is visible instead of just
+ * showing up as a missing source in the UI. */
+async function probeFeeds() {
+  const key = process.env.openfda;
+  const cpscStart = new Date(Date.now() - CPSC_LOOKBACK_DAYS * 86400000).toISOString().slice(0, 10);
+  const loc = { state: "California", stateAbbr: "CA" };
+  const targets = [
+    ["USDA FSIS", "https://www.fsis.usda.gov/fsis/api/recall/v/1?format=json"],
+    ["CPSC", `https://www.saferproducts.gov/RestWebServices/Recall?format=json&RecallDateStart=${cpscStart}`],
+    ["openFDA food", `https://api.fda.gov/food/enforcement.json?search=${fdaSearchQuery(loc).replace(/ /g, "+")}` +
+      `&limit=1` + (key ? `&api_key=${key}` : "")],
+  ];
+
+  const out = [];
+  for (const [name, url] of targets) {
+    const started = Date.now();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 12000);
+    try {
+      const res = await fetch(url, { headers: FEED_HEADERS, signal: ctrl.signal });
+      const text = await res.text();
+      let count = null;
+      try {
+        const j = JSON.parse(text);
+        count = Array.isArray(j) ? j.length : Array.isArray(j.results) ? j.results.length : null;
+      } catch (_) { /* not JSON */ }
+      out.push({
+        name, status: res.status, ok: res.ok, ms: Date.now() - started, count,
+        // openFDA answers "no matches" with 404; that is not a failure.
+        note: res.status === 404 ? "no matches (normal for openFDA)" : undefined,
+        body: res.ok ? undefined : text.slice(0, 200),
+      });
+    } catch (err) {
+      out.push({ name, ok: false, ms: Date.now() - started, error: err.name === "AbortError" ? "timed out" : err.message });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return out;
+}
 
 export default async function handler(req, res) {
   const lat = parseFloat(req.query.lat);
@@ -26,7 +70,13 @@ export default async function handler(req, res) {
       kind: token ? String(token).slice(0, 3) : null,
       looksPublic: Boolean(token && String(token).startsWith("pk.")),
     },
+    openFdaKey: {
+      // Read from the env var literally named "openfda".
+      present: Boolean(process.env.openfda),
+      length: process.env.openfda ? String(process.env.openfda).length : 0,
+    },
     blobConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
+    feeds: await probeFeeds(),
     probes: [],
   };
 

@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Armchair, Baby, Beef, Bike, Candy, Carrot, ChevronDown, Crosshair, CupSoda, ExternalLink,
   Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package, PanelRightClose, PanelRightOpen,
-  PawPrint, Pill, Plug, Plus, Radar, Search, SearchX, ShieldCheck, Soup, Stethoscope,
-  UtensilsCrossed, Wheat, X, Zap,
+  PawPrint, Pill, Plug, Plus, Radar, Rows2, Columns2, Search, SearchX, ShieldCheck, Soup,
+  Stethoscope, UtensilsCrossed, Wheat, X, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +21,21 @@ const CATEGORY_ICONS = {
   meat: Beef, seafood: Fish, dairy: Milk, produce: Carrot, grains: Wheat,
   snacks: Candy, beverage: CupSoda, pantry: Soup, food: UtensilsCrossed, product: Package,
 };
+
+/* Layout preferences persist per browser; storage may be unavailable. */
+function loadPref(key, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    return v == null ? fallback : JSON.parse(v);
+  } catch (_) { return fallback; }
+}
+function savePref(key, value) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* private mode */ }
+}
+
+const DEFAULT_SPLIT = 42; // % of the panel given to the stores list
+const MIN_SPLIT = 18;
+const MAX_SPLIT = 82;
 
 const RADII = [
   { value: 8047, label: "5" },
@@ -129,6 +144,9 @@ export default function App() {
   const [listHidden, setListHidden] = useState(false);
   const [mobileTab, setMobileTab] = useState("stores");
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [sideBySide, setSideBySide] = useState(() => loadPref("rr-side-by-side", false));
+  const [splitPct, setSplitPct] = useState(() => loadPref("rr-split", DEFAULT_SPLIT));
+  const [isWide, setIsWide] = useState(false); // md+ : the only place resizing applies
 
   const [filterText, setFilterText] = useState("");
   const [category, setCategory] = useState("all");
@@ -137,6 +155,8 @@ export default function App() {
 
   const mapRef = useRef(null);
   const storeItemRefs = useRef([]);
+  const splitRef = useRef(null);
+  const draggingRef = useRef(false);
 
   const { byChain } = useMemo(() => chainsFor(recalls), [recalls]);
 
@@ -250,7 +270,59 @@ export default function App() {
 
   useEffect(() => {
     mapRef.current && mapRef.current.resize();
-  }, [listHidden, stores, mobileTab]);
+  }, [listHidden, stores, mobileTab, sideBySide, splitPct]);
+
+  // Resizing and the columns layout only exist at md+, where both lists show.
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 768px)");
+    const sync = () => setIsWide(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
+
+  const commitSplit = useCallback((pct) => {
+    const clamped = Math.min(MAX_SPLIT, Math.max(MIN_SPLIT, pct));
+    setSplitPct(clamped);
+    return clamped;
+  }, []);
+
+  function onSplitPointerDown(e) {
+    draggingRef.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  }
+  function onSplitPointerMove(e) {
+    if (!draggingRef.current || !splitRef.current) return;
+    const r = splitRef.current.getBoundingClientRect();
+    commitSplit(sideBySide
+      ? ((e.clientX - r.left) / r.width) * 100
+      : ((e.clientY - r.top) / r.height) * 100);
+  }
+  function onSplitPointerUp(e) {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) { /* already released */ }
+    savePref("rr-split", splitPct);
+  }
+  function onSplitKeyDown(e) {
+    const back = sideBySide ? "ArrowLeft" : "ArrowUp";
+    const fwd = sideBySide ? "ArrowRight" : "ArrowDown";
+    if (e.key !== back && e.key !== fwd && e.key !== "Home") return;
+    e.preventDefault();
+    savePref("rr-split", e.key === "Home" ? commitSplit(DEFAULT_SPLIT)
+      : commitSplit(splitPct + (e.key === fwd ? 4 : -4)));
+  }
+  function resetSplit() { savePref("rr-split", commitSplit(DEFAULT_SPLIT)); }
+
+  function toggleLayout() {
+    const next = !sideBySide;
+    setSideBySide(next);
+    savePref("rr-side-by-side", next);
+  }
+
+  // Inline basis drives both axes; on phones the tabs own the sizing instead.
+  const storesStyle = isWide ? { flexBasis: `${splitPct}%`, flexGrow: 0, flexShrink: 0 } : undefined;
 
   const categories = useMemo(() => {
     const m = new Map();
@@ -424,21 +496,36 @@ export default function App() {
           )}
 
           {loc && (
-            <Button
-              id="btn-toggle-list" variant="secondary" size="sm"
-              aria-pressed={!listHidden}
-              onClick={() => setListHidden(!listHidden)}
-              className="absolute left-3 top-3 z-10 hidden bg-panel/90 backdrop-blur md:inline-flex"
-            >
-              {listHidden ? <><PanelRightOpen /> show lists</> : <><PanelRightClose /> hide lists</>}
-            </Button>
+            <div className="absolute left-3 top-3 z-10 hidden items-center gap-1.5 md:flex">
+              <Button
+                id="btn-toggle-list" variant="secondary" size="sm"
+                aria-pressed={!listHidden}
+                onClick={() => setListHidden(!listHidden)}
+                className="bg-panel/90 backdrop-blur"
+              >
+                {listHidden ? <><PanelRightOpen /> show lists</> : <><PanelRightClose /> hide lists</>}
+              </Button>
+              {!listHidden && (
+                <Button
+                  id="btn-toggle-layout" variant="secondary" size="sm"
+                  aria-pressed={sideBySide}
+                  onClick={toggleLayout}
+                  title={sideBySide ? "Stack the lists" : "Put the lists side by side"}
+                  className="bg-panel/90 px-3 backdrop-blur"
+                >
+                  {sideBySide ? <Rows2 /> : <Columns2 />}
+                  <span className="hidden lg:inline">{sideBySide ? "stacked" : "side by side"}</span>
+                </Button>
+              )}
+            </div>
           )}
         </div>
 
         {/* -------- right panel: stores over products -------- */}
         {loc && !listHidden && (
           <aside id="stores-panel"
-                 className="flex min-h-0 flex-1 flex-col border-t border-line bg-ink md:w-[26rem] md:flex-none md:border-l md:border-t-0">
+                 className={"flex min-h-0 flex-1 flex-col border-t border-line bg-ink md:flex-none md:border-l md:border-t-0 " +
+                   (sideBySide ? "md:w-[38rem] xl:w-[46rem]" : "md:w-[26rem]")}>
             {/* mobile tab switch */}
             <div className="flex shrink-0 border-b border-line md:hidden" role="tablist">
               {[["stores", `stores · ${stores.length}`], ["products", `products · ${filtered.length}`]].map(([k, lbl]) => (
@@ -450,8 +537,11 @@ export default function App() {
               ))}
             </div>
 
+            {/* Both lists live in one measured box so the divider can size them. */}
+            <div ref={splitRef}
+                 className={"flex min-h-0 flex-1 " + (sideBySide ? "flex-col md:flex-row" : "flex-col")}>
             {/* ---- stores ---- */}
-            <section className={showStores + "min-h-0 flex-1 flex-col md:max-h-[42%] md:flex-none"}>
+            <section className={showStores + "min-h-0 flex-1 flex-col overflow-hidden"} style={storesStyle}>
               <PanelHeader label="stores" countId="stat-stores" count={storesStatus?.busy ? "…" : stores.length}>
                 <span className="microlabel">within</span>
                 <div className="flex gap-1" role="group" aria-label="Store search radius">
@@ -506,7 +596,9 @@ export default function App() {
                       </div>
                       {s.address && <p className="mt-0.5 truncate text-[11px] text-fog">{s.address}</p>}
                       <p className="mt-1.5 font-mono text-[11px] text-mint">
-                        {activeStore === i ? "showing its recalls below ↓" : `${storeRecalls(s)} recall${storeRecalls(s) === 1 ? "" : "s"} → tap to filter`}
+                        {activeStore === i
+                          ? (sideBySide && isWide ? "showing its recalls →" : "showing its recalls below ↓")
+                          : `${storeRecalls(s)} recall${storeRecalls(s) === 1 ? "" : "s"} → tap to filter`}
                       </p>
                     </li>
                   ))}
@@ -514,8 +606,31 @@ export default function App() {
               </div>
             </section>
 
+            {/* ---- drag divider (desktop only) ---- */}
+            {isWide && (
+              <div
+                id="split-handle"
+                role="separator"
+                aria-orientation={sideBySide ? "vertical" : "horizontal"}
+                aria-label="Resize the lists"
+                aria-valuenow={Math.round(splitPct)} aria-valuemin={MIN_SPLIT} aria-valuemax={MAX_SPLIT}
+                tabIndex={0}
+                onPointerDown={onSplitPointerDown}
+                onPointerMove={onSplitPointerMove}
+                onPointerUp={onSplitPointerUp}
+                onPointerCancel={onSplitPointerUp}
+                onDoubleClick={resetSplit}
+                onKeyDown={onSplitKeyDown}
+                className={"group flex shrink-0 items-center justify-center border-line bg-panel transition-colors hover:bg-mint/10 focus-visible:bg-mint/15 focus-visible:outline-none " +
+                  (sideBySide ? "w-2 cursor-col-resize border-x" : "h-2 cursor-row-resize border-y")}
+              >
+                <span className={"rounded-full bg-line transition-colors group-hover:bg-mint/60 " +
+                  (sideBySide ? "h-8 w-0.5" : "h-0.5 w-8")} />
+              </div>
+            )}
+
             {/* ---- products ---- */}
-            <section className={showProducts + "min-h-0 flex-1 flex-col border-t border-line"}>
+            <section className={showProducts + "min-h-0 flex-1 flex-col overflow-hidden " + (isWide ? "" : "border-t border-line")}>
               <PanelHeader
                 label="recalls" countId="stat-recalls" count={productsBusy ? "…" : filtered.length}
                 note={highCount > 0 && (
@@ -643,6 +758,7 @@ export default function App() {
                 )}
               </div>
             </section>
+            </div>
           </aside>
         )}
       </main>

@@ -8,6 +8,7 @@ import {
   normalizeFda, normalizeFsis, normalizeCpsc, sortRecalls,
   slimFsis, slimCpsc, fdaSearchQuery, CPSC_LOOKBACK_DAYS,
 } from "../src/lib/sources.js";
+import { FEED_HEADERS } from "../src/lib/feeds.js";
 
 async function jfetch(url, timeoutMs = 25000) {
   const ctrl = new AbortController();
@@ -15,9 +16,13 @@ async function jfetch(url, timeoutMs = 25000) {
   try {
     const res = await fetch(url, {
       signal: ctrl.signal,
-      headers: { Accept: "application/json", "User-Agent": "RecallRadar/1.0" },
+      headers: FEED_HEADERS,
     });
-    if (!res.ok) { const e = new Error(`HTTP ${res.status}`); e.status = res.status; throw e; }
+    if (!res.ok) {
+      const e = new Error(`HTTP ${res.status} from ${new URL(url).host}`);
+      e.status = res.status;
+      throw e;
+    }
     return await res.json();
   } catch (err) {
     throw err && err.name === "AbortError" ? new Error("timed out") : err;
