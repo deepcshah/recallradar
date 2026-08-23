@@ -1,12 +1,14 @@
 /* Mapbox Search helpers. Server-side ONLY — the access token lives in the
  * MAPBOX_TOKEN environment variable and must never reach the browser.
  *
- * We search per chain ("where are the nearest Safeways?") rather than by
- * category, because that is literally the question the app asks and it maps
- * onto one cheap request per chain per neighborhood, cached for a month.
+ * Two kinds of lookup, both one cheap request per neighborhood cached for a
+ * month: by chain ("where are the nearest Safeways?"), which is what recall
+ * notices name, and by POI category ("every grocery store around here"),
+ * which is the only way independents show up at all.
  */
 
 const SEARCHBOX = "https://api.mapbox.com/search/searchbox/v1/forward";
+const CATEGORY = "https://api.mapbox.com/search/searchbox/v1/category";
 const GEOCODE_V6 = "https://api.mapbox.com/search/geocode/v6/forward";
 
 /** Fixed cache radius: results are stored per neighborhood regardless of the
@@ -26,7 +28,7 @@ export function bboxAround(lat, lon, radiusM = CACHE_RADIUS_M) {
 /* Both Search Box forward and Geocoding v6 return GeoJSON FeatureCollections
  * with the fields we need in the same places, so one parser covers both and
  * we can fall back between them without a second code path. */
-function parseFeatures(data, chainId) {
+function parseFeatures(data, extra = {}) {
   const out = [];
   for (const f of (data && data.features) || []) {
     const p = f.properties || {};
@@ -43,7 +45,7 @@ function parseFeatures(data, chainId) {
     const name = p.name || p.name_preferred || (f.text || "");
     if (!name) continue;
 
-    out.push({ name, address, lat, lon, chainId });
+    out.push({ name, address, lat, lon, ...extra });
   }
   return out;
 }
@@ -107,12 +109,62 @@ function geocodeUrl(token, query, lat, lon, limit = 10) {
 export async function findChainLocations(token, chain, lat, lon, signal) {
   const q = chain.label;
   try {
-    return parseFeatures(await getJSON(searchUrl(token, q, lat, lon), signal), chain.id);
+    return parseFeatures(await getJSON(searchUrl(token, q, lat, lon), signal), { chainId: chain.id });
   } catch (err) {
     if (err.name === "AbortError") throw err;
     const data = await getJSON(geocodeUrl(token, q, lat, lon), signal);
-    return parseFeatures(data, chain.id);
+    return parseFeatures(data, { chainId: chain.id });
   }
+}
+
+/* ------------------------------------------------------------ categories --
+ * Chain search answers "where is the nearest Safeway?". It cannot answer
+ * "where do people around here actually buy groceries?" — the corner bodega,
+ * the co-op, the halal market. Those are the stores most likely to be selling
+ * an affected lot without anyone noticing, so we also sweep by POI category.
+ */
+export const STORE_CATEGORIES = [
+  { id: "grocery", label: "Grocery", queries: ["grocery store", "supermarket"] },
+  { id: "farmers_market", label: "Market", queries: ["farmers market"] },
+];
+
+export function categoryUrl(token, categoryId, lat, lon, limit = 25) {
+  const qs = new URLSearchParams({
+    proximity: `${lon},${lat}`,
+    bbox: bboxAround(lat, lon),
+    limit: String(limit),
+    language: "en",
+    access_token: token,
+  });
+  return `${CATEGORY}/${encodeURIComponent(categoryId)}?${qs}`;
+}
+
+/**
+ * Every store of one POI category near a point — chains and independents
+ * alike. Falls back to plain forward search if the category endpoint is not
+ * available to this token, so a narrower Mapbox plan degrades instead of
+ * failing.
+ */
+export async function findCategoryPlaces(token, cat, lat, lon, signal) {
+  try {
+    const data = await getJSON(categoryUrl(token, cat.id, lat, lon), signal);
+    const found = parseFeatures(data, { category: cat.id });
+    if (found.length) return found;
+  } catch (err) {
+    if (err.name === "AbortError") throw err;
+  }
+
+  const byQuery = await Promise.all(
+    (cat.queries || []).map(async (q) => {
+      try {
+        return parseFeatures(await getJSON(searchUrl(token, q, lat, lon, 10), signal), { category: cat.id });
+      } catch (err) {
+        if (err.name === "AbortError") throw err;
+        return [];
+      }
+    })
+  );
+  return byQuery.flat();
 }
 
 /** Run jobs with bounded concurrency so one lookup can't open 24 sockets. */

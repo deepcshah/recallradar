@@ -121,6 +121,14 @@ function byId(id) {
   return compiled.find((c) => c.id === id) || null;
 }
 
+/** The chain a storefront name belongs to, or null if it is an independent.
+ *  Category search returns chains and corner stores in one list; this is what
+ *  separates them. */
+function chainForName(name) {
+  if (!name) return null;
+  return compiled.find((c) => c.re.test(name)) || null;
+}
+
 /* Most FDA notices name no retailer at all ("Nationwide", a bare state list),
  * so a store list built only from recall text misses nearly every grocery
  * store near you. We always look these up as well, then annotate whichever
@@ -135,4 +143,4 @@ const ALWAYS_NEARBY = [
 export const DEFAULT_NEARBY_CHAINS = ALWAYS_NEARBY.map(byId).filter(Boolean);
 
 export const CHAINS = compiled;
-export { chainsInText, byId };
+export { chainsInText, byId, chainForName };

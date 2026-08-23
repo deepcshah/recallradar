@@ -8,7 +8,8 @@ import {
   normalizeFda, normalizeFsis, normalizeCpsc, sortRecalls,
   slimFsis, slimCpsc, fdaSearchQuery, CPSC_LOOKBACK_DAYS,
 } from "../src/lib/sources.js";
-import { FEED_HEADERS, FEED_HEADERS_REFERER, FSIS_ENDPOINTS, fetchFirstOk } from "../src/lib/feeds.js";
+import { FEED_HEADERS, FSIS_ENDPOINTS, FSIS_HEADER_SETS, fetchFirstOk } from "../src/lib/feeds.js";
+import { head, put } from "@vercel/blob";
 
 async function jfetch(url, timeoutMs = 25000) {
   const ctrl = new AbortController();
@@ -60,9 +61,43 @@ async function fetchFda(kind, loc) {
   return normalizeFda(kind, results, loc);
 }
 
+/* FSIS sits behind a WAF that intermittently 403s server-to-server requests.
+ * Every success is written to Blob so an outage degrades to yesterday's meat
+ * and poultry recalls instead of no meat and poultry recalls at all. */
+const FSIS_BLOB = "feeds/fsis-v1.json";
+const FSIS_MAX_STALE_MS = 14 * 24 * 60 * 60 * 1000;
+
+async function readFsisCache() {
+  try {
+    const meta = await head(FSIS_BLOB);
+    const res = await fetch(meta.url, { cache: "no-store" });
+    if (!res.ok) return null;
+    return { list: await res.json(), uploadedAt: new Date(meta.uploadedAt).getTime() };
+  } catch (_) {
+    return null; // never cached, or Blob isn't configured here
+  }
+}
+
 async function fetchFsis(loc) {
-  const { data } = await fetchFirstOk(FSIS_ENDPOINTS, [FEED_HEADERS, FEED_HEADERS_REFERER], 20000);
-  return normalizeFsis(slimFsis(data), loc);
+  try {
+    const { data } = await fetchFirstOk(FSIS_ENDPOINTS, FSIS_HEADER_SETS, 8000, 32000);
+    const list = slimFsis(data);
+    try {
+      await put(FSIS_BLOB, JSON.stringify(list), {
+        access: "public", addRandomSuffix: false, allowOverwrite: true,
+        contentType: "application/json", cacheControlMaxAge: 3600,
+      });
+    } catch (_) { /* best effort — the live answer still goes out */ }
+    return { recalls: normalizeFsis(list, loc) };
+  } catch (err) {
+    const cached = await readFsisCache();
+    if (!cached || Date.now() - cached.uploadedAt > FSIS_MAX_STALE_MS) throw err;
+    const asOf = new Date(cached.uploadedAt).toISOString().slice(0, 10);
+    return {
+      recalls: normalizeFsis(cached.list, loc),
+      note: `USDA is blocking us right now (${String(err.message).slice(0, 80)}) — showing the copy saved ${asOf}.`,
+    };
+  }
 }
 
 async function fetchCpsc() {
@@ -92,8 +127,12 @@ export default async function handler(req, res) {
   const recalls = [];
   const sources = settled.map((s, i) => {
     if (s.status === "fulfilled") {
-      recalls.push(...s.value);
-      return { name: jobs[i].name, ok: true, count: s.value.length };
+      // A job may return a plain array, or {recalls, note} when it served a
+      // cached copy because the upstream feed was unreachable.
+      const list = Array.isArray(s.value) ? s.value : s.value.recalls;
+      const note = Array.isArray(s.value) ? undefined : s.value.note;
+      recalls.push(...list);
+      return { name: jobs[i].name, ok: true, count: list.length, note };
     }
     return { name: jobs[i].name, ok: false, error: s.reason && s.reason.message ? s.reason.message : "failed" };
   });

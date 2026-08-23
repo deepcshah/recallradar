@@ -10,11 +10,13 @@
  * Normalized recall shape:
  * {
  *   id, source, product, firm, reason, classification, severity: 'high'|'med'|'low',
- *   date: Date|null, scope: 'nationwide'|'state', distribution, url,
+ *   date: Date|null, scope: 'nationwide'|'state', distribution, states: [abbr],
+ *   url,
  *   retailerIds: [chainId], quantity, codeInfo
  * }
  */
 import { chainsInText } from "./retailers.js";
+import { ABBR_TO_NAME } from "./states.js";
 
 const DAY_MS = 86400000;
 export const LOOKBACK_DAYS = 365;
@@ -68,6 +70,25 @@ function scopeFor(text, stateName, stateAbbr) {
   return null;
 }
 
+/* Which states a notice actually covers. Recalls are usually regional — one
+ * supplier ships to one of a chain's distribution centers — so "Kroger" in a
+ * notice does not mean every Kroger in the country. An empty array means the
+ * text named no state (nationwide, or simply unstated). */
+const STATE_ABBRS = Object.keys(ABBR_TO_NAME);
+
+export function statesIn(text) {
+  const t = String(text || "");
+  const found = new Set();
+  for (const abbr of STATE_ABBRS) {
+    // Case-sensitive: "OR", "IN" and "DE" are states; "or", "in", "de" are not.
+    if (new RegExp(`(^|[^A-Za-z])${abbr}([^A-Za-z]|$)`).test(t)) found.add(abbr);
+  }
+  for (const [abbr, name] of Object.entries(ABBR_TO_NAME)) {
+    if (new RegExp(`(^|[^A-Za-z])${name}([^A-Za-z]|$)`, "i").test(t)) found.add(abbr);
+  }
+  return [...found].sort();
+}
+
 function severityFromFdaClass(cls) {
   if (/class i{3}/i.test(cls)) return "low";
   if (/class i{2}/i.test(cls)) return "med";
@@ -99,6 +120,7 @@ export function normalizeFda(kind, results, loc) {
         date: parseFdaDate(r.recall_initiation_date) || parseFdaDate(r.report_date),
         scope,
         distribution: r.distribution_pattern || "",
+        states: scope === "nationwide" ? [] : statesIn(r.distribution_pattern),
         url: "https://www.accessdata.fda.gov/scripts/ires/index.cfm", // FDA IRES recall search
         searchHint: r.recall_number || "",
         retailerIds: retailerIdsFor(r.distribution_pattern, r.product_description, r.reason_for_recall, r.recalling_firm),
@@ -136,6 +158,7 @@ export function normalizeFsis(list, loc) {
         date: date && !isNaN(date) ? date : null,
         scope,
         distribution: states || "Nationwide",
+        states: scope === "nationwide" ? [] : statesIn(states),
         url: urlPath
           ? (urlPath.startsWith("http") ? urlPath : "https://www.fsis.usda.gov" + urlPath)
           : "https://www.fsis.usda.gov/recalls",
@@ -164,6 +187,7 @@ export function normalizeCpsc(list) {
       severity: "med", // CPSC does not classify; treat as noteworthy
       date: r.RecallDate ? new Date(r.RecallDate) : null,
       scope: "nationwide", // CPSC recalls are national
+      states: [],
       distribution: [retailerNames, soldAt].filter(Boolean).join(" · ") || "Nationwide (consumer product)",
       url: r.URL || "https://www.cpsc.gov/Recalls",
       image: r.Image || "",

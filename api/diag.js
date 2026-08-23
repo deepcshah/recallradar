@@ -6,10 +6,11 @@
  */
 import { byId } from "../src/lib/retailers.js";
 import { findChainLocations, searchUrl } from "../src/lib/mapbox-server.js";
-import { FEED_HEADERS, FEED_HEADERS_REFERER, FSIS_ENDPOINTS } from "../src/lib/feeds.js";
+import { FEED_HEADERS, FSIS_ENDPOINTS, FSIS_HEADER_SETS } from "../src/lib/feeds.js";
 import { fdaSearchQuery, CPSC_LOOKBACK_DAYS } from "../src/lib/sources.js";
 
 const PROBE_CHAINS = ["cvs", "safeway", "walmart"];
+const PROBE_TIMEOUT_MS = 8000;
 
 /* Hit each recall feed exactly as api/recalls.js does and report the raw
  * outcome, so a WAF block (403) or a bad key is visible instead of just
@@ -25,11 +26,11 @@ async function probeFeeds() {
       `&limit=1` + (key ? `&api_key=${key}` : "")],
   ];
 
-  const out = [];
-  for (const [name, url] of targets) {
+  // In parallel: three sequential 12s timeouts could outlive the function.
+  return Promise.all(targets.map(async ([name, url]) => {
     const started = Date.now();
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 12000);
+    const timer = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
     try {
       const res = await fetch(url, { headers: FEED_HEADERS, signal: ctrl.signal });
       const text = await res.text();
@@ -38,49 +39,50 @@ async function probeFeeds() {
         const j = JSON.parse(text);
         count = Array.isArray(j) ? j.length : Array.isArray(j.results) ? j.results.length : null;
       } catch (_) { /* not JSON */ }
-      out.push({
+      return {
         name, status: res.status, ok: res.ok, ms: Date.now() - started, count,
         // openFDA answers "no matches" with 404; that is not a failure.
         note: res.status === 404 ? "no matches (normal for openFDA)" : undefined,
         body: res.ok ? undefined : text.slice(0, 200),
-      });
+      };
     } catch (err) {
-      out.push({ name, ok: false, ms: Date.now() - started, error: err.name === "AbortError" ? "timed out" : err.message });
+      return { name, ok: false, ms: Date.now() - started,
+               error: err.name === "AbortError" ? "timed out" : err.message };
     } finally {
       clearTimeout(timer);
     }
-  }
-  return out;
+  }));
 }
 
 /* Every FSIS endpoint x header combination, so a persistent 403 tells us
- * which variant (if any) the WAF will accept. */
+ * which variant (if any) the WAF will accept. Run together: walking nine
+ * combinations one at a time timed the whole function out, which is why this
+ * endpoint appeared to be broken. */
 async function probeFsisMatrix() {
-  const rows = [];
-  for (const url of FSIS_ENDPOINTS) {
-    for (const [label, headers] of [["plain", FEED_HEADERS], ["referer", FEED_HEADERS_REFERER]]) {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 12000);
-      const started = Date.now();
-      try {
-        const res = await fetch(url, { headers, signal: ctrl.signal });
-        const text = await res.text();
-        let count = null;
-        try { const j = JSON.parse(text); count = Array.isArray(j) ? j.length : null; } catch (_) { /* html */ }
-        rows.push({
-          url, headers: label, status: res.status, ok: res.ok, ms: Date.now() - started, count,
-          server: res.headers.get("server") || undefined,
-          body: res.ok ? undefined : text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 220),
-        });
-      } catch (err) {
-        rows.push({ url, headers: label, ok: false, ms: Date.now() - started,
-                    error: err.name === "AbortError" ? "timed out" : err.message });
-      } finally {
-        clearTimeout(timer);
-      }
+  const combos = FSIS_ENDPOINTS.flatMap((url) =>
+    FSIS_HEADER_SETS.map(([label, headers]) => ({ url, label, headers })));
+
+  return Promise.all(combos.map(async ({ url, label, headers }) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), PROBE_TIMEOUT_MS);
+    const started = Date.now();
+    try {
+      const res = await fetch(url, { headers, signal: ctrl.signal });
+      const text = await res.text();
+      let count = null;
+      try { const j = JSON.parse(text); count = Array.isArray(j) ? j.length : null; } catch (_) { /* html */ }
+      return {
+        url, headers: label, status: res.status, ok: res.ok, ms: Date.now() - started, count,
+        server: res.headers.get("server") || undefined,
+        body: res.ok ? undefined : text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 220),
+      };
+    } catch (err) {
+      return { url, headers: label, ok: false, ms: Date.now() - started,
+               error: err.name === "AbortError" ? "timed out" : err.message };
+    } finally {
+      clearTimeout(timer);
     }
-  }
-  return rows;
+  }));
 }
 
 export default async function handler(req, res) {

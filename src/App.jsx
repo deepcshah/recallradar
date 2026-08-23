@@ -52,6 +52,16 @@ function fmtDate(d) {
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
+/* Recalls are regional far more often than they are national: a supplier
+ * ships one lot to one of a chain's distribution centers, so the notice
+ * covers the states that DC serves. Show that scope on every card. */
+function regionLabel(r) {
+  const st = r.states || [];
+  if (r.scope === "nationwide" || !st.length) return "Nationwide";
+  if (st.length <= 3) return st.join(" · ");
+  return `${st.slice(0, 3).join(" · ")} +${st.length - 3}`;
+}
+
 function truncate(s, n) {
   s = String(s || "");
   return s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s;
@@ -166,6 +176,8 @@ export default function App() {
   const [category, setCategory] = useState("all");
   const [sortBy, setSortBy] = useState("newest"); // newest | risk
   const [flaggedOnly, setFlaggedOnly] = useState(false);
+  const [storeScope, setStoreScope] = useState("named"); // named | area
+  const [diag, setDiag] = useState(null);
   const [activeSources, setActiveSources] = useState(new Set());
   const [limit, setLimit] = useState(25);
 
@@ -181,7 +193,7 @@ export default function App() {
     setActiveStore(-1);
     setStoresStatus({
       msg: attempt === 0
-        ? `Finding grocery, pharmacy and big-box stores near you…`
+        ? `Finding grocery stores near you — chains and independents…`
         : "First attempt failed — retrying…",
       busy: true,
     });
@@ -191,7 +203,7 @@ export default function App() {
       setStoresStatus(found.length ? null : {
         empty: true,
         title: "nothing in range",
-        msg: "No major chain stores found within this radius — try a wider one.",
+        msg: "No stores found within this radius — try a wider one.",
       });
     } catch (err) {
       if (attempt === 0) {
@@ -259,18 +271,29 @@ export default function App() {
     if (loc) loadStores(recalls, loc, v);
   }
 
-  /** Selecting a store is one action: focus its pin and scope the product list. */
+  /** Selecting a store is one action: focus its pin and scope the product list.
+   *  Open on the bucket that has something in it — "names this store" when a
+   *  notice names its chain, otherwise everything distributed in the area. */
+  const scopeForStore = useCallback((i) => (i >= 0 && namedRecallsFor(stores[i]).length > 0 ? "named" : "area"),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [stores, byChain]);
+
   const selectStore = useCallback((i) => {
     setActiveStore((prev) => {
       const next = prev === i ? -1 : i;
       if (next >= 0) mapRef.current && mapRef.current.focusStore(next);
+      setStoreScope(scopeForStore(next));
       return next;
     });
     setLimit(25);
-  }, []);
+  }, [scopeForStore]);
 
   const onMarkerClick = useCallback((i) => {
-    setActiveStore((prev) => (prev === i ? -1 : i));
+    setActiveStore((prev) => {
+      const next = prev === i ? -1 : i;
+      setStoreScope(scopeForStore(next));
+      return next;
+    });
     setLimit(25);
     setMobileTab("products");
     const el = storeItemRefs.current[i];
@@ -324,6 +347,17 @@ export default function App() {
   }
   function resetSplit() { savePref("rr-split", commitSplit(DEFAULT_SPLIT)); }
 
+  async function runSourceCheck() {
+    setDiag({ busy: true });
+    try {
+      const res = await fetch("/api/diag?probe=fsis", { headers: { Accept: "application/json" } });
+      const body = await res.json();
+      setDiag(res.ok ? body : { error: body.error || `diagnostics returned HTTP ${res.status}` });
+    } catch (err) {
+      setDiag({ error: `couldn't reach the diagnostics endpoint (${err.message})` });
+    }
+  }
+
   function toggleLayout() {
     const next = !sideBySide;
     setSideBySide(next);
@@ -344,9 +378,15 @@ export default function App() {
 
   const selectedStore = activeStore >= 0 ? stores[activeStore] : null;
 
+  /* Two ways a recall can matter at a store, and they are not the same claim:
+   *   named — the notice names this chain, so its warehouses got the lot;
+   *   area  — the notice covers your state but names no retailer, so it could
+   *           be on any shelf here, this one included.
+   * Independents only ever have the second kind. */
   const filtered = useMemo(() => {
     const q = filterText.trim().toLowerCase();
-    const chainScope = selectedStore ? new Set(selectedStore.chainIds) : null;
+    const chainScope =
+      selectedStore && storeScope === "named" ? new Set(selectedStore.chainIds) : null;
     return recalls.filter((r) => {
       if (!activeSources.has(r.source)) return false;
       if (category !== "all" && categoryFor(r).key !== category) return false;
@@ -354,7 +394,7 @@ export default function App() {
       if (!q) return true;
       return [r.product, r.firm, r.reason, r.distribution, r.source].join(" ").toLowerCase().includes(q);
     });
-  }, [recalls, filterText, activeSources, category, selectedStore]);
+  }, [recalls, filterText, activeSources, category, selectedStore, storeScope]);
 
   // Severity-first ordering pushed months-old class I notices above this
   // week's, which reads as stale data. Newest is the default; risk is a choice.
@@ -390,26 +430,30 @@ export default function App() {
     return out.slice(0, 4);
   }
 
-  function storeRecalls(store) {
+  /* Recalls that name this store's chain by name. Independents have no chain,
+   * so this is always empty for them — which is the honest answer, not a gap. */
+  function namedRecallsFor(store) {
     const seen = new Set();
-    let n = 0;
-    for (const id of store.chainIds) {
-      for (const r of byChain.get(id) || []) if (!seen.has(r.id)) { seen.add(r.id); n++; }
+    const out = [];
+    for (const id of store.chainIds || []) {
+      for (const r of byChain.get(id) || []) if (!seen.has(r.id)) { seen.add(r.id); out.push(r); }
     }
-    return n;
+    return out;
   }
 
   /* Stores a recall actually names come first; everything else stays in
    * distance order so the list still reads as "what is near me". */
   const rankedStores = useMemo(() => {
-    const withCounts = stores.map((s, i) => ({ s, i, n: storeRecalls(s) }));
+    const withCounts = stores.map((s, i) => ({ s, i, n: namedRecallsFor(s).length }));
     const list = flaggedOnly ? withCounts.filter((x) => x.n > 0) : withCounts;
     return [...list].sort((a, b) => (b.n > 0) - (a.n > 0) || a.s.distanceMiles - b.s.distanceMiles);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stores, byChain, flaggedOnly]);
 
+  const namedCount = selectedStore ? namedRecallsFor(selectedStore).length : 0;
+
   const flaggedCount = useMemo(
-    () => stores.reduce((n, s) => n + (storeRecalls(s) > 0 ? 1 : 0), 0),
+    () => stores.reduce((n, s) => n + (namedRecallsFor(s).length > 0 ? 1 : 0), 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [stores, byChain]
   );
@@ -509,8 +553,8 @@ export default function App() {
                   Find recalled products <span className="text-mint">around you</span>.
                 </h1>
                 <p className="mt-2 text-sm text-fog">
-                  Active FDA, USDA&nbsp;FSIS and CPSC recalls for your area — and the nearby stores of
-                  the chains those notices name.
+                  Active FDA, USDA&nbsp;FSIS and CPSC recalls for your area — mapped onto the grocery
+                  stores near you, chains and independents alike.
                 </p>
                 <Button className="mx-auto mt-4" onClick={useGeolocation}>
                   <Crosshair /> use my location
@@ -641,13 +685,23 @@ export default function App() {
                         <span className="ml-auto shrink-0 font-mono text-[11px] text-fog">{s.distanceMiles.toFixed(1)} mi</span>
                       </div>
                       {s.address && <p className="mt-0.5 truncate text-[11px] text-fog">{s.address}</p>}
-                      <p className={"mt-1.5 font-mono text-[11px] " + (n > 0 ? "text-alert" : "text-fog/70")}>
-                        {activeStore === i && n > 0
-                          ? (sideBySide && isWide ? "showing its recalls →" : "showing its recalls below ↓")
-                          : n > 0
-                            ? `${n} recall${n === 1 ? "" : "s"} name this chain → tap`
-                            : "no recall names this chain"}
-                      </p>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+                        {s.independent && (
+                          <span className="store-local rounded-full border border-line px-1.5 py-px font-mono text-[10px] uppercase tracking-wider text-fog"
+                                title="Not part of a chain we can match against recall notices">
+                            local
+                          </span>
+                        )}
+                        <p className={"font-mono text-[11px] " + (n > 0 ? "text-alert" : "text-fog/70")}>
+                          {activeStore === i
+                            ? (sideBySide && isWide ? "showing its recalls →" : "showing its recalls below ↓")
+                            : n > 0
+                              ? `${n === 1 ? "1 recall names" : `${n} recalls name`} this chain → tap`
+                              : s.independent
+                                ? "independent — tap for area recalls"
+                                : "no recall names this chain"}
+                        </p>
+                      </div>
                     </li>
                   ))}
                 </ul>
@@ -699,13 +753,33 @@ export default function App() {
               {/* scope + source filters */}
               <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line px-3 py-2">
                 {selectedStore ? (
-                  <button
-                    id="btn-clear-store"
-                    onClick={() => setActiveStore(-1)}
-                    className="inline-flex items-center gap-1.5 rounded-full border border-mint bg-mint/15 px-2.5 py-0.5 text-[11px] font-semibold text-mint hover:bg-mint/25"
-                  >
-                    <MapPin className="size-3" /> {truncate(selectedStore.name, 22)} only <X className="size-3" />
-                  </button>
+                  <>
+                    <button
+                      id="btn-clear-store"
+                      onClick={() => setActiveStore(-1)}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-mint bg-mint/15 px-2.5 py-0.5 text-[11px] font-semibold text-mint hover:bg-mint/25"
+                    >
+                      <MapPin className="size-3" /> {truncate(selectedStore.name, 22)} <X className="size-3" />
+                    </button>
+                    <div id="store-scope" className="flex gap-1" role="group" aria-label="How this store relates to the recall">
+                      {[
+                        ["named", `names it · ${namedCount}`, namedCount === 0
+                          ? "No notice names this store's chain"
+                          : "Notices that name this chain by name"],
+                        ["area", `in ${loc?.stateAbbr || "your area"} · ${recalls.length}`,
+                          "Every notice covering your area — it names no retailer, so it could be on any shelf here"],
+                      ].map(([k, lbl, title]) => (
+                        <button key={k} type="button" title={title}
+                                disabled={k === "named" && namedCount === 0}
+                                onClick={() => { setStoreScope(k); setLimit(25); }}
+                                aria-pressed={storeScope === k}
+                                className={"rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider transition-colors disabled:cursor-not-allowed disabled:opacity-40 " +
+                                  (storeScope === k ? "border-mint bg-mint/15 text-mint" : "border-line text-fog hover:border-mint/40")}>
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </>
                 ) : (
                   <span className="microlabel">all nearby stores</span>
                 )}
@@ -741,7 +815,7 @@ export default function App() {
                   <EmptyState icon={selectedStore ? ShieldCheck : SearchX}
                               title={selectedStore ? "nothing names this store" : "no matches"}>
                     {selectedStore
-                      ? `No active recall names ${selectedStore.name}. Most notices list only a state or "nationwide" and never name a retailer, so this is common — clear the filter to see all ${recalls.length} recalls in your area.`
+                      ? `No active recall names ${selectedStore.name}. Most notices list only a state or "nationwide" and never name a retailer, so this is normal — switch to "in ${loc?.stateAbbr || "your area"}" to see all ${recalls.length} recalls that could reach this shelf.`
                       : "Nothing matches the current filters — clear the search box or re-enable a source."}
                   </EmptyState>
                 )}
@@ -759,6 +833,9 @@ export default function App() {
                         <div className="flex flex-wrap items-center gap-1.5">
                           <Badge variant="source">{r.source}</Badge>
                           <Badge variant={r.severity}>{sevLabel(r)}</Badge>
+                          <Badge variant="scope" className="recall-region" title={r.distribution || undefined}>
+                            {regionLabel(r)}
+                          </Badge>
                           <span className="ml-auto font-mono text-[11px] text-fog">{fmtDate(r.date)}</span>
                         </div>
                         <div className="mt-2 flex items-start gap-2.5">
@@ -791,6 +868,11 @@ export default function App() {
                               <Badge key={c.id} variant="chain">sold at {c.label}</Badge>
                             ))}
                           </div>
+                        )}
+                        {selectedStore && storeScope === "area" && !(r.retailerIds || []).length && (
+                          <p className="mt-2 font-mono text-[11px] text-fog/70">
+                            names no retailer — could be stocked anywhere in {regionLabel(r)}
+                          </p>
                         )}
 
                         <div className="mt-2.5 flex items-center gap-3">
@@ -826,6 +908,7 @@ export default function App() {
       <footer className="z-20 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line bg-panel px-4 py-1.5">
         <p className="min-w-0 flex-1 truncate text-[11px] text-fog">
           Informational only — a named chain received recalled lots; this store may never have stocked them.
+          Independent stores can't be matched by name at all.
         </p>
         <div className="flex items-center gap-2">
           {sources.map((s) => (
@@ -866,18 +949,65 @@ export default function App() {
               inventory — a listed store may never have stocked the recalled lot. Always verify against the linked
               official notice; when in doubt, don't consume or use the product.
             </p>
+            <p className="mt-3">
+              <span className="text-paper">Chains vs. independents.</span>{" "}
+              A notice can only be tied to a storefront when it names the chain, so independent groceries — marked{" "}
+              <span className="font-mono text-[11px] uppercase tracking-wider">local</span> — never show a match.
+              That is a limit of the data, not a clean bill of health: pick a store and switch to the
+              &ldquo;in your area&rdquo; view to see every notice covering your state, which is what an independent
+              is actually exposed to.
+            </p>
+            <p className="mt-3">
+              <span className="text-paper">Why the region matters.</span>{" "}
+              Recalls are usually regional — one supplier ships one lot to one of a chain's distribution centers, so
+              the notice covers the states that DC serves. Each recall shows its states; a chain named in a recall
+              that never reached your state is a different risk from one that did.
+            </p>
             <p className="mt-3">Your location is only used to query the sources above — nothing is stored.</p>
             <ul className="mt-4 divide-y divide-line border-t border-line">
               {sources.map((s) => (
-                <li key={s.name} className="flex items-center gap-2 py-1.5 text-xs">
+                <li key={s.name} className="flex flex-wrap items-center gap-x-2 py-1.5 text-xs">
                   <span className={"size-1.5 shrink-0 rounded-full " + (s.ok ? "bg-mint" : "bg-alert")} aria-hidden="true" />
                   <span>{s.name}</span>
                   <span className="ml-auto font-mono text-[11px]">
                     {s.ok ? `${s.count} matching` : `unavailable (${s.error || "error"})`}
                   </span>
+                  {s.note && <p className="w-full pl-3.5 text-[11px] text-amber">{s.note}</p>}
                 </li>
               ))}
             </ul>
+
+            {/* USDA sits behind a bot filter that blocks us intermittently; this
+                says which endpoint it is refusing today without leaving the app. */}
+            <div className="mt-4 border-t border-line pt-3">
+              <div className="flex items-center gap-2">
+                <Button id="btn-check-sources" variant="outline" size="sm"
+                        disabled={diag?.busy}
+                        onClick={runSourceCheck}>
+                  {diag?.busy ? <Loader2 className="animate-spin" /> : <Stethoscope />} check USDA now
+                </Button>
+                <span className="text-[11px]">tests every USDA endpoint we know of, live</span>
+              </div>
+              {diag && !diag.busy && (
+                <div id="diag-result" className="mt-2">
+                  <p className={"text-xs " + (diag.error ? "text-alert" : "text-paper")}>
+                    {diag.error || diag.verdict}
+                  </p>
+                  {diag.rows && (
+                    <ul className="mt-1.5 flex flex-col gap-1">
+                      {diag.rows.map((row, i) => (
+                        <li key={i} className="flex flex-wrap items-center gap-x-2 font-mono text-[10px] text-fog">
+                          <span className={"size-1.5 shrink-0 rounded-full " + (row.ok ? "bg-mint" : "bg-alert")} aria-hidden="true" />
+                          <span className="truncate">{row.url.replace("https://", "")}</span>
+                          <span className="text-paper">{row.headers}</span>
+                          <span className="ml-auto">{row.status ?? row.error}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
