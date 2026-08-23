@@ -6,7 +6,7 @@
  */
 import { byId } from "../src/lib/retailers.js";
 import { findChainLocations, searchUrl } from "../src/lib/mapbox-server.js";
-import { FEED_HEADERS } from "../src/lib/feeds.js";
+import { FEED_HEADERS, FEED_HEADERS_REFERER, FSIS_ENDPOINTS } from "../src/lib/feeds.js";
 import { fdaSearchQuery, CPSC_LOOKBACK_DAYS } from "../src/lib/sources.js";
 
 const PROBE_CHAINS = ["cvs", "safeway", "walmart"];
@@ -53,7 +53,51 @@ async function probeFeeds() {
   return out;
 }
 
+/* Every FSIS endpoint x header combination, so a persistent 403 tells us
+ * which variant (if any) the WAF will accept. */
+async function probeFsisMatrix() {
+  const rows = [];
+  for (const url of FSIS_ENDPOINTS) {
+    for (const [label, headers] of [["plain", FEED_HEADERS], ["referer", FEED_HEADERS_REFERER]]) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 12000);
+      const started = Date.now();
+      try {
+        const res = await fetch(url, { headers, signal: ctrl.signal });
+        const text = await res.text();
+        let count = null;
+        try { const j = JSON.parse(text); count = Array.isArray(j) ? j.length : null; } catch (_) { /* html */ }
+        rows.push({
+          url, headers: label, status: res.status, ok: res.ok, ms: Date.now() - started, count,
+          server: res.headers.get("server") || undefined,
+          body: res.ok ? undefined : text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 220),
+        });
+      } catch (err) {
+        rows.push({ url, headers: label, ok: false, ms: Date.now() - started,
+                    error: err.name === "AbortError" ? "timed out" : err.message });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  }
+  return rows;
+}
+
 export default async function handler(req, res) {
+  // /api/diag?probe=fsis runs just the FSIS matrix and returns early.
+  if (String(req.query.probe || "") === "fsis") {
+    const matrix = await probeFsisMatrix();
+    const win = matrix.find((r) => r.ok && r.count);
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).json({
+      checkedAt: new Date().toISOString(),
+      verdict: win
+        ? `FSIS works via ${win.url} (${win.headers} headers), ${win.count} notices.`
+        : "No FSIS endpoint answered with JSON — see rows[].status and rows[].body.",
+      rows: matrix,
+    });
+  }
+
   const lat = parseFloat(req.query.lat);
   const lon = parseFloat(req.query.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) {

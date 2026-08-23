@@ -12,7 +12,7 @@ import MapView from "@/components/MapView";
 import { browserPosition, reverseGeocode, geocodeInput } from "@/lib/geo";
 import { fetchAll } from "@/lib/sources";
 import { findStores } from "@/lib/stores";
-import { byId } from "@/lib/retailers";
+import { byId, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
 import { categoryFor } from "@/lib/category";
 
 const CATEGORY_ICONS = {
@@ -128,6 +128,20 @@ function chainsFor(recalls) {
   return { chains, byChain };
 }
 
+/* Which chains to actually search for near the user. Recall-named chains come
+ * first so they always make the cut, then the standing grocery set fills the
+ * rest — otherwise a notice that says only "Nationwide" leaves the map empty. */
+function chainsToSearch(recalls) {
+  const { chains: named } = chainsFor(recalls);
+  const out = [...named];
+  const have = new Set(out.map((c) => c.id));
+  for (const c of DEFAULT_NEARBY_CHAINS) {
+    if (out.length >= 24) break;
+    if (!have.has(c.id)) { out.push(c); have.add(c.id); }
+  }
+  return out;
+}
+
 export default function App() {
   const [loc, setLoc] = useState(null);
   const [locStatus, setLocStatus] = useState(null); // {msg, error, busy}
@@ -150,6 +164,8 @@ export default function App() {
 
   const [filterText, setFilterText] = useState("");
   const [category, setCategory] = useState("all");
+  const [sortBy, setSortBy] = useState("newest"); // newest | risk
+  const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [activeSources, setActiveSources] = useState(new Set());
   const [limit, setLimit] = useState(25);
 
@@ -161,18 +177,11 @@ export default function App() {
   const { byChain } = useMemo(() => chainsFor(recalls), [recalls]);
 
   const loadStores = useCallback(async (recallList, locArg, radiusArg, attempt = 0) => {
-    const { chains: chainList } = chainsFor(recallList);
+    const chainList = chainsToSearch(recallList);
     setActiveStore(-1);
-    if (!chainList.length) {
-      setStores([]);
-      setStoresStatus(recallList.length
-        ? { empty: true, title: "no chains named", msg: "None of the active recalls here name a major retail chain — check the product list." }
-        : null);
-      return;
-    }
     setStoresStatus({
       msg: attempt === 0
-        ? `Locating ${chainList.length} affected chain${chainList.length === 1 ? "" : "s"}…`
+        ? `Finding grocery, pharmacy and big-box stores near you…`
         : "First attempt failed — retrying…",
       busy: true,
     });
@@ -182,7 +191,7 @@ export default function App() {
       setStoresStatus(found.length ? null : {
         empty: true,
         title: "nothing in range",
-        msg: "No locations of the affected chains within this radius — try a wider one.",
+        msg: "No major chain stores found within this radius — try a wider one.",
       });
     } catch (err) {
       if (attempt === 0) {
@@ -347,9 +356,20 @@ export default function App() {
     });
   }, [recalls, filterText, activeSources, category, selectedStore]);
 
+  // Severity-first ordering pushed months-old class I notices above this
+  // week's, which reads as stale data. Newest is the default; risk is a choice.
+  const sorted = useMemo(() => {
+    const sev = { high: 0, med: 1, low: 2 };
+    const t = (d) => (d ? new Date(d).getTime() : 0);
+    return [...filtered].sort((a, b) =>
+      sortBy === "risk"
+        ? ((sev[a.severity] ?? 1) - (sev[b.severity] ?? 1)) || t(b.date) - t(a.date)
+        : t(b.date) - t(a.date) || ((sev[a.severity] ?? 1) - (sev[b.severity] ?? 1)));
+  }, [filtered, sortBy]);
+
   const highCount = filtered.filter((r) => r.severity === "high").length;
   const sourceNames = useMemo(() => [...new Set(recalls.map((r) => r.source))], [recalls]);
-  const remaining = filtered.length - limit;
+  const remaining = sorted.length - limit;
 
   // Nearest found store per chain, so a recall can link to the closest one.
   const nearestByChain = useMemo(() => {
@@ -378,6 +398,21 @@ export default function App() {
     }
     return n;
   }
+
+  /* Stores a recall actually names come first; everything else stays in
+   * distance order so the list still reads as "what is near me". */
+  const rankedStores = useMemo(() => {
+    const withCounts = stores.map((s, i) => ({ s, i, n: storeRecalls(s) }));
+    const list = flaggedOnly ? withCounts.filter((x) => x.n > 0) : withCounts;
+    return [...list].sort((a, b) => (b.n > 0) - (a.n > 0) || a.s.distanceMiles - b.s.distanceMiles);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stores, byChain, flaggedOnly]);
+
+  const flaggedCount = useMemo(
+    () => stores.reduce((n, s) => n + (storeRecalls(s) > 0 ? 1 : 0), 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [stores, byChain]
+  );
 
   const showStores = "flex " + (mobileTab === "stores" ? "" : "max-md:hidden ");
   const showProducts = "flex " + (mobileTab === "products" ? "" : "max-md:hidden ");
@@ -542,7 +577,18 @@ export default function App() {
                  className={"flex min-h-0 flex-1 " + (sideBySide ? "flex-col md:flex-row" : "flex-col")}>
             {/* ---- stores ---- */}
             <section className={showStores + "min-h-0 flex-1 flex-col overflow-hidden"} style={storesStyle}>
-              <PanelHeader label="stores" countId="stat-stores" count={storesStatus?.busy ? "…" : stores.length}>
+              <PanelHeader
+                label="stores" countId="stat-stores" count={storesStatus?.busy ? "…" : stores.length}
+                note={flaggedCount > 0 && (
+                  <button id="btn-flagged-only" onClick={() => setFlaggedOnly(!flaggedOnly)}
+                          aria-pressed={flaggedOnly}
+                          title="Show only stores a recall names"
+                          className={"rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider transition-colors " +
+                            (flaggedOnly ? "border-alert bg-alert/15 text-alert" : "border-alert/40 text-alert hover:bg-alert/10")}>
+                    {flaggedCount} flagged
+                  </button>
+                )}
+              >
                 <span className="microlabel">within</span>
                 <div className="flex gap-1" role="group" aria-label="Store search radius">
                   {RADII.map((r) => (
@@ -578,15 +624,15 @@ export default function App() {
                 )}
 
                 <ul id="stores-list" className="flex flex-col gap-2">
-                  {stores.map((s, i) => (
+                  {rankedStores.map(({ s, i, n }) => (
                     <li
                       key={`${s.name}-${s.lat}-${s.lon}`}
                       ref={(el) => (storeItemRefs.current[i] = el)}
                       data-index={i}
-                      style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
                       onClick={() => selectStore(i)}
                       className={"store-item fade-item cursor-pointer rounded-xl border bg-panel-2 p-3 transition-colors " +
-                        (activeStore === i ? "active border-mint bg-mint/[0.07]" : "border-line hover:border-mint/40")}
+                        (activeStore === i ? "active border-mint bg-mint/[0.07]"
+                          : n > 0 ? "border-alert/40 hover:border-alert/70" : "border-line hover:border-mint/40")}
                     >
                       <div className="flex items-baseline gap-2">
                         <span className="store-name truncate text-sm font-semibold">
@@ -595,10 +641,12 @@ export default function App() {
                         <span className="ml-auto shrink-0 font-mono text-[11px] text-fog">{s.distanceMiles.toFixed(1)} mi</span>
                       </div>
                       {s.address && <p className="mt-0.5 truncate text-[11px] text-fog">{s.address}</p>}
-                      <p className="mt-1.5 font-mono text-[11px] text-mint">
-                        {activeStore === i
+                      <p className={"mt-1.5 font-mono text-[11px] " + (n > 0 ? "text-alert" : "text-fog/70")}>
+                        {activeStore === i && n > 0
                           ? (sideBySide && isWide ? "showing its recalls →" : "showing its recalls below ↓")
-                          : `${storeRecalls(s)} recall${storeRecalls(s) === 1 ? "" : "s"} → tap to filter`}
+                          : n > 0
+                            ? `${n} recall${n === 1 ? "" : "s"} name this chain → tap`
+                            : "no recall names this chain"}
                       </p>
                     </li>
                   ))}
@@ -632,11 +680,21 @@ export default function App() {
             {/* ---- products ---- */}
             <section className={showProducts + "min-h-0 flex-1 flex-col overflow-hidden " + (isWide ? "" : "border-t border-line")}>
               <PanelHeader
-                label="recalls" countId="stat-recalls" count={productsBusy ? "…" : filtered.length}
+                label="recalls" countId="stat-recalls" count={productsBusy ? "…" : sorted.length}
                 note={highCount > 0 && (
                   <span id="stat-high" className="font-mono text-[11px] text-alert">{highCount} high-risk</span>
                 )}
-              />
+              >
+                <span className="microlabel">sort</span>
+                {[["newest", "newest"], ["risk", "risk"]].map(([k, lbl]) => (
+                  <button key={k} type="button" onClick={() => { setSortBy(k); setLimit(25); }}
+                          aria-pressed={sortBy === k}
+                          className={"rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider transition-colors " +
+                            (sortBy === k ? "border-mint bg-mint/15 text-mint" : "border-line text-fog hover:border-mint/40")}>
+                    {lbl}
+                  </button>
+                ))}
+              </PanelHeader>
 
               {/* scope + source filters */}
               <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line px-3 py-2">
@@ -679,16 +737,17 @@ export default function App() {
                     No active recalls matched this area in the past year.
                   </EmptyState>
                 )}
-                {!productsBusy && recalls.length > 0 && filtered.length === 0 && (
-                  <EmptyState icon={SearchX} title="no matches">
+                {!productsBusy && recalls.length > 0 && sorted.length === 0 && (
+                  <EmptyState icon={selectedStore ? ShieldCheck : SearchX}
+                              title={selectedStore ? "nothing names this store" : "no matches"}>
                     {selectedStore
-                      ? `Nothing matches inside ${selectedStore.name} — clear the store filter or widen your search.`
+                      ? `No active recall names ${selectedStore.name}. Most notices list only a state or "nationwide" and never name a retailer, so this is common — clear the filter to see all ${recalls.length} recalls in your area.`
                       : "Nothing matches the current filters — clear the search box or re-enable a source."}
                   </EmptyState>
                 )}
 
                 <ul id="products-list" className="flex flex-col gap-2">
-                  {filtered.slice(0, limit).map((r, i) => {
+                  {sorted.slice(0, limit).map((r, i) => {
                     const cat = categoryFor(r);
                     const CatIcon = CATEGORY_ICONS[cat.key] || Package;
                     const nearby = nearbyStoresFor(r);

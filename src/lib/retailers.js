@@ -121,5 +121,18 @@ function byId(id) {
   return compiled.find((c) => c.id === id) || null;
 }
 
+/* Most FDA notices name no retailer at all ("Nationwide", a bare state list),
+ * so a store list built only from recall text misses nearly every grocery
+ * store near you. We always look these up as well, then annotate whichever
+ * ones a recall actually names. */
+const ALWAYS_NEARBY = [
+  "walmart", "target", "costco", "samsclub", "kroger", "safeway", "albertsons",
+  "publix", "aldi", "traderjoes", "wholefoods", "heb", "meijer", "wegmans",
+  "cvs", "walgreens", "riteaid", "dollargeneral",
+];
+
+/** Chain objects we search for near every location, recalls or not. */
+export const DEFAULT_NEARBY_CHAINS = ALWAYS_NEARBY.map(byId).filter(Boolean);
+
 export const CHAINS = compiled;
 export { chainsInText, byId };
