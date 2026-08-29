@@ -36,7 +36,7 @@ function savePref(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* private mode */ }
 }
 
-const DEFAULT_SPLIT = 42; // % of the panel given to the stores list
+const DEFAULT_SPLIT = 48; // % of the panel given to the stores list
 const MIN_SPLIT = 18;
 const MAX_SPLIT = 82;
 
@@ -459,6 +459,52 @@ export default function App() {
 
   const namedCount = selectedStore ? namedRecallsFor(selectedStore).length : 0;
 
+  /* Selection is chain-level: a notice names "Trader Joe's", not one address.
+   * Every nearby location of the selected chain reflects that. */
+  const activeChainIds = useMemo(
+    () => new Set(selectedStore ? selectedStore.chainIds : []),
+    [selectedStore]
+  );
+  const sameChain = (store) => (store.chainIds || []).some((id) => activeChainIds.has(id));
+  const activeChainStores = useMemo(
+    () => (selectedStore ? stores.filter(sameChain) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [stores, activeChainIds, selectedStore]
+  );
+
+  /* Pin numerals follow the list's display order, and pins the list is
+   * currently hiding get no numeral at all. Index-aligned with `stores`. */
+  const { pinLabels, pinFlagged } = useMemo(() => {
+    const labels = stores.map(() => "");
+    const flags = stores.map((st) => namedRecallsFor(st).length > 0);
+    rankedStores.forEach(({ i }, pos) => { labels[i] = String(pos + 1); });
+    return { pinLabels: labels, pinFlagged: flags };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stores, rankedStores, byChain]);
+
+  /* The one line that answers why anyone opened the app. */
+  const headline = useMemo(() => {
+    if (storesStatus?.busy || productsBusy) return null;
+    if (!recalls.length) return { tone: "calm", text: "No active recalls match your area." };
+    const chains = new Set();
+    const named = new Set();
+    let high = 0;
+    for (const st of stores) {
+      for (const r of namedRecallsFor(st)) {
+        if (!named.has(r.id)) { named.add(r.id); if (r.severity === "high") high++; }
+      }
+      if (namedRecallsFor(st).length) for (const id of st.chainIds) chains.add(id);
+    }
+    if (!named.size) {
+      return { tone: "calm",
+        text: `No recall names a store near you — ${recalls.length} notice${recalls.length === 1 ? "" : "s"} cover ${loc?.stateAbbr || "your area"}.` };
+    }
+    return { tone: "alert",
+      text: `${chains.size} chain${chains.size === 1 ? "" : "s"} near you ${chains.size === 1 ? "is" : "are"} named in ` +
+            `${named.size} recall${named.size === 1 ? "" : "s"}${high ? `, ${high} high-risk` : ""}.` };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stores, recalls, byChain, loc, storesStatus, productsBusy]);
+
   const flaggedCount = useMemo(
     () => stores.reduce((n, s) => n + (namedRecallsFor(s).length > 0 ? 1 : 0), 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -549,7 +595,9 @@ export default function App() {
         {/* -------- map -------- */}
         <div className="relative min-h-0 shrink-0 basis-[42%] md:min-w-0 md:flex-1 md:basis-auto">
           {loc ? (
-            <MapView ref={mapRef} loc={loc} stores={stores} onMarkerClick={onMarkerClick} />
+            <MapView ref={mapRef} loc={loc} stores={stores}
+                     labels={pinLabels} flagged={pinFlagged} activeIndex={activeStore}
+                     onMarkerClick={onMarkerClick} />
           ) : (
             <div className="flex h-full items-center justify-center px-6">
               <div className="fade-item max-w-sm text-center">
@@ -613,6 +661,15 @@ export default function App() {
           <aside id="stores-panel"
                  className={"flex min-h-0 flex-1 flex-col border-t border-line bg-ink md:flex-none md:border-l md:border-t-0 " +
                    (sideBySide ? "md:w-[38rem] xl:w-[46rem]" : "md:w-[26rem]")}>
+            {/* The answer, before either list. */}
+            {headline && (
+              <p id="headline"
+                 className={"shrink-0 border-b border-line px-4 py-2.5 text-[13px] font-semibold " +
+                   (headline.tone === "alert" ? "bg-alert/[0.07] text-alert" : "bg-panel text-fog")}>
+                {headline.text}
+              </p>
+            )}
+
             {/* mobile tab switch */}
             <div className="flex shrink-0 border-b border-line md:hidden" role="tablist">
               {[["stores", `stores · ${stores.length}`], ["products", `products · ${filtered.length}`]].map(([k, lbl]) => (
@@ -676,7 +733,7 @@ export default function App() {
                 )}
 
                 <ul id="stores-list" className="flex flex-col gap-2">
-                  {rankedStores.map(({ s, i, n }) => (
+                  {rankedStores.map(({ s, i, n }, pos) => (
                     <li
                       key={`${s.name}-${s.lat}-${s.lon}`}
                       ref={(el) => (storeItemRefs.current[i] = el)}
@@ -684,11 +741,12 @@ export default function App() {
                       onClick={() => selectStore(i)}
                       className={"store-item fade-item cursor-pointer rounded-xl border bg-panel-2 p-3 transition-colors " +
                         (activeStore === i ? "active border-mint bg-mint/[0.07]"
-                          : n > 0 ? "border-alert/40 hover:border-alert/70" : "border-line hover:border-mint/40")}
+                          : selectedStore && sameChain(s) ? "same-chain border-mint/50 bg-mint/[0.03]"
+                            : n > 0 ? "border-alert/40 hover:border-alert/70" : "border-line hover:border-mint/40")}
                     >
                       <div className="flex items-baseline gap-2">
                         <span className="store-name truncate text-sm font-semibold">
-                          <span className="font-mono text-mint">{i + 1}.</span> {s.name}
+                          <span className="font-mono text-mint">{pos + 1}.</span> {s.name}
                         </span>
                         <span className="ml-auto shrink-0 font-mono text-[11px] text-fog">{s.distanceMiles.toFixed(1)} mi</span>
                       </div>
@@ -700,14 +758,18 @@ export default function App() {
                             local
                           </span>
                         )}
-                        <p className={"font-mono text-[11px] " + (n > 0 ? "text-alert" : "text-fog/70")}>
+                        <p className={"font-mono text-[11px] " +
+                          (activeStore === i || (selectedStore && sameChain(s)) ? "text-mint"
+                            : n > 0 ? "text-alert" : "text-fog/70")}>
                           {activeStore === i
                             ? (sideBySide && isWide ? "showing its recalls →" : "showing its recalls below ↓")
-                            : n > 0
-                              ? `${n === 1 ? "1 recall names" : `${n} recalls name`} this chain → tap`
-                              : s.independent
-                                ? "independent — tap for area recalls"
-                                : "no recall names this chain"}
+                            : selectedStore && sameChain(s)
+                              ? "same chain — included above"
+                              : n > 0
+                                ? `${n === 1 ? "1 recall names" : `${n} recalls name`} this chain → tap`
+                                : s.independent
+                                  ? "independent — tap for area recalls"
+                                  : "no recall names this chain"}
                         </p>
                       </div>
                     </li>
@@ -767,7 +829,13 @@ export default function App() {
                       onClick={() => setActiveStore(-1)}
                       className="inline-flex items-center gap-1.5 rounded-full border border-mint bg-mint/15 px-2.5 py-0.5 text-[11px] font-semibold text-mint hover:bg-mint/25"
                     >
-                      <MapPin className="size-3" /> {truncate(selectedStore.name, 22)} <X className="size-3" />
+                      <MapPin className="size-3" /> {truncate(selectedStore.name, 22)}
+                      {activeChainStores.length > 1 && (
+                        <span className="font-mono text-[10px] opacity-80">
+                          · {activeChainStores.length} locations
+                        </span>
+                      )}
+                      <X className="size-3" />
                     </button>
                     <div id="store-scope" className="flex gap-1" role="group" aria-label="How this store relates to the recall">
                       {[
@@ -839,11 +907,7 @@ export default function App() {
                       <li key={r.id} style={{ animationDelay: `${Math.min(i, 8) * stagger}ms` }}
                           className="recall-item fade-item rounded-xl border border-line bg-panel-2 p-3.5">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <Badge variant="source">{r.source}</Badge>
                           <Badge variant={r.severity}>{sevLabel(r)}</Badge>
-                          <Badge variant="scope" className="recall-region" title={r.distribution || undefined}>
-                            {regionLabel(r)}
-                          </Badge>
                           <span className="ml-auto font-mono text-[11px] text-fog">{fmtDate(r.date)}</span>
                         </div>
                         <div className="mt-2 flex items-start gap-2.5">
@@ -852,9 +916,7 @@ export default function App() {
                             <CatIcon className="size-4 text-mint" aria-hidden="true" />
                           </span>
                           <div className="min-w-0 flex-1">
-                            <p className="microlabel">{cat.label}</p>
-                            <p className="recall-product mt-0.5 text-sm font-semibold [overflow-wrap:anywhere]">{truncate(r.product, 150)}</p>
-                            {r.firm && <p className="mt-0.5 text-[11px] text-fog">recalled by {r.firm}</p>}
+                            <p className="recall-product text-sm font-semibold [overflow-wrap:anywhere]">{truncate(r.product, 150)}</p>
                           </div>
                           {r.image && (
                             <img src={r.image} alt="" loading="lazy" referrerPolicy="no-referrer"
@@ -862,7 +924,7 @@ export default function App() {
                                  onError={(e) => { e.currentTarget.style.display = "none"; }} />
                           )}
                         </div>
-                        {r.reason && <p className="mt-2 text-[13px] leading-relaxed text-paper/90 [overflow-wrap:anywhere]">{truncate(r.reason, 220)}</p>}
+                        {r.reason && <p className="mt-2 text-[13px] leading-relaxed text-paper/90 [overflow-wrap:anywhere]">{truncate(r.reason, 160)}</p>}
 
                         {(nearby.length > 0 || unlinked.length > 0) && (
                           <div className="mt-2 flex flex-wrap items-center gap-1.5">
@@ -888,12 +950,35 @@ export default function App() {
                              href={r.url} target="_blank" rel="noopener noreferrer">
                             official notice <ExternalLink className="size-3" />
                           </a>
-                          {r.codeInfo && (
-                            <details className="min-w-0">
-                              <summary className="cursor-pointer font-mono text-[11px] text-fog hover:text-mint">lot codes</summary>
-                              <p className="mt-1 text-[11px] text-fog [overflow-wrap:anywhere]">{truncate(r.codeInfo, 500)}</p>
-                            </details>
-                          )}
+                          <details className="recall-details min-w-0 flex-1">
+                            <summary className="cursor-pointer font-mono text-[11px] text-fog hover:text-mint">details</summary>
+                            <dl className="mt-1.5 flex flex-col gap-1 text-[11px] text-fog">
+                              <div className="flex gap-2">
+                                <dt className="microlabel shrink-0">source</dt>
+                                <dd>{r.source}</dd>
+                              </div>
+                              <div className="flex gap-2">
+                                <dt className="microlabel shrink-0">type</dt>
+                                <dd>{cat.label}</dd>
+                              </div>
+                              <div className="flex gap-2">
+                                <dt className="microlabel shrink-0">region</dt>
+                                <dd title={r.distribution || undefined}>{regionLabel(r)}</dd>
+                              </div>
+                              {r.firm && (
+                                <div className="flex gap-2">
+                                  <dt className="microlabel shrink-0">firm</dt>
+                                  <dd className="[overflow-wrap:anywhere]">{r.firm}</dd>
+                                </div>
+                              )}
+                              {r.codeInfo && (
+                                <div className="flex gap-2">
+                                  <dt className="microlabel shrink-0">lots</dt>
+                                  <dd className="[overflow-wrap:anywhere]">{truncate(r.codeInfo, 400)}</dd>
+                                </div>
+                              )}
+                            </dl>
+                          </details>
                         </div>
                       </li>
                     );
