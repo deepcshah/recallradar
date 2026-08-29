@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import MapView from "@/components/MapView";
 import { browserPosition, reverseGeocode, geocodeInput } from "@/lib/geo";
-import { fetchAll } from "@/lib/sources";
+import { fetchAll, retryBlockedFsis, sortRecalls } from "@/lib/sources";
 import { findStores } from "@/lib/stores";
 import { byId, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
 import { categoryFor } from "@/lib/category";
@@ -238,6 +238,20 @@ export default function App() {
     setSources(srcs);
     setActiveSources(new Set(fetched.map((r) => r.source)));
     setProductsBusy(false);
+
+    /* USDA blocks our server but usually not the browser, so retry it here and
+     * fold the result in when it lands. Deliberately not awaited: the stores
+     * lookup is the slow part of the page and must not wait on a source that
+     * may well be blocked here too. */
+    retryBlockedFsis(locArg, srcs).then((late) => {
+      if (!late) return;
+      setRecalls((prev) => sortRecalls([...prev, ...late.recalls]));
+      setSources(late.sources);
+      // Source chips are seeded from the first payload, so a source that
+      // arrives late has to opt itself in or its notices stay filtered out.
+      setActiveSources((prev) => new Set(prev).add("USDA FSIS"));
+    });
+
     await loadStores(fetched, locArg, radiusArg);
   }, [loadStores]);
 

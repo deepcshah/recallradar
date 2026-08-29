@@ -269,17 +269,47 @@ async function fetchOpenFdaDirect(kind, loc) {
   return normalizeFda(kind, (data && data.results) || [], loc);
 }
 
-async function fetchFsisDirect(loc) {
-  let list;
-  try {
-    list = await cachedFetchJSON("https://www.fsis.usda.gov/fsis/api/recall/v/1?format=json", {
-      timeoutMs: 30000,
-      transform: slimFsis,
-    });
-  } catch (_) {
-    list = await cachedFetchJSON("/api/fsis", { timeoutMs: 30000 }); // proxy returns pre-slimmed data
-  }
+const FSIS_URL = "https://www.fsis.usda.gov/fsis/api/recall/v/1?format=json";
+
+/** FSIS straight from the browser: a different IP on a different network from
+ *  the serverless function, which USDA's WAF blocks outright. Throws if the
+ *  browser is blocked too, or if CORS forbids reading the response. */
+export async function fsisFromBrowser(loc) {
+  const list = await cachedFetchJSON(FSIS_URL, { timeoutMs: 12000, transform: slimFsis });
   return normalizeFsis(list || [], loc);
+}
+
+async function fetchFsisDirect(loc) {
+  try {
+    return await fsisFromBrowser(loc);
+  } catch (_) {
+    // proxy returns pre-slimmed data
+    return normalizeFsis((await cachedFetchJSON("/api/fsis", { timeoutMs: 30000 })) || [], loc);
+  }
+}
+
+/** USDA blocks the datacenter the API runs in, so /api/recalls usually comes
+ *  back with FSIS unavailable while FDA and CPSC succeed. The browser is a
+ *  client USDA has no reason to block, so it is worth one attempt from here
+ *  before we tell the user the source is down. Resolves to null when there is
+ *  nothing to add, so the caller can skip the state update entirely. */
+export async function retryBlockedFsis(loc, sources) {
+  const i = (sources || []).findIndex((s) => s.name.startsWith("USDA FSIS"));
+  if (i === -1 || sources[i].ok) return null;
+  let recalls;
+  try {
+    recalls = await fsisFromBrowser(loc);
+  } catch (_) {
+    return null; // blocked here too, or CORS — leave the source marked unavailable
+  }
+  const next = sources.slice();
+  next[i] = {
+    name: sources[i].name,
+    ok: true,
+    count: recalls.length,
+    note: "USDA blocks our server, so your browser fetched this directly.",
+  };
+  return { recalls, sources: next };
 }
 
 async function fetchCpscDirect() {
