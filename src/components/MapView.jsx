@@ -5,20 +5,27 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import maplibregl from "maplibre-gl";
 
-const MAP_STYLE = "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json";
-const RASTER_FALLBACK = {
+/* The basemap follows the app theme — a dark slab under a light UI was the
+ * single worst contrast break in the layout. */
+const MAP_STYLE = {
+  dark: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+  light: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+};
+const ATTRIBUTION =
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>';
+const rasterFallback = (theme) => ({
   version: 8,
   name: "rr-raster-fallback",
   sources: {
     carto: {
       type: "raster",
-      tiles: ["https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"],
+      tiles: [`https://basemaps.cartocdn.com/${theme === "light" ? "light_all" : "dark_all"}/{z}/{x}/{y}.png`],
       tileSize: 256,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+      attribution: ATTRIBUTION,
     },
   },
   layers: [{ id: "carto", type: "raster", source: "carto" }],
-};
+});
 
 function pinEl(label, isYou) {
   const div = document.createElement("div");
@@ -41,7 +48,7 @@ function popupHtml(s) {
  * existing marker elements rather than triggering a rebuild — recreating the
  * markers would re-fit the map bounds on every selection. */
 const MapView = forwardRef(function MapView(
-  { loc, stores, labels, flagged, activeIndex, onMarkerClick },
+  { loc, stores, labels, flagged, activeIndex, theme = "dark", onMarkerClick },
   ref
 ) {
   const containerRef = useRef(null);
@@ -50,13 +57,15 @@ const MapView = forwardRef(function MapView(
   const markersRef = useRef([]);
   const clickRef = useRef(onMarkerClick);
   clickRef.current = onMarkerClick;
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
 
   // create once
   useEffect(() => {
     if (mapRef.current || !containerRef.current || !loc) return;
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: MAP_STYLE,
+      style: MAP_STYLE[theme] || MAP_STYLE.dark,
       center: [loc.lon, loc.lat],
       zoom: 11,
       attributionControl: { compact: true },
@@ -64,13 +73,21 @@ const MapView = forwardRef(function MapView(
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     map.on("error", () => {
       if (!map.isStyleLoaded() && map.getStyle()?.name !== "rr-raster-fallback") {
-        map.setStyle(RASTER_FALLBACK);
+        map.setStyle(rasterFallback(themeRef.current));
       }
     });
     mapRef.current = map;
     return () => { map.remove(); mapRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loc != null]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const next = MAP_STYLE[theme] || MAP_STYLE.dark;
+    if (map.getStyle()?.name === "rr-raster-fallback") map.setStyle(rasterFallback(theme));
+    else map.setStyle(next);
+  }, [theme]);
 
   // location changed → move the "you" pin and recenter
   useEffect(() => {

@@ -30,6 +30,9 @@ export const MOTION = {
     duration: [0.4, 0.1, 1.2],  // seconds for one card's entrance
     stagger: [50, 0, 160],      // ms between successive cards in a list
   },
+  skeleton: {
+    shimmer: [1.4, .4, 3],      // seconds for one shimmer sweep across a skeleton
+  },
 };
 
 const shipped = (group) =>
@@ -44,7 +47,9 @@ export function useMotionTuning() {
     id: "rr-motion-v1",
     persist: DEV ? { storage: "localStorage" } : false,
   });
-  const v = DEV ? params : { radar: shipped(MOTION.radar), card: shipped(MOTION.card) };
+  const v = DEV
+    ? params
+    : { radar: shipped(MOTION.radar), card: shipped(MOTION.card), skeleton: shipped(MOTION.skeleton) };
   return {
     "--rr-radar-duration": `${v.radar.duration}s`,
     "--rr-radar-stagger": `${v.radar.stagger}s`,
@@ -52,6 +57,7 @@ export function useMotionTuning() {
     "--rr-card-rise": `${v.card.rise}px`,
     "--rr-card-duration": `${v.card.duration}s`,
     "--rr-card-stagger": `${v.card.stagger}ms`,
+    "--rr-shimmer-duration": `${v.skeleton.shimmer}s`,
   };
 }
 
