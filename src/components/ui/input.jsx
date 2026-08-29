@@ -9,9 +9,9 @@ const Input = React.forwardRef(({ className, type, ...props }, ref) => (
     ref={ref}
     className={cn(
       "flex h-10 w-full rounded-lg border border-line-strong bg-panel-2 px-3.5 text-sm text-paper",
-      "shadow-[inset_0_1px_2px_rgba(0,0,0,0.08)] transition-shadow",
+      "shadow-[var(--rr-field)] transition-shadow",
       "placeholder:text-subtle focus-visible:outline-none focus-visible:border-mint/60",
-      "focus-visible:shadow-[inset_0_1px_2px_rgba(0,0,0,0.08),0_0_0_3px_var(--rr-accent-soft)]",
+      "focus-visible:shadow-[var(--rr-field),0_0_0_3px_var(--rr-accent-soft)]",
       className
     )}
     {...props}

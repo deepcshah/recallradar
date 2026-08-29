@@ -40,13 +40,17 @@
   --rr-alert-soft: #fdecea;
   --rr-amber: #8a6410;
 
-  /* Skeuomorphic depth: a top highlight, a hairline, and two shadow layers. */
-  --rr-highlight: rgba(255, 255, 255, 0.9);
-  --rr-shadow-1: 0 1px 1px rgba(17, 26, 22, 0.05), 0 1px 3px rgba(17, 26, 22, 0.07);
-  --rr-shadow-2: 0 2px 4px rgba(17, 26, 22, 0.06), 0 6px 16px rgba(17, 26, 22, 0.09);
-  --rr-shadow-3: 0 8px 24px rgba(17, 26, 22, 0.12), 0 2px 6px rgba(17, 26, 22, 0.08);
-  --rr-inset: inset 0 1px 0 var(--rr-highlight);
-  --rr-btn-grad: linear-gradient(180deg, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0));
+  /* Depth, the way a physical control has it: surfaces get one soft shadow,
+   * and controls get a bevel — a light hairline along the top inner edge and a
+   * dark one along the bottom. A large-area gradient wash reads as a sticker;
+   * a 1px bevel reads as a moulded face. */
+  --rr-shadow-1: 0 1px 0 rgba(26, 26, 26, 0.07);
+  --rr-shadow-2: 0 1px 1px rgba(26, 26, 26, 0.06), 0 3px 6px -2px rgba(26, 26, 26, 0.10);
+  --rr-shadow-3: 0 1px 2px rgba(26, 26, 26, 0.10), 0 8px 20px -4px rgba(26, 26, 26, 0.18);
+  --rr-bevel: inset 0 1px 0 rgba(255, 255, 255, 0.75), inset 0 -1px 0 rgba(26, 26, 26, 0.11);
+  --rr-bevel-strong: inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -1px 0 rgba(0, 0, 0, 0.28);
+  --rr-press: inset 0 1px 2px rgba(26, 26, 26, 0.18);
+  --rr-field: inset 0 1px 2px rgba(26, 26, 26, 0.07);
   --rr-shimmer: rgba(17, 26, 22, 0.06);
   --rr-shimmer-hi: rgba(17, 26, 22, 0.12);
   --rr-pin-idle: #94a29a;
@@ -75,11 +79,13 @@
   --rr-alert-soft: rgba(255, 122, 110, 0.13);
   --rr-amber: #f5c451;
 
-  --rr-highlight: rgba(255, 255, 255, 0.055);
-  --rr-shadow-1: 0 1px 1px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.35);
-  --rr-shadow-2: 0 2px 6px rgba(0, 0, 0, 0.45), 0 8px 20px rgba(0, 0, 0, 0.42);
-  --rr-shadow-3: 0 10px 30px rgba(0, 0, 0, 0.6), 0 3px 8px rgba(0, 0, 0, 0.5);
-  --rr-btn-grad: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0));
+  --rr-shadow-1: 0 1px 0 rgba(0, 0, 0, 0.5);
+  --rr-shadow-2: 0 1px 2px rgba(0, 0, 0, 0.5), 0 4px 10px -2px rgba(0, 0, 0, 0.45);
+  --rr-shadow-3: 0 2px 4px rgba(0, 0, 0, 0.55), 0 10px 26px -4px rgba(0, 0, 0, 0.6);
+  --rr-bevel: inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 -1px 0 rgba(0, 0, 0, 0.45);
+  --rr-bevel-strong: inset 0 1px 0 rgba(255, 255, 255, 0.22), inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+  --rr-press: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+  --rr-field: inset 0 1px 2px rgba(0, 0, 0, 0.35);
   --rr-shimmer: rgba(233, 238, 235, 0.05);
   --rr-shimmer-hi: rgba(233, 238, 235, 0.12);
   --rr-pin-idle: #4a5a51;
@@ -105,11 +111,13 @@
     --rr-alert: #ff7a6e;
     --rr-alert-soft: rgba(255, 122, 110, 0.13);
     --rr-amber: #f5c451;
-    --rr-highlight: rgba(255, 255, 255, 0.055);
-    --rr-shadow-1: 0 1px 1px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.35);
-    --rr-shadow-2: 0 2px 6px rgba(0, 0, 0, 0.45), 0 8px 20px rgba(0, 0, 0, 0.42);
-    --rr-shadow-3: 0 10px 30px rgba(0, 0, 0, 0.6), 0 3px 8px rgba(0, 0, 0, 0.5);
-    --rr-btn-grad: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0));
+    --rr-shadow-1: 0 1px 0 rgba(0, 0, 0, 0.5);
+    --rr-shadow-2: 0 1px 2px rgba(0, 0, 0, 0.5), 0 4px 10px -2px rgba(0, 0, 0, 0.45);
+    --rr-shadow-3: 0 2px 4px rgba(0, 0, 0, 0.55), 0 10px 26px -4px rgba(0, 0, 0, 0.6);
+    --rr-bevel: inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 -1px 0 rgba(0, 0, 0, 0.45);
+    --rr-bevel-strong: inset 0 1px 0 rgba(255, 255, 255, 0.22), inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+    --rr-press: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+    --rr-field: inset 0 1px 2px rgba(0, 0, 0, 0.35);
     --rr-shimmer: rgba(233, 238, 235, 0.05);
     --rr-shimmer-hi: rgba(233, 238, 235, 0.12);
     --rr-pin-idle: #4a5a51;
@@ -160,13 +168,13 @@ body {
 
 /* A card sits on the surface: hairline, top highlight, two shadow layers. */
 .elev-1 {
-  box-shadow: var(--rr-inset), var(--rr-shadow-1);
+  box-shadow: var(--rr-shadow-1);
 }
 .elev-2 {
-  box-shadow: var(--rr-inset), var(--rr-shadow-2);
+  box-shadow: var(--rr-shadow-2);
 }
 .elev-3 {
-  box-shadow: var(--rr-inset), var(--rr-shadow-3);
+  box-shadow: var(--rr-shadow-3);
 }
 
 /* Interactive cards lift on hover and press back down on click. */
@@ -177,17 +185,17 @@ body {
 }
 .lift:hover {
   transform: translateY(-1px);
-  box-shadow: var(--rr-inset), var(--rr-shadow-2);
+  box-shadow: var(--rr-shadow-2);
 }
 .lift:active {
   transform: translateY(0);
-  box-shadow: var(--rr-inset), var(--rr-shadow-1);
+  box-shadow: var(--rr-shadow-1);
 }
 
-/* Recessed well for lists, so cards read as sitting *in* something. */
+/* The well is a darker ground, so cards read as sitting *on* something. A
+ * trough shadow here would fight the cards' own shadows. */
 .sunken {
   background: var(--rr-sunken);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 
 /* ─────────────────────────────── motion ───────────────────────────────── */

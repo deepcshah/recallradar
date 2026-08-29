@@ -2,33 +2,33 @@ import * as React from "react";
 import { cva } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
-/* Buttons carry depth: a vertical gradient sheen, a top highlight, a hairline
- * and a drop shadow — then press *into* the surface on :active. */
+/* A button is a moulded face: a bevel (light hairline on the top inner edge,
+ * dark on the bottom), a hairline border, and a 1px drop shadow. On :active it
+ * sinks — the bevel is replaced by a press shadow so the light flips sides. No
+ * gradient wash; a sheen across the whole face reads as a sticker, not a key. */
 const buttonVariants = cva(
-  "relative inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg font-semibold " +
-    "transition-[transform,box-shadow,background-color,border-color] duration-150 " +
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg font-semibold " +
+    "transition-[transform,box-shadow,background-color,border-color] duration-100 " +
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 focus-visible:ring-offset-2 " +
     "focus-visible:ring-offset-[var(--rr-surface)] " +
     "disabled:pointer-events-none disabled:opacity-50 " +
-    "before:pointer-events-none before:absolute before:inset-0 before:rounded-[inherit] " +
-    "before:bg-[image:var(--rr-btn-grad)] " +
-    "active:translate-y-px [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:relative",
+    "active:translate-y-px [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
         default:
           "bg-mint text-mint-ink border border-mint " +
-          "shadow-[var(--rr-shadow-1)] hover:brightness-[1.06] active:brightness-[0.97] " +
-          "active:shadow-[inset_0_1px_2px_rgba(0,0,0,0.25)]",
+          "shadow-[var(--rr-bevel-strong),var(--rr-shadow-1)] " +
+          "hover:brightness-[1.06] active:brightness-[0.97] active:shadow-[var(--rr-press)]",
         outline:
           "border border-line-strong bg-panel-2 text-mint " +
-          "shadow-[var(--rr-inset),var(--rr-shadow-1)] hover:bg-panel-3 " +
-          "active:shadow-[inset_0_1px_2px_rgba(0,0,0,0.14)]",
+          "shadow-[var(--rr-bevel),var(--rr-shadow-1)] hover:bg-panel-3 " +
+          "active:shadow-[var(--rr-press)]",
         secondary:
           "border border-line-strong bg-panel-2 text-paper " +
-          "shadow-[var(--rr-inset),var(--rr-shadow-1)] hover:bg-panel-3 " +
-          "active:shadow-[inset_0_1px_2px_rgba(0,0,0,0.14)]",
-        ghost: "border border-transparent text-fog hover:text-paper hover:bg-panel-3 before:hidden",
+          "shadow-[var(--rr-bevel),var(--rr-shadow-1)] hover:bg-panel-3 " +
+          "active:shadow-[var(--rr-press)]",
+        ghost: "border border-transparent text-fog hover:text-paper hover:bg-panel-3",
       },
       size: {
         default: "h-10 px-5 text-sm",

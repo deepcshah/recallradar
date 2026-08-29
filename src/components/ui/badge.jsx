@@ -3,10 +3,10 @@ import { cva } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 /* Badges are tinted chips, not outlines — a soft fill plus a hairline reads as
- * a physical tag and keeps the accent from competing with body text. */
+ * a physical tag and keeps the accent from competing with body text. They stay
+ * flat: a badge is a label, not a control, so it gets no bevel and no shadow. */
 const badgeVariants = cva(
-  "inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap border " +
-    "shadow-[var(--rr-inset)]",
+  "inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap border",
   {
     variants: {
       variant: {
