@@ -31,11 +31,11 @@ body {
 
 /* entrance animation for result cards */
 @keyframes fadeUp {
-  from { opacity: 0; transform: translateY(8px); }
+  from { opacity: 0; transform: translateY(var(--rr-card-rise, 8px)); }
   to { opacity: 1; transform: none; }
 }
 .fade-item {
-  animation: fadeUp 0.4s ease both;
+  animation: fadeUp var(--rr-card-duration, 0.4s) ease both;
 }
 
 /* radar sweep shown over the map while the store search runs */
@@ -45,11 +45,11 @@ body {
 }
 .radar-ring {
   position: absolute;
-  width: 240px;
-  height: 240px;
+  width: var(--rr-radar-size, 240px);
+  height: var(--rr-radar-size, 240px);
   border-radius: 50%;
   border: 1.5px solid var(--color-mint);
-  animation: radarRing 2s cubic-bezier(0.2, 0.6, 0.4, 1) infinite;
+  animation: radarRing var(--rr-radar-duration, 2s) cubic-bezier(0.2, 0.6, 0.4, 1) infinite;
 }
 .radar-dot {
   width: 10px;

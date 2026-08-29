@@ -14,6 +14,9 @@ import { fetchAll } from "@/lib/sources";
 import { findStores } from "@/lib/stores";
 import { byId, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
 import { categoryFor } from "@/lib/category";
+import { DialRoot } from "dialkit";
+import "dialkit/styles.css";
+import { useMotionTuning, cardStagger } from "@/lib/tuning";
 
 const CATEGORY_ICONS = {
   pet: PawPrint, kids: Baby, supplement: Pill, drug: Pill, device: Stethoscope,
@@ -180,6 +183,10 @@ export default function App() {
   const [diag, setDiag] = useState(null);
   const [activeSources, setActiveSources] = useState(new Set());
   const [limit, setLimit] = useState(25);
+
+  // Live-tunable motion (DialKit panel in dev; shipped defaults in production).
+  const motionStyle = useMotionTuning();
+  const stagger = cardStagger(motionStyle);
 
   const mapRef = useRef(null);
   const storeItemRefs = useRef([]);
@@ -462,7 +469,7 @@ export default function App() {
   const showProducts = "flex " + (mobileTab === "products" ? "" : "max-md:hidden ");
 
   return (
-    <div className="flex h-[100dvh] flex-col overflow-hidden bg-ink">
+    <div className="flex h-[100dvh] flex-col overflow-hidden bg-ink" style={motionStyle}>
       {/* ================= top bar ================= */}
       <header className="z-20 shrink-0 border-b border-line bg-panel">
         <div className="flex flex-col gap-2 px-3 py-2.5 sm:px-4 md:flex-row md:flex-wrap md:items-center md:gap-x-4">
@@ -566,9 +573,10 @@ export default function App() {
 
           {storesStatus?.busy && (
             <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center overflow-hidden bg-ink/40">
-              <span className="radar-ring" />
-              <span className="radar-ring" style={{ animationDelay: "0.66s" }} />
-              <span className="radar-ring" style={{ animationDelay: "1.33s" }} />
+              {[0, 1, 2].map((i) => (
+                <span key={i} className="radar-ring"
+                      style={{ animationDelay: `calc(var(--rr-radar-stagger) * ${i})` }} />
+              ))}
               <span className="radar-dot" />
               <p className="microlabel absolute bottom-6 text-mint">scanning area…</p>
             </div>
@@ -664,7 +672,7 @@ export default function App() {
                   </div>
                 )}
                 {storesStatus?.busy && !stores.length && (
-                  <ul className="flex flex-col gap-2">{[0, 1, 2].map((i) => <StoreSkeleton key={i} delay={i * 90} />)}</ul>
+                  <ul className="flex flex-col gap-2">{[0, 1, 2].map((i) => <StoreSkeleton key={i} delay={i * stagger * 2} />)}</ul>
                 )}
 
                 <ul id="stores-list" className="flex flex-col gap-2">
@@ -804,7 +812,7 @@ export default function App() {
 
               <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 {productsBusy && (
-                  <ul className="flex flex-col gap-2">{[0, 1, 2].map((i) => <RecallSkeleton key={i} delay={i * 90} />)}</ul>
+                  <ul className="flex flex-col gap-2">{[0, 1, 2].map((i) => <RecallSkeleton key={i} delay={i * stagger * 2} />)}</ul>
                 )}
                 {!productsBusy && recalls.length === 0 && (
                   <EmptyState icon={ShieldCheck} title="all clear — for now">
@@ -828,7 +836,7 @@ export default function App() {
                     const linked = new Set(nearby.flatMap((si) => stores[si].chainIds));
                     const unlinked = (r.retailerIds || []).filter((id) => !linked.has(id));
                     return (
-                      <li key={r.id} style={{ animationDelay: `${Math.min(i, 8) * 45}ms` }}
+                      <li key={r.id} style={{ animationDelay: `${Math.min(i, 8) * stagger}ms` }}
                           className="recall-item fade-item rounded-xl border border-line bg-panel-2 p-3.5">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <Badge variant="source">{r.source}</Badge>
@@ -921,6 +929,9 @@ export default function App() {
           </button>
         </div>
       </footer>
+
+      {/* DialKit authoring panel — renders null in production builds. */}
+      <DialRoot position="bottom-left" theme="dark" defaultOpen={false} />
 
       {/* ================= about modal ================= */}
       {aboutOpen && (
