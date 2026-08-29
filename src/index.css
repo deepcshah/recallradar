@@ -166,7 +166,7 @@ body {
 
 /* ─────────────────────────────── surfaces ─────────────────────────────── */
 
-/* A card sits on the surface: hairline, top highlight, two shadow layers. */
+/* A card sits on the surface on a hairline and one soft shadow. */
 .elev-1 {
   box-shadow: var(--rr-shadow-1);
 }
