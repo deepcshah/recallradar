@@ -165,12 +165,40 @@ export function FilterSheet({ open, onClose, anchored, triggerId = "btn-filters"
     };
   }, [open, anchored, triggerId]);
 
+  /* Focus goes into the surface when it opens and back to the trigger when it
+   * closes, and Tab cycles inside it while it is open. The phone sheet claims
+   * `aria-modal`, and a screen reader takes that claim literally: without this
+   * the first Tab walked out of the sheet and into the page behind it, which
+   * is exactly what aria-modal promises will not happen. */
+  useEffect(() => {
+    if (!open) return;
+    const box = boxRef.current;
+    const returnTo = document.activeElement;
+    const first = box && box.querySelector("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])");
+    (first || box)?.focus?.();
+    return () => {
+      if (returnTo && document.contains(returnTo)) returnTo.focus();
+    };
+  }, [open, pos]);
+
   /* Escape closes from anywhere; a click outside closes the desktop popover.
    * The phone sheet dismisses on its own backdrop instead — but the same
    * handler is harmless there, since the backdrop is outside the box too. */
   useEffect(() => {
     if (!open) return;
-    const onKey = (e) => e.key === "Escape" && onClose();
+    const onKey = (e) => {
+      if (e.key === "Escape") { onClose(); return; }
+      if (e.key !== "Tab") return;
+      const box = boxRef.current;
+      if (!box) return;
+      const items = [...box.querySelectorAll("button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")];
+      if (!items.length) return;
+      const edge = e.shiftKey ? items[0] : items[items.length - 1];
+      if (document.activeElement === edge) {
+        e.preventDefault();
+        (e.shiftKey ? items[items.length - 1] : items[0]).focus();
+      }
+    };
     const onDown = (e) => {
       const box = boxRef.current;
       if (box && !box.contains(e.target) && !e.target.closest?.(`#${triggerId}`)) onClose();
@@ -220,6 +248,7 @@ export function FilterSheet({ open, onClose, anchored, triggerId = "btn-filters"
         ref={boxRef}
         role="dialog"
         aria-label="Filters and sort"
+        tabIndex={-1}
         style={{ ...pos, width: "22rem", maxWidth: "calc(100vw - 1rem)" }}
         className="pop-in fixed z-[60] flex flex-col overflow-hidden rounded-xl border border-line bg-panel shadow-[var(--rr-shadow-3)]"
       >
@@ -241,6 +270,7 @@ export function FilterSheet({ open, onClose, anchored, triggerId = "btn-filters"
         role="dialog"
         aria-modal="true"
         aria-label="Filters and sort"
+        tabIndex={-1}
         className="absolute inset-x-0 bottom-0 flex max-h-[80dvh] flex-col overflow-hidden rounded-t-2xl border border-b-0 border-line bg-panel shadow-[var(--rr-shadow-3)]"
       >
         {head}
