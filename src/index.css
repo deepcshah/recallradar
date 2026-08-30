@@ -193,7 +193,6 @@ button,
 summary,
 [role="tab"],
 [role="option"],
-[role="separator"][tabindex],
 label[for],
 a[href] {
   cursor: pointer;
@@ -201,6 +200,25 @@ a[href] {
 button:disabled,
 [aria-disabled="true"] {
   cursor: not-allowed;
+}
+
+/* iOS Safari zooms the whole viewport when you focus a field whose text is
+ * under 16px, and it does not zoom back out afterwards. Every input here was
+ * 13-14px, so tapping the ZIP box left the app scaled up with the header cut
+ * off — a bug people read as the app breaking, not as a font size. 16px on
+ * touch pointers costs nothing; the mouse sizes are unchanged. */
+@media (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Home indicators and notches. `100dvh` handles the browser chrome; the safe
+ * area insets handle the hardware. */
+.safe-b {
+  padding-bottom: calc(var(--safe-b-pad, 0.375rem) + env(safe-area-inset-bottom, 0px));
 }
 
 /* Numerals that must line up in a column — distances, counts, lot codes. */
@@ -213,6 +231,53 @@ button:disabled,
  * replaced, so the tracking can come down and the weight can go up. */
 .microlabel {
   @apply text-[11px] font-semibold uppercase tracking-[0.08em] text-subtle;
+}
+
+/* ──────────────────────────────── chips ───────────────────────────────── */
+
+/* Every small toggle in the app — radius, sort, source, scope, filter — is
+ * one shape with two states, so a new one can never drift.
+ *
+ * The size is set by the thumb, not the type. These were 20px tall, which is
+ * under half Apple's 44pt minimum and roughly a third of Material's 48dp: on
+ * a phone you aimed at a radius chip and hit the one beside it. The type
+ * stays at 11px — a chip is a label — but the box around it grows to 36px on
+ * touch and shrinks back to 24px where a mouse is doing the pointing. */
+.chip {
+  @apply inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-full border
+         px-3 text-[11px] font-semibold uppercase tracking-wider transition-colors;
+  min-height: 36px;
+}
+@media (min-width: 768px) {
+  .chip {
+    @apply px-2.5;
+    min-height: 26px;
+  }
+}
+.chip-on {
+  @apply border-mint bg-mint text-mint-ink;
+}
+.chip-off {
+  @apply border-line bg-panel-2 text-fog hover:border-mint-line hover:text-paper;
+}
+/* A third state for chips that scope rather than filter — selected, but not
+ * a hard on/off. Tinted rather than filled so a row of them still has one
+ * clear "on". */
+.chip-soft {
+  @apply border-mint-line bg-mint-soft text-mint;
+}
+.chip:disabled {
+  @apply opacity-40;
+}
+
+/* A removable chip in the "what is currently filtered" row. Wider on the
+ * right for its ✕, and never uppercase — it carries content (a store name, a
+ * hazard) rather than a label. */
+.chip-active {
+  @apply inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-mint-line
+         bg-mint-soft py-1 pl-2.5 pr-1.5 text-[12px] font-semibold text-mint transition-colors
+         hover:border-mint;
+  min-height: 32px;
 }
 
 /* ─────────────────────────────── surfaces ─────────────────────────────── */
@@ -247,6 +312,63 @@ button:disabled,
  * trough shadow here would fight the cards' own shadows. */
 .sunken {
   background: var(--rr-sunken);
+}
+
+/* ───────────────────────── selection & drag handles ───────────────────── */
+
+/* The selected store. A tinted background and a hairline were doing all the
+ * work, and on the light theme #ddf0e5 against #ffffff is a ~4% luminance
+ * step — invisible at arm's length on a phone in daylight, and invisible to
+ * anyone with a red-green deficiency. So selection is now carried by shape
+ * as well as colour: a 3px rail down the leading edge that no other card has,
+ * which survives both themes and any colour vision. */
+.store-item {
+  position: relative;
+  overflow: hidden;
+}
+.store-item::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--rr-accent-hi);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.16s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.store-item.active::before {
+  transform: scaleX(1);
+}
+/* Other locations of the selected chain get a fainter version of the same
+ * rail: they are included in what you are looking at, but you did not pick
+ * them. Same signal, dialled down — not a different signal. */
+.store-item.same-chain::before {
+  background: var(--rr-accent-line);
+  transform: scaleX(1);
+}
+
+/* The bar between the map and the panel. It is a control, so it looks like
+ * one: a grabber pill, a hover tint, and — on touch — a 20px band, since a
+ * 8px hairline is not something a thumb can find. `touch-action: none` is
+ * what stops a drag from scrolling the page out from under the gesture. */
+.split-handle {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.split-grip {
+  background: var(--rr-line-strong);
+  border-radius: 999px;
+  transition: background 0.16s ease, width 0.16s ease, height 0.16s ease;
+}
+.split-handle:hover .split-grip,
+.split-handle:focus-visible .split-grip,
+.split-handle[data-dragging="true"] .split-grip {
+  background: var(--rr-accent-hi);
+}
+.split-handle:focus-visible {
+  outline: none;
+  background: var(--rr-accent-soft);
 }
 
 /* ─────────────────────────────── motion ───────────────────────────────── */
@@ -374,10 +496,27 @@ button:disabled,
   opacity: 1;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
 }
+/* The selected pin. A 3px ring and a 15% bump were not enough to find in a
+ * field of two dozen pins — especially on a phone, where every pin is 15px
+ * and unlabelled. It now sits above the others (z-index), grows by half,
+ * keeps its ring, and gets a halo in the accent so it reads as "this one"
+ * from across the map rather than only when you already know where to look. */
 .map-pin.active {
   opacity: 1;
-  box-shadow: 0 0 0 3px var(--rr-pin-ring), 0 3px 10px rgba(0, 0, 0, 0.4);
-  transform: rotate(-45deg) scale(1.15);
+  z-index: 3;
+  box-shadow: 0 0 0 3px var(--rr-pin-ring),
+    0 0 0 7px color-mix(in oklab, var(--rr-accent-hi) 45%, transparent),
+    0 4px 12px rgba(0, 0, 0, 0.45);
+  transform: rotate(-45deg) scale(1.5);
+}
+/* With something selected, everything else steps back. Without this the
+ * selection is only ever brighter than its neighbours; with it, the map has
+ * a subject. */
+.map-has-selection .map-pin:not(.active):not(.you) {
+  opacity: 0.45;
+}
+.map-has-selection .map-pin.named:not(.active) {
+  opacity: 0.7;
 }
 .map-pin.you {
   border-radius: 50%;
@@ -402,10 +541,20 @@ button:disabled,
 .map-pin.named .map-pin-label { color: var(--rr-accent-ink); }
 
 /* On a phone two dozen pins overlap into one mass. Smaller pins with no
- * numerals stay separable; the named/unnamed split does the rest. */
+ * numerals stay separable; the named/unnamed split does the rest.
+ *
+ * The selected pin is the exception. It is a single pin, it is the answer to
+ * what you just tapped, and it needs to be findable — so it keeps full size
+ * and gets its numeral back, which is also the number you are looking at in
+ * the list. */
 @media (max-width: 767px) {
   .map-pin { width: 15px; height: 15px; border-width: 1.5px; }
   .map-pin-label { display: none; }
+  /* The element itself grew, so the scale on top of it comes back down —
+     otherwise the selected pin is 36px and covers its own neighbours. */
+  .map-pin.active { width: 24px; height: 24px; border-width: 2px; transform: rotate(-45deg) scale(1.1); }
+  .map-pin.active:hover { transform: rotate(-45deg) scale(1.1); }
+  .map-pin.active .map-pin-label { display: block; line-height: 20px; font-size: 11px; }
 }
 
 .maplibregl-popup-content {

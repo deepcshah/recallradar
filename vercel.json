@@ -1,5 +1,20 @@
 {
   "crons": [
     { "path": "/api/refresh-tiles", "schedule": "0 9 * * *" }
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "//": "Vercel already 308s http -> https at the edge, but only after the plaintext request has been made. HSTS closes that first request: once a browser has seen this header it rewrites http:// to https:// itself, before anything leaves the machine. Two years is the usual value. No 'preload' - that submits the domain to a list baked into browser binaries and is slow to undo, which is the wrong commitment for a beta.",
+          "key": "Strict-Transport-Security",
+          "value": "max-age=63072000; includeSubDomains"
+        },
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "X-Frame-Options", "value": "SAMEORIGIN" }
+      ]
+    }
   ]
 }

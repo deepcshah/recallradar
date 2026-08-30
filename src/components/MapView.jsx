@@ -163,13 +163,17 @@ const MapView = forwardRef(function MapView(
   }, [labels, named, activeIndex, stores]);
 
   useImperativeHandle(ref, () => ({
-    focusStore(i) {
+    focusStore(i, { popup = true } = {}) {
       const map = mapRef.current;
       const marker = markersRef.current[i];
       if (!map || !marker) return;
       map.flyTo({ center: marker.getLngLat(), zoom: Math.max(map.getZoom(), 13.5), duration: 700 });
-      markersRef.current.forEach((m, j) => { if (j !== i && m.getPopup().isOpen()) m.togglePopup(); });
-      if (!marker.getPopup().isOpen()) marker.togglePopup();
+      // Only one bubble at a time, and none at all when the caller says the
+      // map is too small to spare the room.
+      markersRef.current.forEach((m, j) => {
+        if ((j !== i || !popup) && m.getPopup().isOpen()) m.togglePopup();
+      });
+      if (popup && !marker.getPopup().isOpen()) marker.togglePopup();
     },
     resize() {
       setTimeout(() => mapRef.current && mapRef.current.resize(), 60);
