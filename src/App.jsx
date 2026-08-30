@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Armchair, Baby, Beef, Bike, Candy, Carrot, ChevronDown, Crosshair, CupSoda, ExternalLink,
+  Armchair, Baby, Beef, Bike, Candy, Carrot, Check, Crosshair, CupSoda, ExternalLink,
   Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package, PanelRightClose, PanelRightOpen,
   PawPrint, Pill, Plug, Plus, Radar, Rows2, Columns2, Search, SearchX, ShieldCheck, Soup,
   Stethoscope, Sun, Moon, MonitorSmartphone, UtensilsCrossed, Wheat, X, Zap,
@@ -8,6 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { MultiSelect } from "@/components/ui/multi-select";
 import MapView from "@/components/MapView";
 import { browserPosition, reverseGeocode, geocodeInput } from "@/lib/geo";
 import { fetchAll, retryBlockedFsis, sortRecalls } from "@/lib/sources";
@@ -96,10 +97,27 @@ function StoreSkeleton({ delay = 0 }) {
   );
 }
 
+/* One line of the scan overlay's checklist. The two lookups run in sequence —
+ * stores can't be searched until the recalls name the chains to search for —
+ * so showing them as steps is the honest picture of what the app is doing. */
+function ScanStep({ state, label, detail }) {
+  return (
+    <li className="flex items-center gap-2 text-[12px]">
+      <span className="flex size-4 shrink-0 items-center justify-center">
+        {state === "done" ? <Check className="size-3.5 text-mint" strokeWidth={3} />
+          : state === "busy" ? <Loader2 className="size-3.5 animate-spin text-mint" />
+            : <span className="size-1.5 rounded-full bg-line-strong" />}
+      </span>
+      <span className={state === "waiting" ? "text-subtle" : "font-semibold text-paper"}>{label}</span>
+      <span className="tnum ml-auto text-[11px] text-fog">{detail}</span>
+    </li>
+  );
+}
+
 function EmptyState({ icon: Icon, title, children, compact }) {
   return (
     <div className={"fade-item flex flex-col items-center gap-1.5 rounded-xl border border-dashed border-line bg-panel-2/40 px-5 text-center " + (compact ? "py-6" : "py-9")}>
-      <span className="flex size-9 items-center justify-center rounded-full border border-mint/30 bg-mint/10">
+      <span className="flex size-9 items-center justify-center rounded-full border border-mint-line bg-mint-soft">
         <Icon className="size-4 text-mint" />
       </span>
       <p className="mt-0.5 text-sm font-semibold">{title}</p>
@@ -177,7 +195,7 @@ export default function App() {
   const [isWide, setIsWide] = useState(false); // md+ : the only place resizing applies
 
   const [filterText, setFilterText] = useState("");
-  const [category, setCategory] = useState("all");
+  const [categoryKeys, setCategoryKeys] = useState([]); // empty = every type
   const [sortBy, setSortBy] = useState("newest"); // newest | risk
   const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [storeScope, setStoreScope] = useState("named"); // named | area
@@ -197,69 +215,106 @@ export default function App() {
 
   const { byChain } = useMemo(() => chainsFor(recalls), [recalls]);
 
-  const loadStores = useCallback(async (recallList, locArg, radiusArg, attempt = 0) => {
-    const chainList = chainsToSearch(recallList);
-    setActiveStore(-1);
-    setStoresStatus({
-      msg: attempt === 0
-        ? `Finding grocery stores near you — chains and independents…`
-        : "First attempt failed — retrying…",
-      busy: true,
-    });
-    try {
-      const found = await findStores(chainList, locArg, radiusArg);
-      setStores(found);
-      setStoresStatus(found.length ? null : {
-        empty: true,
-        title: "nothing in range",
-        msg: "No stores found within this radius — try a wider one.",
-      });
-    } catch (err) {
-      if (attempt === 0) {
-        await new Promise((r) => setTimeout(r, 3000));
-        return loadStores(recallList, locArg, radiusArg, 1);
-      }
+  /* The chains the store lookup should search for, plus a stable key for them.
+   * Recalls land in two waves — the API payload, then USDA fetched directly by
+   * the browser — so this set can grow after the first scan. */
+  const searchChains = useMemo(() => chainsToSearch(recalls), [recalls]);
+  const chainKey = useMemo(() => searchChains.map((c) => c.id).sort().join(","), [searchChains]);
+  const searchChainsRef = useRef(searchChains);
+  searchChainsRef.current = searchChains;
+
+  /* Last request wins. A lookup still in flight for the old radius must never
+   * overwrite the one the user is actually waiting on. */
+  const storeRunRef = useRef(0);
+
+  const loadStores = useCallback(async (locArg, radiusArg, { quiet = false } = {}) => {
+    const run = ++storeRunRef.current;
+    const stale = () => run !== storeRunRef.current;
+    if (!quiet) {
+      setActiveStore(-1);
       setStores([]);
-      setStoresStatus({
-        msg: `Store lookup failed (${err.message}). The product list is unaffected.`,
-        error: true,
-        retry: () => loadStores(recallList, locArg, radiusArg),
-      });
+      setStoresStatus({ msg: "Finding grocery stores near you — chains and independents…", busy: true });
+    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const found = await findStores(searchChainsRef.current, locArg, radiusArg);
+        if (stale()) return;
+        setStores(found);
+        setStoresStatus(found.length ? null : {
+          empty: true,
+          title: "Nothing in range",
+          msg: "No stores found within this radius — try a wider one.",
+        });
+        return;
+      } catch (err) {
+        if (stale()) return;
+        if (attempt === 0) {
+          setStoresStatus({ msg: "First attempt failed — retrying…", busy: true });
+          await new Promise((r) => setTimeout(r, 3000));
+          if (stale()) return;
+          continue;
+        }
+        setStores([]);
+        setStoresStatus({
+          msg: `Store lookup failed (${err.message}). The recall list is unaffected.`,
+          error: true,
+          retry: () => loadStores(locArg, radiusArg),
+        });
+      }
     }
   }, []);
 
-  const loadAll = useCallback(async (locArg, radiusArg) => {
+  const loadRecalls = useCallback(async (locArg) => {
     setProductsBusy(true);
     setRecalls([]);
-    setStores([]);
+    setSources([]);
     setLimit(25);
-    const { recalls: fetched, sources: srcs } = await fetchAll(locArg);
-    setRecalls(fetched);
-    setSources(srcs);
-    setActiveSources(new Set(fetched.map((r) => r.source)));
-    setProductsBusy(false);
+    try {
+      const { recalls: fetched, sources: srcs } = await fetchAll(locArg);
+      setRecalls(fetched);
+      setSources(srcs);
+      setActiveSources(new Set(fetched.map((r) => r.source)));
 
-    /* USDA blocks our server but usually not the browser, so retry it here and
-     * fold the result in when it lands. Deliberately not awaited: the stores
-     * lookup is the slow part of the page and must not wait on a source that
-     * may well be blocked here too. */
-    retryBlockedFsis(locArg, srcs).then((late) => {
-      if (!late) return;
-      setRecalls((prev) => sortRecalls([...prev, ...late.recalls]));
-      setSources(late.sources);
-      // Source chips are seeded from the first payload, so a source that
-      // arrives late has to opt itself in or its notices stay filtered out.
-      setActiveSources((prev) => new Set(prev).add("USDA FSIS"));
-    });
+      /* USDA blocks our server but usually not the browser, so retry it here and
+       * fold the result in when it lands. Deliberately not awaited: the stores
+       * lookup is the slow part of the page and must not wait on a source that
+       * may well be blocked here too. */
+      retryBlockedFsis(locArg, srcs).then((late) => {
+        if (!late) return;
+        setRecalls((prev) => sortRecalls([...prev, ...late.recalls]));
+        setSources(late.sources);
+        // Source chips are seeded from the first payload, so a source that
+        // arrives late has to opt itself in or its notices stay filtered out.
+        setActiveSources((prev) => new Set(prev).add("USDA FSIS"));
+      });
+    } finally {
+      setProductsBusy(false);
+    }
+  }, []);
 
-    await loadStores(fetched, locArg, radiusArg);
-  }, [loadStores]);
+  /* Store loading has exactly one trigger: this effect. The first load, a new
+   * location and a radius change all take the same path — previously the first
+   * load was an imperative tail-call inside the recall fetch and the radius
+   * buttons were their own call, which is why nudging the radius could make
+   * stores appear that had never loaded on their own. */
+  const lastScanRef = useRef("");
+  useEffect(() => {
+    if (!loc || productsBusy) return;
+    const place = `${loc.lat},${loc.lon}|${radius}`;
+    const key = `${place}|${chainKey}`;
+    if (key === lastScanRef.current) return;
+    // Only the chain list changed (USDA landed late): refresh in place instead
+    // of dropping the user's selection and replaying the whole scan overlay.
+    const quiet = lastScanRef.current.startsWith(`${place}|`);
+    lastScanRef.current = key;
+    loadStores(loc, radius, { quiet });
+  }, [loc, radius, chainKey, productsBusy, loadStores]);
 
   const setLocation = useCallback(async (newLoc) => {
     setLoc(newLoc);
     setLocStatus(newLoc.state ? null : { msg: "Couldn't determine your state — showing nationwide recalls only." });
-    await loadAll(newLoc, radius);
-  }, [loadAll, radius]);
+    await loadRecalls(newLoc);
+  }, [loadRecalls]);
 
   async function useGeolocation() {
     setLocStatus({ msg: "Locating you…", busy: true });
@@ -287,11 +342,6 @@ export default function App() {
     } catch (err) {
       setLocStatus({ msg: err.message, error: true });
     }
-  }
-
-  function onRadiusChange(v) {
-    setRadius(v);
-    if (loc) loadStores(recalls, loc, v);
   }
 
   /** Selecting a store is one action: focus its pin and scope the product list.
@@ -390,14 +440,25 @@ export default function App() {
   // Inline basis drives both axes; on phones the tabs own the sizing instead.
   const storesStyle = isWide ? { flexBasis: `${splitPct}%`, flexGrow: 0, flexShrink: 0 } : undefined;
 
-  const categories = useMemo(() => {
+  const categoryOptions = useMemo(() => {
     const m = new Map();
     for (const r of recalls) {
       const c = categoryFor(r);
-      m.set(c.key, c.label);
+      const hit = m.get(c.key);
+      if (hit) hit.count += 1;
+      else m.set(c.key, { value: c.key, label: c.label, count: 1 });
     }
-    return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+    return [...m.values()].sort((a, b) => a.label.localeCompare(b.label));
   }, [recalls]);
+
+  // A new location brings a different set of types; drop any selection that no
+  // longer exists rather than silently filtering everything out.
+  useEffect(() => {
+    if (!categoryKeys.length) return;
+    const have = new Set(categoryOptions.map((o) => o.value));
+    const next = categoryKeys.filter((k) => have.has(k));
+    if (next.length !== categoryKeys.length) setCategoryKeys(next);
+  }, [categoryOptions, categoryKeys]);
 
   const selectedStore = activeStore >= 0 ? stores[activeStore] : null;
 
@@ -410,14 +471,15 @@ export default function App() {
     const q = filterText.trim().toLowerCase();
     const chainScope =
       selectedStore && storeScope === "named" ? new Set(selectedStore.chainIds) : null;
+    const catScope = categoryKeys.length ? new Set(categoryKeys) : null;
     return recalls.filter((r) => {
       if (!activeSources.has(r.source)) return false;
-      if (category !== "all" && categoryFor(r).key !== category) return false;
+      if (catScope && !catScope.has(categoryFor(r).key)) return false;
       if (chainScope && !(r.retailerIds || []).some((id) => chainScope.has(id))) return false;
       if (!q) return true;
       return [r.product, r.firm, r.reason, r.distribution, r.source].join(" ").toLowerCase().includes(q);
     });
-  }, [recalls, filterText, activeSources, category, selectedStore, storeScope]);
+  }, [recalls, filterText, activeSources, categoryKeys, selectedStore, storeScope]);
 
   // Severity-first ordering pushed months-old class I notices above this
   // week's, which reads as stale data. Newest is the default; risk is a choice.
@@ -490,11 +552,11 @@ export default function App() {
 
   /* Pin numerals follow the list's display order, and pins the list is
    * currently hiding get no numeral at all. Index-aligned with `stores`. */
-  const { pinLabels, pinFlagged } = useMemo(() => {
+  const { pinLabels, pinNamed } = useMemo(() => {
     const labels = stores.map(() => "");
     const flags = stores.map((st) => namedRecallsFor(st).length > 0);
     rankedStores.forEach(({ i }, pos) => { labels[i] = String(pos + 1); });
-    return { pinLabels: labels, pinFlagged: flags };
+    return { pinLabels: labels, pinNamed: flags };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stores, rankedStores, byChain]);
 
@@ -513,19 +575,22 @@ export default function App() {
     }
     if (!named.size) {
       return { tone: "calm",
-        text: `No recall names a store near you — ${recalls.length} notice${recalls.length === 1 ? "" : "s"} cover ${loc?.stateAbbr || "your area"}.` };
+        text: `No notice names a store near you — ${recalls.length} recall${recalls.length === 1 ? "" : "s"} cover ${loc?.stateAbbr || "your area"}.` };
     }
-    return { tone: "alert",
+    return { tone: "match",
       text: `${chains.size} chain${chains.size === 1 ? "" : "s"} near you ${chains.size === 1 ? "is" : "are"} named in ` +
-            `${named.size} recall${named.size === 1 ? "" : "s"}${high ? `, ${high} high-risk` : ""}.` };
+            `${named.size} recall notice${named.size === 1 ? "" : "s"}${high ? `, ${high} class I` : ""}.` };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stores, recalls, byChain, loc, storesStatus, productsBusy]);
 
-  const flaggedCount = useMemo(
+  const namedStoreCount = useMemo(
     () => stores.reduce((n, s) => n + (namedRecallsFor(s).length > 0 ? 1 : 0), 0),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [stores, byChain]
   );
+
+  // Both lookups roll up into one "the app is working" flag.
+  const scanning = productsBusy || Boolean(storesStatus?.busy);
 
   const showStores = "flex " + (mobileTab === "stores" ? "" : "max-md:hidden ");
   const showProducts = "flex " + (mobileTab === "products" ? "" : "max-md:hidden ");
@@ -551,30 +616,28 @@ export default function App() {
                 type="search"
                 value={filterText}
                 onChange={(e) => { setFilterText(e.target.value); setLimit(25); }}
-                placeholder="search recalls…"
+                placeholder="Search recalls…"
                 aria-label="Search recalled products"
                 className="h-9 pl-9 text-[13px]"
               />
             </div>
-            <div className="relative shrink-0">
-              <select
-                id="filter-category"
-                value={category}
-                onChange={(e) => { setCategory(e.target.value); setLimit(25); }}
-                aria-label="Filter by product type"
-                className="h-9 appearance-none rounded-full border border-line bg-panel-2 pl-3.5 pr-8 tnum text-[11px] uppercase tracking-wider text-fog focus-visible:border-mint/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60"
-              >
-                <option value="all">all types</option>
-                {categories.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-              </select>
-              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-fog" />
-            </div>
+            <MultiSelect
+              id="filter-category"
+              className="shrink-0"
+              options={categoryOptions}
+              selected={categoryKeys}
+              onChange={(next) => { setCategoryKeys(next); setLimit(25); }}
+              allLabel="All Types"
+              itemNoun="Types"
+              searchPlaceholder="Search types…"
+              emptyText="No product types loaded yet"
+            />
           </div>
 
           {/* -- right: location -- */}
           <div className="flex min-w-0 items-center gap-2">
             {loc && (
-              <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 rounded-full border border-mint/40 bg-mint/10 px-3 py-1 text-[13px] font-semibold text-mint md:max-w-[15rem] md:flex-none">
+              <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 rounded-full border border-mint-line bg-mint-soft px-3 py-1 text-[13px] font-semibold text-mint md:max-w-[15rem] md:flex-none">
                 <MapPin className="size-3.5 shrink-0" />
                 <span id="location-label" className="truncate">{loc.label}</span>
               </span>
@@ -594,7 +657,7 @@ export default function App() {
               </Button>
             </form>
             <Button id="btn-geolocate" size="sm" className="h-9 px-3" onClick={useGeolocation} aria-label="Use my location">
-              <Crosshair /><span className="hidden xl:inline">my location</span>
+              <Crosshair /><span className="hidden xl:inline">My Location</span>
             </Button>
             <Button
               id="btn-theme" variant="secondary" size="icon" className="h-9 w-9 shrink-0"
@@ -623,13 +686,13 @@ export default function App() {
         <div className="relative min-h-0 shrink-0 basis-[42%] md:min-w-0 md:flex-1 md:basis-auto">
           {loc ? (
             <MapView ref={mapRef} loc={loc} stores={stores}
-                     labels={pinLabels} flagged={pinFlagged} activeIndex={activeStore}
+                     labels={pinLabels} named={pinNamed} activeIndex={activeStore}
                      theme={resolvedTheme}
                      onMarkerClick={onMarkerClick} />
           ) : (
             <div className="flex h-full items-center justify-center px-6">
               <div className="fade-item max-w-sm text-center">
-                <span className="mx-auto flex size-12 items-center justify-center rounded-full border border-mint/30 bg-mint/10">
+                <span className="mx-auto flex size-12 items-center justify-center rounded-full border border-mint-line bg-mint-soft">
                   <Radar className="size-6 text-mint" />
                 </span>
                 <h1 className="mt-4 text-xl font-bold tracking-tight sm:text-2xl">
@@ -640,9 +703,9 @@ export default function App() {
                   stores near you, chains and independents alike.
                 </p>
                 <Button className="mx-auto mt-4" onClick={useGeolocation}>
-                  <Crosshair /> use my location
+                  <Crosshair /> Use My Location
                 </Button>
-                <p className="microlabel mt-3">or enter a ZIP above</p>
+                <p className="microlabel mt-3">Or enter a ZIP above</p>
                 <p className="mt-5 text-xs leading-relaxed text-subtle">
                   Beta. Recall data comes from public government feeds and is matched to stores by name —
                   expect gaps and false matches. Not a substitute for the official notice.
@@ -651,21 +714,35 @@ export default function App() {
             </div>
           )}
 
-          {storesStatus?.busy && (
-            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center overflow-hidden bg-ink/55 backdrop-blur-[2px]">
+          {/* One overlay for the whole scan. The two lookups are sequential —
+              the recalls name the chains the store search then looks for — so
+              the steps are shown as a checklist instead of two loading states
+              that appear to be racing each other. */}
+          {scanning && (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center overflow-hidden bg-ink/70 backdrop-blur-[2px]">
               <span className="radar-sweep" />
               {[0, 1, 2].map((i) => (
                 <span key={i} className="radar-ring"
                       style={{ animationDelay: `calc(var(--rr-radar-stagger) * ${i})` }} />
               ))}
               <span className="radar-dot" />
-              <div className="absolute bottom-8 flex flex-col items-center gap-1">
+              <div className="absolute bottom-6 flex w-full max-w-[19rem] flex-col items-center gap-2 px-4">
                 <p className="text-sm font-semibold text-paper">Scanning {loc?.label || "your area"}</p>
-                <p className="text-xs text-fog">
-                  {recalls.length
-                    ? `${recalls.length} recalls loaded · finding nearby stores`
-                    : "loading recall notices…"}
-                </p>
+                <ul id="scan-steps" role="status" aria-live="polite"
+                    className="elev-2 flex w-full flex-col gap-1.5 rounded-xl border border-line bg-panel px-3 py-2.5">
+                  <ScanStep
+                    state={productsBusy ? "busy" : "done"}
+                    label="Recall notices"
+                    detail={productsBusy ? "Loading…" : `${recalls.length} found`}
+                  />
+                  <ScanStep
+                    state={productsBusy ? "waiting" : storesStatus?.busy ? "busy" : "done"}
+                    label="Nearby stores"
+                    detail={productsBusy ? "Waiting on notices"
+                      : storesStatus?.busy ? `Searching ${RADII.find((r) => r.value === radius)?.label || ""} mi…`
+                        : `${stores.length} found`}
+                  />
+                </ul>
               </div>
             </div>
           )}
@@ -678,7 +755,7 @@ export default function App() {
                 onClick={() => setListHidden(!listHidden)}
                 className="bg-panel/90 backdrop-blur"
               >
-                {listHidden ? <><PanelRightOpen /> show lists</> : <><PanelRightClose /> hide lists</>}
+                {listHidden ? <><PanelRightOpen /> Show Lists</> : <><PanelRightClose /> Hide Lists</>}
               </Button>
               {!listHidden && (
                 <Button
@@ -689,7 +766,7 @@ export default function App() {
                   className="bg-panel/90 px-3 backdrop-blur"
                 >
                   {sideBySide ? <Rows2 /> : <Columns2 />}
-                  <span className="hidden lg:inline">{sideBySide ? "stacked" : "side by side"}</span>
+                  <span className="hidden lg:inline">{sideBySide ? "Stacked" : "Side by Side"}</span>
                 </Button>
               )}
             </div>
@@ -705,14 +782,14 @@ export default function App() {
             {headline && (
               <p id="headline"
                  className={"shrink-0 border-b border-line px-4 py-2.5 text-[13px] font-semibold " +
-                   (headline.tone === "alert" ? "bg-alert/[0.07] text-alert" : "bg-panel text-fog")}>
+                   (headline.tone === "match" ? "bg-mint-soft text-paper" : "bg-panel text-fog")}>
                 {headline.text}
               </p>
             )}
 
             {/* mobile tab switch */}
             <div className="flex shrink-0 border-b border-line md:hidden" role="tablist">
-              {[["stores", `stores · ${stores.length}`], ["products", `products · ${filtered.length}`]].map(([k, lbl]) => (
+              {[["stores", `Stores · ${stores.length}`], ["products", `Recalls · ${filtered.length}`]].map(([k, lbl]) => (
                 <button key={k} role="tab" aria-selected={mobileTab === k} onClick={() => setMobileTab(k)}
                         className={"flex-1 py-2.5 tnum text-[11px] uppercase tracking-wider transition-colors " +
                           (mobileTab === k ? "border-b-2 border-mint text-mint" : "text-fog")}>
@@ -727,24 +804,24 @@ export default function App() {
             {/* ---- stores ---- */}
             <section className={showStores + "min-h-0 flex-1 flex-col overflow-hidden"} style={storesStyle}>
               <PanelHeader
-                label="stores" countId="stat-stores" count={storesStatus?.busy ? "…" : stores.length}
-                note={flaggedCount > 0 && (
+                label="Stores" countId="stat-stores" count={scanning ? "…" : stores.length}
+                note={namedStoreCount > 0 && (
                   <button id="btn-flagged-only" onClick={() => setFlaggedOnly(!flaggedOnly)}
                           aria-pressed={flaggedOnly}
-                          title="Show only stores a recall names"
+                          title="Show only stores whose chain a notice names"
                           className={"rounded-full border px-2 py-0.5 tnum text-[10px] uppercase tracking-wider transition-colors " +
-                            (flaggedOnly ? "border-alert bg-alert/15 text-alert" : "border-alert/40 text-alert hover:bg-alert/10")}>
-                    {flaggedCount} flagged
+                            (flaggedOnly ? "border-mint bg-mint text-mint-ink" : "border-mint-line bg-mint-soft text-mint hover:border-mint")}>
+                    {namedStoreCount} Named
                   </button>
                 )}
               >
-                <span className="microlabel">within</span>
+                <span className="microlabel">Within</span>
                 <div className="flex gap-1" role="group" aria-label="Store search radius">
                   {RADII.map((r) => (
-                    <button key={r.value} type="button" onClick={() => onRadiusChange(r.value)}
+                    <button key={r.value} type="button" onClick={() => setRadius(r.value)}
                             aria-pressed={radius === r.value}
                             className={"rounded-full border px-2 py-0.5 tnum text-[11px] transition-colors " +
-                              (radius === r.value ? "border-mint bg-mint/15 text-mint" : "border-line text-fog hover:border-mint/40")}>
+                              (radius === r.value ? "border-mint bg-mint-soft text-mint" : "border-line text-fog hover:border-mint-line")}>
                       {r.label}
                     </button>
                   ))}
@@ -755,11 +832,11 @@ export default function App() {
               <div className="sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 {storesStatus && !storesStatus.empty && (
                   <div id="stores-status" role="status" aria-live="polite"
-                       className={"mb-2 flex flex-wrap items-center gap-2 text-xs " + (storesStatus.error ? "text-alert" : "text-fog")}>
-                    {storesStatus.busy && <Loader2 className="size-3 animate-spin" />}
-                    <span>{storesStatus.msg}</span>
+                       className={"mb-2 flex items-start gap-2 text-xs " + (storesStatus.error ? "text-alert" : "text-fog")}>
+                    {storesStatus.busy && <Loader2 className="mt-0.5 size-3 shrink-0 animate-spin" />}
+                    <span className="min-w-0 flex-1">{storesStatus.msg}</span>
                     {storesStatus.retry && (
-                      <Button id="btn-retry-stores" variant="outline" size="sm" onClick={storesStatus.retry}>retry</Button>
+                      <Button id="btn-retry-stores" variant="outline" size="sm" onClick={storesStatus.retry}>Retry</Button>
                     )}
                   </div>
                 )}
@@ -768,7 +845,7 @@ export default function App() {
                     <EmptyState icon={MapPinOff} title={storesStatus.title} compact>{storesStatus.msg}</EmptyState>
                   </div>
                 )}
-                {storesStatus?.busy && !stores.length && (
+                {scanning && !stores.length && (
                   <ul className="flex flex-col gap-2">{[0, 1, 2, 3, 4].map((i) => <StoreSkeleton key={i} delay={i * stagger * 2} />)}</ul>
                 )}
 
@@ -780,9 +857,9 @@ export default function App() {
                       data-index={i}
                       onClick={() => selectStore(i)}
                       className={"store-item lift fade-item elev-1 cursor-pointer rounded-xl border bg-panel-2 p-3 " +
-                        (activeStore === i ? "active border-mint bg-mint/[0.07]"
-                          : selectedStore && sameChain(s) ? "same-chain border-mint/50 bg-mint/[0.03]"
-                            : n > 0 ? "border-alert/40 hover:border-alert/70" : "border-line hover:border-mint/40")}
+                        (activeStore === i ? "active border-mint bg-mint-soft ring-1 ring-mint"
+                          : selectedStore && sameChain(s) ? "same-chain border-mint-line bg-panel-3"
+                            : n > 0 ? "border-mint-line hover:border-mint" : "border-line hover:border-line-strong")}
                     >
                       <div className="flex items-baseline gap-2">
                         <span className="store-name truncate text-sm font-semibold">
@@ -795,21 +872,25 @@ export default function App() {
                         {s.independent && (
                           <span className="store-local rounded-full border border-line px-1.5 py-px tnum text-[10px] uppercase tracking-wider text-fog"
                                 title="Not part of a chain we can match against recall notices">
-                            local
+                            Local
                           </span>
                         )}
+                        {/* Deliberately unalarmed language and colour. A store
+                            appearing here is a name match on a notice, not a
+                            verdict on the store — and most independents can
+                            never match at all, which is a gap in the data
+                            rather than a clean bill of health. */}
                         <p className={"tnum text-[11px] " +
-                          (activeStore === i || (selectedStore && sameChain(s)) ? "text-mint"
-                            : n > 0 ? "text-alert" : "text-subtle")}>
+                          (activeStore === i || (selectedStore && sameChain(s)) || n > 0 ? "text-mint" : "text-subtle")}>
                           {activeStore === i
-                            ? (sideBySide && isWide ? "showing its recalls →" : "showing its recalls below ↓")
+                            ? (sideBySide && isWide ? "Showing its recalls →" : "Showing its recalls below ↓")
                             : selectedStore && sameChain(s)
-                              ? "same chain — included above"
+                              ? "Same chain — included above"
                               : n > 0
-                                ? `${n === 1 ? "1 recall names" : `${n} recalls name`} this chain → tap`
+                                ? `Named in ${n} notice${n === 1 ? "" : "s"} — tap to filter`
                                 : s.independent
-                                  ? "independent — tap for area recalls"
-                                  : "no recall names this chain"}
+                                  ? "Independent — tap for area notices"
+                                  : "No notice names this chain"}
                         </p>
                       </div>
                     </li>
@@ -833,10 +914,10 @@ export default function App() {
                 onPointerCancel={onSplitPointerUp}
                 onDoubleClick={resetSplit}
                 onKeyDown={onSplitKeyDown}
-                className={"group flex shrink-0 items-center justify-center border-line bg-panel transition-colors hover:bg-mint/10 focus-visible:bg-mint/15 focus-visible:outline-none " +
+                className={"group flex shrink-0 items-center justify-center border-line bg-panel transition-colors hover:bg-mint-soft focus-visible:bg-mint-soft focus-visible:outline-none " +
                   (sideBySide ? "w-2 cursor-col-resize border-x" : "h-2 cursor-row-resize border-y")}
               >
-                <span className={"rounded-full bg-line transition-colors group-hover:bg-mint/60 " +
+                <span className={"rounded-full bg-line transition-colors group-hover:bg-mint " +
                   (sideBySide ? "h-8 w-0.5" : "h-0.5 w-8")} />
               </div>
             )}
@@ -844,17 +925,17 @@ export default function App() {
             {/* ---- products ---- */}
             <section className={showProducts + "min-h-0 flex-1 flex-col overflow-hidden " + (isWide ? "" : "border-t border-line")}>
               <PanelHeader
-                label="recalls" countId="stat-recalls" count={productsBusy ? "…" : sorted.length}
+                label="Recalls" countId="stat-recalls" count={productsBusy ? "…" : sorted.length}
                 note={highCount > 0 && (
-                  <span id="stat-high" className="tnum text-[11px] text-alert">{highCount} high-risk</span>
+                  <span id="stat-high" className="tnum text-[11px] text-amber">{highCount} high-risk</span>
                 )}
               >
-                <span className="microlabel">sort</span>
-                {[["newest", "newest"], ["risk", "risk"]].map(([k, lbl]) => (
+                <span className="microlabel">Sort</span>
+                {[["newest", "Newest"], ["risk", "Risk"]].map(([k, lbl]) => (
                   <button key={k} type="button" onClick={() => { setSortBy(k); setLimit(25); }}
                           aria-pressed={sortBy === k}
                           className={"rounded-full border px-2 py-0.5 tnum text-[10px] uppercase tracking-wider transition-colors " +
-                            (sortBy === k ? "border-mint bg-mint/15 text-mint" : "border-line text-fog hover:border-mint/40")}>
+                            (sortBy === k ? "border-mint bg-mint-soft text-mint" : "border-line text-fog hover:border-mint-line")}>
                     {lbl}
                   </button>
                 ))}
@@ -867,7 +948,7 @@ export default function App() {
                     <button
                       id="btn-clear-store"
                       onClick={() => setActiveStore(-1)}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-mint bg-mint/15 px-2.5 py-0.5 text-[11px] font-semibold text-mint hover:bg-mint/25"
+                      className="inline-flex items-center gap-1.5 rounded-full border border-mint bg-mint-soft px-2.5 py-0.5 text-[11px] font-semibold text-mint hover:bg-mint hover:text-mint-ink"
                     >
                       <MapPin className="size-3" /> {truncate(selectedStore.name, 22)}
                       {activeChainStores.length > 1 && (
@@ -879,10 +960,10 @@ export default function App() {
                     </button>
                     <div id="store-scope" className="flex gap-1" role="group" aria-label="How this store relates to the recall">
                       {[
-                        ["named", `names it · ${namedCount}`, namedCount === 0
+                        ["named", `Names It · ${namedCount}`, namedCount === 0
                           ? "No notice names this store's chain"
                           : "Notices that name this chain by name"],
-                        ["area", `in ${loc?.stateAbbr || "your area"} · ${recalls.length}`,
+                        ["area", `In ${loc?.stateAbbr || "Your Area"} · ${recalls.length}`,
                           "Every notice covering your area — it names no retailer, so it could be on any shelf here"],
                       ].map(([k, lbl, title]) => (
                         <button key={k} type="button" title={title}
@@ -890,14 +971,14 @@ export default function App() {
                                 onClick={() => { setStoreScope(k); setLimit(25); }}
                                 aria-pressed={storeScope === k}
                                 className={"rounded-full border px-2 py-0.5 tnum text-[10px] uppercase tracking-wider transition-colors disabled:cursor-not-allowed disabled:opacity-40 " +
-                                  (storeScope === k ? "border-mint bg-mint/15 text-mint" : "border-line text-fog hover:border-mint/40")}>
+                                  (storeScope === k ? "border-mint bg-mint-soft text-mint" : "border-line text-fog hover:border-mint-line")}>
                           {lbl}
                         </button>
                       ))}
                     </div>
                   </>
                 ) : (
-                  <span className="microlabel">all nearby stores</span>
+                  <span className="microlabel">All nearby stores</span>
                 )}
                 <div id="source-chips" className="ml-auto flex flex-wrap gap-1" role="group" aria-label="Filter by source">
                   {sourceNames.map((name) => {
@@ -910,7 +991,7 @@ export default function App() {
                           setActiveSources(next); setLimit(25);
                         }}
                         className={"rounded-full border px-2 py-0.5 tnum text-[10px] uppercase tracking-wider transition-colors " +
-                          (on ? "border-mint bg-mint/15 text-mint" : "border-line text-fog hover:border-mint/40")}>
+                          (on ? "border-mint bg-mint-soft text-mint" : "border-line text-fog hover:border-mint-line")}>
                         {name}
                       </button>
                     );
@@ -923,16 +1004,16 @@ export default function App() {
                   <ul className="flex flex-col gap-2">{[0, 1, 2, 3].map((i) => <RecallSkeleton key={i} delay={i * stagger * 2} />)}</ul>
                 )}
                 {!productsBusy && recalls.length === 0 && (
-                  <EmptyState icon={ShieldCheck} title="all clear — for now">
+                  <EmptyState icon={ShieldCheck} title="All clear — for now">
                     No active recalls matched this area in the past year.
                   </EmptyState>
                 )}
                 {!productsBusy && recalls.length > 0 && sorted.length === 0 && (
                   <EmptyState icon={selectedStore ? ShieldCheck : SearchX}
-                              title={selectedStore ? "nothing names this store" : "no matches"}>
+                              title={selectedStore ? "Nothing names this store" : "No matches"}>
                     {selectedStore
                       ? `No active recall names ${selectedStore.name}. Most notices list only a state or "nationwide" and never name a retailer, so this is normal — switch to "in ${loc?.stateAbbr || "your area"}" to see all ${recalls.length} recalls that could reach this shelf.`
-                      : "Nothing matches the current filters — clear the search box or re-enable a source."}
+                      : "Nothing matches the current filters — clear the search box, the type filter, or re-enable a source."}
                   </EmptyState>
                 )}
 
@@ -951,7 +1032,7 @@ export default function App() {
                           <span className="tnum ml-auto text-[11px] text-fog">{fmtDate(r.date)}</span>
                         </div>
                         <div className="mt-2 flex items-start gap-2.5">
-                          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-mint/25 bg-mint/10"
+                          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-mint-line bg-mint-soft"
                                 title={cat.label} aria-label={cat.label}>
                             <CatIcon className="size-4 text-mint" aria-hidden="true" />
                           </span>
@@ -970,50 +1051,50 @@ export default function App() {
                           <div className="mt-2 flex flex-wrap items-center gap-1.5">
                             {nearby.map((si) => (
                               <button key={si} type="button" onClick={() => selectStore(si)}
-                                className="inline-flex items-center gap-1 rounded-full border border-mint/40 bg-mint/10 px-2 py-0.5 text-[11px] font-semibold text-mint hover:bg-mint/20">
+                                className="inline-flex items-center gap-1 rounded-full border border-mint-line bg-mint-soft px-2 py-0.5 text-[11px] font-semibold text-mint hover:border-mint">
                                 <MapPin className="size-3" /> {truncate(stores[si].name, 18)} · {stores[si].distanceMiles.toFixed(1)} mi
                               </button>
                             ))}
                             {unlinked.map((id) => byId(id)).filter(Boolean).map((c) => (
-                              <Badge key={c.id} variant="chain">sold at {c.label}</Badge>
+                              <Badge key={c.id} variant="chain">Sold at {c.label}</Badge>
                             ))}
                           </div>
                         )}
                         {selectedStore && storeScope === "area" && !(r.retailerIds || []).length && (
                           <p className="mt-2 tnum text-[11px] text-subtle">
-                            names no retailer — could be stocked anywhere in {regionLabel(r)}
+                            Names no retailer — could be stocked anywhere in {regionLabel(r)}
                           </p>
                         )}
 
                         <div className="mt-2.5 flex items-center gap-3">
                           <a className="inline-flex items-center gap-1 text-[13px] font-semibold text-mint underline-offset-2 hover:underline"
                              href={r.url} target="_blank" rel="noopener noreferrer">
-                            official notice <ExternalLink className="size-3" />
+                            Official Notice <ExternalLink className="size-3" />
                           </a>
                           <details className="recall-details min-w-0 flex-1">
-                            <summary className="cursor-pointer tnum text-[11px] text-fog hover:text-mint">details</summary>
+                            <summary className="cursor-pointer tnum text-[11px] text-fog hover:text-mint">Details</summary>
                             <dl className="mt-1.5 flex flex-col gap-1 text-[11px] text-fog">
                               <div className="flex gap-2">
-                                <dt className="microlabel shrink-0">source</dt>
+                                <dt className="microlabel shrink-0">Source</dt>
                                 <dd>{r.source}</dd>
                               </div>
                               <div className="flex gap-2">
-                                <dt className="microlabel shrink-0">type</dt>
+                                <dt className="microlabel shrink-0">Type</dt>
                                 <dd>{cat.label}</dd>
                               </div>
                               <div className="flex gap-2">
-                                <dt className="microlabel shrink-0">region</dt>
+                                <dt className="microlabel shrink-0">Region</dt>
                                 <dd title={r.distribution || undefined}>{regionLabel(r)}</dd>
                               </div>
                               {r.firm && (
                                 <div className="flex gap-2">
-                                  <dt className="microlabel shrink-0">firm</dt>
+                                  <dt className="microlabel shrink-0">Firm</dt>
                                   <dd className="[overflow-wrap:anywhere]">{r.firm}</dd>
                                 </div>
                               )}
                               {r.codeInfo && (
                                 <div className="flex gap-2">
-                                  <dt className="microlabel shrink-0">lots</dt>
+                                  <dt className="microlabel shrink-0">Lots</dt>
                                   <dd className="[overflow-wrap:anywhere]">{truncate(r.codeInfo, 400)}</dd>
                                 </div>
                               )}
@@ -1027,7 +1108,7 @@ export default function App() {
 
                 {remaining > 0 && (
                   <Button id="btn-more" variant="outline" size="sm" className="mx-auto mt-3 flex" onClick={() => setLimit(limit + 25)}>
-                    <Plus /> {Math.min(remaining, 25)} more ({remaining} left)
+                    <Plus /> Show {Math.min(remaining, 25)} More · {remaining} Left
                   </Button>
                 )}
               </div>
@@ -1046,11 +1127,11 @@ export default function App() {
         <div className="flex items-center gap-2">
           {sources.map((s) => (
             <span key={s.name} title={s.ok ? `${s.name}: ${s.count} matching` : `${s.name}: ${s.error || "unavailable"}`}
-                  className={"size-1.5 rounded-full " + (s.ok ? "bg-mint" : "bg-alert")} aria-hidden="true" />
+                  className={"size-1.5 rounded-full " + (s.ok ? "bg-mint" : "bg-amber")} aria-hidden="true" />
           ))}
           <button onClick={() => setAboutOpen(true)}
                   className="inline-flex items-center gap-1 tnum text-[11px] uppercase tracking-wider text-fog hover:text-mint">
-            <Info className="size-3" /> about
+            <Info className="size-3" /> About
           </button>
         </div>
       </footer>
@@ -1065,7 +1146,7 @@ export default function App() {
           <div className="fade-item max-h-[80vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-line bg-panel p-5 text-sm text-fog"
                onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between">
-              <p className="microlabel text-paper">about this data</p>
+              <p className="microlabel text-paper">About this data</p>
               <button onClick={() => setAboutOpen(false)} aria-label="Close" className="text-fog hover:text-paper"><X className="size-4" /></button>
             </div>
             <p className="mt-3">
@@ -1088,7 +1169,7 @@ export default function App() {
             <p className="mt-3">
               <span className="text-paper">Chains vs. independents.</span>{" "}
               A notice can only be tied to a storefront when it names the chain, so independent groceries — marked{" "}
-              <span className="tnum text-[11px] uppercase tracking-wider">local</span> — never show a match.
+              <span className="tnum text-[11px] uppercase tracking-wider">Local</span> — never show a match.
               That is a limit of the data, not a clean bill of health: pick a store and switch to the
               &ldquo;in your area&rdquo; view to see every notice covering your state, which is what an independent
               is actually exposed to.
@@ -1100,7 +1181,7 @@ export default function App() {
               that never reached your state is a different risk from one that did.
             </p>
             <p className="mt-3">Your location is only used to query the sources above — nothing is stored.</p>
-            <div className="mt-4 rounded-xl border border-amber/40 bg-amber/[0.07] p-3.5">
+            <div className="mt-4 rounded-xl border border-amber/40 bg-amber-soft p-3.5">
               <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-amber">
                 Beta — no warranty, no liability
               </p>
@@ -1121,7 +1202,7 @@ export default function App() {
             <ul className="mt-4 divide-y divide-line border-t border-line">
               {sources.map((s) => (
                 <li key={s.name} className="flex flex-wrap items-center gap-x-2 py-1.5 text-xs">
-                  <span className={"size-1.5 shrink-0 rounded-full " + (s.ok ? "bg-mint" : "bg-alert")} aria-hidden="true" />
+                  <span className={"size-1.5 shrink-0 rounded-full " + (s.ok ? "bg-mint" : "bg-amber")} aria-hidden="true" />
                   <span>{s.name}</span>
                   <span className="ml-auto tnum text-[11px]">
                     {s.ok ? `${s.count} matching` : `unavailable (${s.error || "error"})`}
@@ -1138,7 +1219,7 @@ export default function App() {
                 <Button id="btn-check-sources" variant="outline" size="sm"
                         disabled={diag?.busy}
                         onClick={runSourceCheck}>
-                  {diag?.busy ? <Loader2 className="animate-spin" /> : <Stethoscope />} check USDA now
+                  {diag?.busy ? <Loader2 className="animate-spin" /> : <Stethoscope />} Check USDA Now
                 </Button>
                 <span className="text-[11px]">tests every USDA endpoint we know of, live</span>
               </div>
@@ -1151,7 +1232,7 @@ export default function App() {
                     <ul className="mt-1.5 flex flex-col gap-1">
                       {diag.rows.map((row, i) => (
                         <li key={i} className="flex flex-wrap items-center gap-x-2 tnum text-[10px] text-fog">
-                          <span className={"size-1.5 shrink-0 rounded-full " + (row.ok ? "bg-mint" : "bg-alert")} aria-hidden="true" />
+                          <span className={"size-1.5 shrink-0 rounded-full " + (row.ok ? "bg-mint" : "bg-amber")} aria-hidden="true" />
                           <span className="truncate">{row.url.replace("https://", "")}</span>
                           <span className="text-paper">{row.headers}</span>
                           <span className="ml-auto">{row.status ?? row.error}</span>

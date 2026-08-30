@@ -7,11 +7,11 @@ import { cn } from "@/lib/utils";
  * sinks — the bevel is replaced by a press shadow so the light flips sides. No
  * gradient wash; a sheen across the whole face reads as a sticker, not a key. */
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-lg font-semibold " +
+  "inline-flex cursor-pointer items-center justify-center gap-2 whitespace-nowrap rounded-lg font-semibold " +
     "transition-[transform,box-shadow,background-color,border-color] duration-100 " +
     "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 focus-visible:ring-offset-2 " +
     "focus-visible:ring-offset-[var(--rr-surface)] " +
-    "disabled:pointer-events-none disabled:opacity-50 " +
+    "disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 " +
     "active:translate-y-px [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
@@ -19,7 +19,7 @@ const buttonVariants = cva(
         default:
           "bg-mint text-mint-ink border border-mint " +
           "shadow-[var(--rr-bevel-strong),var(--rr-shadow-1)] " +
-          "hover:brightness-[1.06] active:brightness-[0.97] active:shadow-[var(--rr-press)]",
+          "hover:brightness-[1.08] active:brightness-[0.95] active:shadow-[var(--rr-press)]",
         outline:
           "border border-line-strong bg-panel-2 text-mint " +
           "shadow-[var(--rr-bevel),var(--rr-shadow-1)] hover:bg-panel-3 " +
