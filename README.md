@@ -26,7 +26,13 @@ npm run dev      # http://localhost:5173 (the /api routes need `vercel dev`)
 npm run build    # → dist/
 ```
 
-> **Note:** browser geolocation requires a secure context (HTTPS or `localhost`). The ZIP/address search works everywhere. `vercel.json` sets `Strict-Transport-Security`, so once a browser has loaded the site over HTTPS it will not try plain HTTP again.
+> **Note:** browser geolocation requires a secure context (HTTPS or `localhost`). The ZIP/address search works everywhere.
+
+### On HTTPS
+
+Vercel already redirects `http` to `https` at the edge, but only *after* the plaintext request has gone out. `vercel.json` sends `Strict-Transport-Security`, which closes that first request: once a browser has seen the header it rewrites `http://` to `https://` itself, before anything leaves the machine. Two years, `includeSubDomains`, and deliberately no `preload` — that submits the domain to a list baked into browser binaries and is slow to undo, which is the wrong commitment for a beta.
+
+`vercel.json` carries a `$schema` line so an editor validates it in place. The headers array is strict: each entry takes `key` and `value` and nothing else, so there is nowhere to leave a comment — which is why this note is here.
 
 ## How the store matching works (and its limits)
 
