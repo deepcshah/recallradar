@@ -1,0 +1,386 @@
+@import "tailwindcss";
+@import "maplibre-gl/dist/maplibre-gl.css";
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * THEME
+ *
+ * Semantic tokens live on :root as --rr-*; Tailwind's palette points at them,
+ * so every utility (bg-panel-2, text-fog, border-line…) follows the theme
+ * without touching a single class name.
+ *
+ * Light is the default; dark applies when the OS asks for it or when the user
+ * picks it explicitly. An explicit choice always wins over the OS.
+ *
+ * Contrast ladder, measured against the surface each token sits on:
+ *   text  ~15-18:1   muted ~6:1   subtle ~4.5:1   accent ~5-12:1
+ * The previous palette had accent at 12:1 and body at 15:1 — near-identical
+ * weight, so emphasis never read as emphasis.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+:root {
+  color-scheme: light;
+
+  --rr-bg: #f4f6f5;
+  --rr-surface: #ffffff;
+  --rr-card: #ffffff;
+  --rr-card-hover: #f8faf9;
+  --rr-sunken: #eef1f0;
+
+  --rr-line: rgba(17, 26, 22, 0.11);
+  --rr-line-strong: rgba(17, 26, 22, 0.18);
+
+  --rr-text: #111a16;
+  --rr-muted: #5a655f;
+  --rr-subtle: #66706b;   /* 5.13:1 on card, 4.72:1 on the page ground */
+
+  --rr-accent: #0b7a3d;
+  --rr-accent-soft: #e6f4ec;
+  --rr-accent-ink: #ffffff;
+  --rr-alert: #c0362a;
+  --rr-alert-soft: #fdecea;
+  --rr-amber: #8a6410;
+
+  /* Depth, the way a physical control has it: surfaces get one soft shadow,
+   * and controls get a bevel — a light hairline along the top inner edge and a
+   * dark one along the bottom. A large-area gradient wash reads as a sticker;
+   * a 1px bevel reads as a moulded face. */
+  --rr-shadow-1: 0 1px 0 rgba(26, 26, 26, 0.07);
+  --rr-shadow-2: 0 1px 1px rgba(26, 26, 26, 0.06), 0 3px 6px -2px rgba(26, 26, 26, 0.10);
+  --rr-shadow-3: 0 1px 2px rgba(26, 26, 26, 0.10), 0 8px 20px -4px rgba(26, 26, 26, 0.18);
+  --rr-bevel: inset 0 1px 0 rgba(255, 255, 255, 0.75), inset 0 -1px 0 rgba(26, 26, 26, 0.11);
+  --rr-bevel-strong: inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -1px 0 rgba(0, 0, 0, 0.28);
+  --rr-press: inset 0 1px 2px rgba(26, 26, 26, 0.18);
+  --rr-field: inset 0 1px 2px rgba(26, 26, 26, 0.07);
+  --rr-shimmer: rgba(17, 26, 22, 0.06);
+  --rr-shimmer-hi: rgba(17, 26, 22, 0.12);
+  --rr-pin-idle: #94a29a;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --rr-bg: #0c0e0d;
+  --rr-surface: #121614;
+  --rr-card: #171c19;
+  --rr-card-hover: #1c221e;
+  --rr-sunken: #0f1211;
+
+  --rr-line: rgba(233, 238, 235, 0.10);
+  --rr-line-strong: rgba(233, 238, 235, 0.18);
+
+  --rr-text: #e9eeeb;
+  --rr-muted: #9aa39d;
+  --rr-subtle: #7d8681;
+
+  --rr-accent: #5ef291;
+  --rr-accent-soft: rgba(94, 242, 145, 0.12);
+  --rr-accent-ink: #08110c;
+  --rr-alert: #ff7a6e;
+  --rr-alert-soft: rgba(255, 122, 110, 0.13);
+  --rr-amber: #f5c451;
+
+  --rr-shadow-1: 0 1px 0 rgba(0, 0, 0, 0.5);
+  --rr-shadow-2: 0 1px 2px rgba(0, 0, 0, 0.5), 0 4px 10px -2px rgba(0, 0, 0, 0.45);
+  --rr-shadow-3: 0 2px 4px rgba(0, 0, 0, 0.55), 0 10px 26px -4px rgba(0, 0, 0, 0.6);
+  --rr-bevel: inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 -1px 0 rgba(0, 0, 0, 0.45);
+  --rr-bevel-strong: inset 0 1px 0 rgba(255, 255, 255, 0.22), inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+  --rr-press: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+  --rr-field: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+  --rr-shimmer: rgba(233, 238, 235, 0.05);
+  --rr-shimmer-hi: rgba(233, 238, 235, 0.12);
+  --rr-pin-idle: #4a5a51;
+}
+
+/* No explicit choice: follow the OS. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --rr-bg: #0c0e0d;
+    --rr-surface: #121614;
+    --rr-card: #171c19;
+    --rr-card-hover: #1c221e;
+    --rr-sunken: #0f1211;
+    --rr-line: rgba(233, 238, 235, 0.10);
+    --rr-line-strong: rgba(233, 238, 235, 0.18);
+    --rr-text: #e9eeeb;
+    --rr-muted: #9aa39d;
+    --rr-subtle: #7d8681;
+    --rr-accent: #5ef291;
+    --rr-accent-soft: rgba(94, 242, 145, 0.12);
+    --rr-accent-ink: #08110c;
+    --rr-alert: #ff7a6e;
+    --rr-alert-soft: rgba(255, 122, 110, 0.13);
+    --rr-amber: #f5c451;
+    --rr-shadow-1: 0 1px 0 rgba(0, 0, 0, 0.5);
+    --rr-shadow-2: 0 1px 2px rgba(0, 0, 0, 0.5), 0 4px 10px -2px rgba(0, 0, 0, 0.45);
+    --rr-shadow-3: 0 2px 4px rgba(0, 0, 0, 0.55), 0 10px 26px -4px rgba(0, 0, 0, 0.6);
+    --rr-bevel: inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 -1px 0 rgba(0, 0, 0, 0.45);
+    --rr-bevel-strong: inset 0 1px 0 rgba(255, 255, 255, 0.22), inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+    --rr-press: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+    --rr-field: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+    --rr-shimmer: rgba(233, 238, 235, 0.05);
+    --rr-shimmer-hi: rgba(233, 238, 235, 0.12);
+    --rr-pin-idle: #4a5a51;
+  }
+}
+
+@theme inline {
+  --color-ink: var(--rr-bg);
+  --color-panel: var(--rr-surface);
+  --color-panel-2: var(--rr-card);
+  --color-panel-3: var(--rr-card-hover);
+  --color-sunken: var(--rr-sunken);
+  --color-line: var(--rr-line);
+  --color-line-strong: var(--rr-line-strong);
+  --color-paper: var(--rr-text);
+  --color-fog: var(--rr-muted);
+  --color-subtle: var(--rr-subtle);
+  --color-mint: var(--rr-accent);
+  --color-mint-soft: var(--rr-accent-soft);
+  --color-mint-ink: var(--rr-accent-ink);
+  --color-mint-dim: var(--rr-pin-idle);
+  --color-alert: var(--rr-alert);
+  --color-alert-soft: var(--rr-alert-soft);
+  --color-amber: var(--rr-amber);
+
+  --font-display: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  @apply bg-ink text-paper font-display antialiased;
+  font-feature-settings: "cv05" 1, "ss03" 1;
+}
+
+/* Numerals that must line up in a column — distances, counts, lot codes. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* Small caps label. Inter at this size is far more legible than the mono it
+ * replaced, so the tracking can come down and the weight can go up. */
+.microlabel {
+  @apply text-[11px] font-semibold uppercase tracking-[0.08em] text-subtle;
+}
+
+/* ─────────────────────────────── surfaces ─────────────────────────────── */
+
+/* A card sits on the surface on a hairline and one soft shadow. */
+.elev-1 {
+  box-shadow: var(--rr-shadow-1);
+}
+.elev-2 {
+  box-shadow: var(--rr-shadow-2);
+}
+.elev-3 {
+  box-shadow: var(--rr-shadow-3);
+}
+
+/* Interactive cards lift on hover and press back down on click. */
+.lift {
+  transition: transform 0.16s cubic-bezier(0.2, 0.7, 0.3, 1),
+    box-shadow 0.16s ease, background-color 0.16s ease, border-color 0.16s ease;
+  will-change: transform;
+}
+.lift:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--rr-shadow-2);
+}
+.lift:active {
+  transform: translateY(0);
+  box-shadow: var(--rr-shadow-1);
+}
+
+/* The well is a darker ground, so cards read as sitting *on* something. A
+ * trough shadow here would fight the cards' own shadows. */
+.sunken {
+  background: var(--rr-sunken);
+}
+
+/* ─────────────────────────────── motion ───────────────────────────────── */
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(var(--rr-card-rise, 8px)) scale(0.995); }
+  to { opacity: 1; transform: none; }
+}
+.fade-item {
+  animation: fadeUp var(--rr-card-duration, 0.4s) cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+/* Skeletons shimmer rather than pulse: a pulse reads as "broken", a sweep
+ * reads as "working". */
+@keyframes shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+.shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--rr-shimmer) 0%,
+    var(--rr-shimmer-hi) 45%,
+    var(--rr-shimmer) 90%
+  );
+  background-size: 200% 100%;
+  animation: shimmer var(--rr-shimmer-duration, 1.4s) linear infinite;
+}
+
+/* The scan overlay: concentric rings plus a sweeping arm. */
+@keyframes radarRing {
+  0% { transform: scale(0.1); opacity: 0.9; }
+  100% { transform: scale(1); opacity: 0; }
+}
+@keyframes radarSweep {
+  to { transform: rotate(360deg); }
+}
+@keyframes pulseDot {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.35); opacity: 0.75; }
+}
+.radar-ring {
+  position: absolute;
+  width: var(--rr-radar-size, 240px);
+  height: var(--rr-radar-size, 240px);
+  border-radius: 50%;
+  border: 1.5px solid var(--rr-accent);
+  animation: radarRing var(--rr-radar-duration, 2s) cubic-bezier(0.2, 0.6, 0.4, 1) infinite;
+}
+.radar-sweep {
+  position: absolute;
+  width: var(--rr-radar-size, 240px);
+  height: var(--rr-radar-size, 240px);
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    color-mix(in oklab, var(--rr-accent) 34%, transparent),
+    transparent 42%
+  );
+  mask: radial-gradient(circle, transparent 12%, #000 13%);
+  animation: radarSweep calc(var(--rr-radar-duration, 2s) * 1.5) linear infinite;
+}
+.radar-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--rr-accent);
+  box-shadow: 0 0 0 4px color-mix(in oklab, var(--rr-accent) 22%, transparent),
+    0 0 18px var(--rr-accent);
+  animation: pulseDot 1.6s ease-in-out infinite;
+}
+
+/* An indeterminate bar under the header while a lookup is in flight. */
+@keyframes progressSlide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+.progress-track {
+  position: relative;
+  height: 2px;
+  overflow: hidden;
+  background: var(--rr-line);
+}
+.progress-track::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 25%;
+  background: linear-gradient(90deg, transparent, var(--rr-accent), transparent);
+  animation: progressSlide 1.1s ease-in-out infinite;
+}
+
+/* ──────────────────────────────── map ─────────────────────────────────── */
+
+.map-pin {
+  width: 22px;
+  height: 22px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  background: var(--rr-pin-idle);
+  border: 2px solid var(--rr-surface);
+  opacity: 0.8;
+  cursor: pointer;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+  transition: background 0.18s ease, opacity 0.18s ease, box-shadow 0.18s ease,
+    transform 0.18s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.map-pin:hover {
+  transform: rotate(-45deg) scale(1.12);
+  opacity: 1;
+}
+.map-pin.flagged {
+  background: var(--rr-alert);
+  opacity: 1;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35), 0 0 12px color-mix(in oklab, var(--rr-alert) 55%, transparent);
+}
+.map-pin.active {
+  opacity: 1;
+  box-shadow: 0 0 0 3px var(--rr-accent), 0 3px 10px rgba(0, 0, 0, 0.4);
+  transform: rotate(-45deg) scale(1.15);
+}
+.map-pin.you {
+  border-radius: 50%;
+  transform: none;
+  opacity: 1;
+  background: var(--rr-amber);
+  box-shadow: 0 0 0 4px color-mix(in oklab, var(--rr-amber) 28%, transparent),
+    0 2px 6px rgba(0, 0, 0, 0.35);
+}
+.map-pin.you:hover { transform: scale(1.12); }
+.map-pin-label {
+  transform: rotate(45deg);
+  display: block;
+  color: var(--rr-accent-ink);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  line-height: 18px;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.map-pin.flagged .map-pin-label { color: #fff; }
+
+/* On a phone two dozen pins overlap into one mass. Smaller pins with no
+ * numerals stay separable; the flagged/unflagged split does the rest. */
+@media (max-width: 767px) {
+  .map-pin { width: 15px; height: 15px; border-width: 1.5px; }
+  .map-pin-label { display: none; }
+}
+
+.maplibregl-popup-content {
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  background: var(--rr-card);
+  color: var(--rr-text);
+  border: 1px solid var(--rr-line);
+  border-radius: 12px;
+  padding: 0.6rem 0.8rem;
+  box-shadow: var(--rr-shadow-3);
+}
+.maplibregl-popup-tip { border-top-color: var(--rr-line) !important; border-bottom-color: var(--rr-line) !important; }
+.maplibregl-popup-close-button { color: var(--rr-muted); font-size: 16px; }
+.maplibregl-ctrl-group {
+  background: var(--rr-surface) !important;
+  border: 1px solid var(--rr-line);
+  box-shadow: var(--rr-shadow-1) !important;
+}
+.maplibregl-ctrl-group button { color: var(--rr-text); }
+:root[data-theme="dark"] .maplibregl-ctrl-group button,
+.maplibregl-ctrl-attrib { filter: none; }
+:root[data-theme="dark"] .maplibregl-ctrl-group button span,
+:root:not([data-theme="light"]) .maplibregl-ctrl-group button span {
+  filter: invert(1) hue-rotate(180deg);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .maplibregl-ctrl-group button span { filter: invert(1) hue-rotate(180deg); }
+}
+.maplibregl-ctrl-attrib.maplibregl-compact {
+  background: var(--rr-surface) !important;
+  color: var(--rr-muted);
+}
+.maplibregl-ctrl-attrib a { color: var(--rr-muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  .fade-item, .shimmer, .radar-ring, .radar-sweep, .radar-dot,
+  .progress-track::after, .lift { animation: none !important; transition: none !important; }
+  .lift:hover { transform: none; }
+}
