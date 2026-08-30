@@ -31,11 +31,21 @@ async function fetchStores(chains, cats, loc) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 55000);
   try {
-    const res = await fetch(`/api/stores?${params}`, { signal: ctrl.signal });
+    const res = await fetch(`/api/stores?${params}`, {
+      signal: ctrl.signal,
+      headers: { Accept: "application/json" },
+    });
     let body = null;
     try { body = await res.json(); } catch (_) { /* non-JSON error page */ }
     if (!res.ok) {
       throw new Error((body && body.error) || `store service returned HTTP ${res.status}`);
+    }
+    /* A 200 that isn't JSON means the request never reached the function — a
+     * static host with no API, or an HTML error page. Treating that as "no
+     * stores nearby" is the difference between a fixable error message and an
+     * app that silently looks broken. */
+    if (!body || !Array.isArray(body.stores)) {
+      throw new Error("the store service returned an unexpected response");
     }
     return body;
   } catch (err) {
@@ -69,7 +79,7 @@ export async function findStores(chains, loc, radiusMeters, cats = STORE_CATEGOR
   const data = await fetchStores(chains, cats, loc);
 
   const merged = new Map();
-  for (const s of (data && data.stores) || []) {
+  for (const s of data.stores) {
     const lat = Number(s.lat);
     const lon = Number(s.lon);
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || !s.name) continue;

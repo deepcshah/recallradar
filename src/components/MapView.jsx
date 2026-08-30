@@ -43,12 +43,12 @@ function popupHtml(s) {
   return `<strong>${esc(s.name)}</strong>${s.address ? "<br>" + esc(s.address) : ""}<br>${s.distanceMiles.toFixed(1)} mi away`;
 }
 
-/* `labels`, `flagged` and `activeIndex` are index-aligned with `stores` and
+/* `labels`, `named` and `activeIndex` are index-aligned with `stores` and
  * change far more often than the store list itself, so they are applied to
  * existing marker elements rather than triggering a rebuild — recreating the
  * markers would re-fit the map bounds on every selection. */
 const MapView = forwardRef(function MapView(
-  { loc, stores, labels, flagged, activeIndex, theme = "dark", onMarkerClick },
+  { loc, stores, labels, named, activeIndex, theme = "dark", onMarkerClick },
   ref
 ) {
   const containerRef = useRef(null);
@@ -81,13 +81,31 @@ const MapView = forwardRef(function MapView(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loc != null]);
 
+  /* The map is constructed with the current theme's style, so the first run of
+   * this effect has nothing to do — swapping the style out from under a load
+   * that is still in flight leaves the canvas blank. Only a real change past
+   * mount gets a setStyle. */
+  const appliedThemeRef = useRef(theme);
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) return;
-    const next = MAP_STYLE[theme] || MAP_STYLE.dark;
+    if (!map || appliedThemeRef.current === theme) return;
+    appliedThemeRef.current = theme;
     if (map.getStyle()?.name === "rr-raster-fallback") map.setStyle(rasterFallback(theme));
-    else map.setStyle(next);
+    else map.setStyle(MAP_STYLE[theme] || MAP_STYLE.dark);
   }, [theme]);
+
+  /* MapLibre caches the container size at construction and never re-reads it.
+   * The panel beside the map appears in the same commit the map mounts in, and
+   * the split divider resizes it afterwards, so without this the canvas keeps
+   * a stale width and pins land off-screen until something else forces a
+   * resize — which is what made toggling the radius look like the fix. */
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => mapRef.current && mapRef.current.resize());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // location changed → move the "you" pin and recenter
   useEffect(() => {
@@ -121,21 +139,28 @@ const MapView = forwardRef(function MapView(
       markersRef.current.push(m);
       bounds.extend([s.lon, s.lat]);
     });
-    map.fitBounds(bounds, { padding: 64, maxZoom: 14, duration: 800 });
+    /* Resize before fitting: if the canvas is still carrying its mount-time
+     * width, fitBounds computes a zoom for the wrong viewport. */
+    const fit = () => {
+      map.resize();
+      map.fitBounds(bounds, { padding: 64, maxZoom: 14, duration: 800 });
+    };
+    if (map.isStyleLoaded()) fit();
+    else map.once("load", fit);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stores, loc]);
 
   // A recall names this store's chain, or the user picked it: paint it in
-  // place. Unflagged stores stay muted so the flagged ones carry the map.
+  // place. Unnamed stores stay muted so the named ones carry the map.
   useEffect(() => {
     markersRef.current.forEach((m, i) => {
       const el = m.getElement();
-      el.classList.toggle("flagged", Boolean(flagged && flagged[i]));
+      el.classList.toggle("named", Boolean(named && named[i]));
       el.classList.toggle("active", i === activeIndex);
       const span = el.querySelector(".map-pin-label");
       if (span) span.textContent = String((labels && labels[i]) || i + 1);
     });
-  }, [labels, flagged, activeIndex, stores]);
+  }, [labels, named, activeIndex, stores]);
 
   useImperativeHandle(ref, () => ({
     focusStore(i) {

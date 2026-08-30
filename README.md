@@ -57,7 +57,9 @@ Design notes:
 
 - **Per-source resilience:** each feed is fetched with `Promise.allSettled`; a failed or CORS-blocked feed shows as "unavailable" in the Data sources panel instead of breaking the page. openFDA's "no results" 404 is treated as an empty set.
 - **Politeness:** responses are cached in `sessionStorage` for 30 minutes; Overpass has a fallback mirror; Nominatim is only called once per search.
-- **Severity model:** FDA Class I / FSIS High Risk → red, Class II / default → amber, Class III / low → gray.
+- **Severity model:** FDA Class I / FSIS High Risk → red, Class II / default → amber, Class III / low → gray. The classification badge is the *only* place warm colour appears — a store is never coloured as a hazard.
+- **Neutral stance on stores:** a store shows up because a notice names its chain, which is a name match and not a verdict on the store. Most independents can never match at all, so a store with no match gets neutral grey rather than an all-clear. Matched stores and pins are green (the highlight colour), never red.
+- **Palette:** Shopify's grey/black ramp for structure, a green ramp for actions and highlights. Accent tints are solid tokens (`--rr-accent-soft`) rather than alpha washes, which bleach out on a white ground in light mode.
 - **The map is optional:** if the MapLibre CDN is unreachable the map hides and the store list still works; if the vector style fails to load, the map falls back to raster OSM tiles. To use actual Mapbox instead, swap the style URL in `js/ui.js` for a Mapbox style + token.
 
 ## Disclaimer
