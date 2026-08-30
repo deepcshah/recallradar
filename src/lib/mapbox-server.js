@@ -58,7 +58,7 @@ async function getJSON(url, signal, timeoutMs = 9000) {
   try {
     const res = await fetch(url, {
       signal: ctrl.signal,
-      headers: { Accept: "application/json", "User-Agent": "RecallRadar/1.0" },
+      headers: { Accept: "application/json", "User-Agent": "Yanked/1.0" },
     });
     const text = await res.text();
     if (!res.ok) {

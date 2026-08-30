@@ -1,8 +1,8 @@
-# 📡 RecallRadar
+# 📡 Yanked
 
 **Find out which stores near you sold recalled products — and which products to avoid.**
 
-RecallRadar is a responsive, single-page web app. Give it your location (browser geolocation, a ZIP code, or an address) and it:
+Live at [yanked.app](https://yanked.app). Yanked is a responsive, single-page web app. Give it your location (browser geolocation, a ZIP code, or an address) and it:
 
 1. **Pulls active recall notices** affecting your area — nationwide recalls plus recalls distributed specifically to your state — from official government feeds:
    - [openFDA enforcement reports](https://open.fda.gov/apis/food/enforcement/) — FDA food, drug, and medical-device recalls
@@ -29,7 +29,7 @@ Or deploy the repo as-is to GitHub Pages, Netlify, Cloudflare Pages, etc.
 
 ## How the store matching works (and its limits)
 
-Government recall data is product-centric, not store-centric. Recall notices name the **chains** that received recalled lots (e.g. "distributed to Costco stores in CA, OR, WA"), but no public feed tracks store-level inventory. RecallRadar therefore:
+Government recall data is product-centric, not store-centric. Recall notices name the **chains** that received recalled lots (e.g. "distributed to Costco stores in CA, OR, WA"), but no public feed tracks store-level inventory. Yanked therefore:
 
 - treats a chain named in an active recall affecting your area as a signal, and
 - shows that chain's locations within your chosen radius (5/10/25 miles) with the linked recalls,
@@ -62,7 +62,7 @@ Design notes:
 
 ## Disclaimer
 
-RecallRadar is an informational aggregator, **not an official source** and not affiliated with the FDA, USDA, CPSC, or any retailer. Always verify against the linked official notice. When in doubt, don't consume or use the product.
+Yanked is an informational aggregator, **not an official source** and not affiliated with the FDA, USDA, CPSC, or any retailer. Always verify against the linked official notice. When in doubt, don't consume or use the product.
 
 ## License
 

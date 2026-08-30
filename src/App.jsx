@@ -540,7 +540,7 @@ export default function App() {
             <span className="flex shrink-0 items-center gap-2">
               <Radar className="size-5 text-mint" />
               <span className="hidden text-base font-bold tracking-tight sm:inline">
-                Recall<span className="text-mint">Radar</span>
+                Yanked
               </span>
               <Badge variant="beta" title="Early release — data and matching are still being refined">beta</Badge>
             </span>
@@ -1069,7 +1069,7 @@ export default function App() {
               <button onClick={() => setAboutOpen(false)} aria-label="Close" className="text-fog hover:text-paper"><X className="size-4" /></button>
             </div>
             <p className="mt-3">
-              RecallRadar aggregates public recall data from{" "}
+              Yanked aggregates public recall data from{" "}
               <a className="text-mint hover:underline" href="https://open.fda.gov/apis/food/enforcement/" target="_blank" rel="noopener noreferrer">openFDA enforcement reports</a>{" "}
               (food, drugs, medical devices), the{" "}
               <a className="text-mint hover:underline" href="https://www.fsis.usda.gov/science-data/developer-resources/recall-api" target="_blank" rel="noopener noreferrer">USDA FSIS recall API</a>{" "}
@@ -1105,7 +1105,7 @@ export default function App() {
                 Beta — no warranty, no liability
               </p>
               <p className="mt-1.5 text-xs leading-relaxed">
-                RecallRadar is an early release provided <span className="text-paper">&ldquo;as is&rdquo;, without
+                Yanked is an early release provided <span className="text-paper">&ldquo;as is&rdquo;, without
                 warranty of any kind</span>, express or implied, including fitness for a particular purpose. It is
                 not affiliated with the FDA, USDA, CPSC, or any retailer named here, and it is not medical, legal,
                 or safety advice.
