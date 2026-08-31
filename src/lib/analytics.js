@@ -45,8 +45,28 @@ const UI_HOST = import.meta.env.VITE_POSTHOG_UI_HOST || "https://us.posthog.com"
 
 /* Dev traffic in the production project is noise that never washes out, so
  * `npm run dev` stays silent even when a key is present in .env.local. Set
- * VITE_POSTHOG_DEV=1 to check that instrumentation actually fires. */
+ * VITE_POSTHOG_DEV=1 to check that instrumentation actually fires.
+ *
+ * Note what this does *not* gate: `import.meta.env.DEV` is true only under
+ * the dev server, so every `vite build` — preview deploys included — is
+ * live as soon as the key is scoped to that environment. That is the right
+ * default (a preview you cannot measure is a preview you cannot test), but
+ * it means preview traffic reaches the same project as production, which
+ * is what VERCEL_ENV below exists to separate. */
 const ENABLED = Boolean(KEY) && (!import.meta.env.DEV || import.meta.env.VITE_POSTHOG_DEV === "1");
+
+/* Which deployment this is: "production", "preview", or "development".
+ *
+ * Vercel sets this for Vite builds on its own — no dashboard entry, no
+ * config — as long as the project's "Automatically expose System
+ * Environment Variables" is on, which it is by default.
+ *
+ * Without it a branch deploy, a PR preview and whatever automation wanders
+ * into a preview URL all land in the same funnels as real users, and
+ * nothing on the event says which was which. With it, `environment =
+ * production` is one filter, and the honest baseline for any number worth
+ * acting on. */
+const VERCEL_ENV = import.meta.env.VITE_VERCEL_ENV || "unknown";
 
 /* posthog-js is ~90kB gzipped — two thirds the size of everything else on
  * this page put together. Imported statically it lands in the main chunk
@@ -106,6 +126,9 @@ export function initAnalytics() {
           maskTextSelector: "*",
         },
       });
+      /* A super property, not a per-call one: it has to ride on autocapture
+       * and $pageview too, and neither goes through track(). */
+      posthog.register({ environment: VERCEL_ENV });
       ph = posthog;
       for (const [event, props] of pending.splice(0)) posthog.capture(event, props);
     })

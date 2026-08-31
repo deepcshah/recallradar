@@ -85,6 +85,8 @@ Scanned barcodes *are* sent, and the distinction is deliberate: a UPC identifies
 
 Session replay is on with `maskAllInputs` and `maskTextSelector: "*"`, which greys out every string in the recording. That is a real cost to how readable a replay is, taken because the flow most worth watching is exactly the flow carrying someone's address. The comment in `src/lib/analytics.js` says precisely what to loosen, and what to mark `ph-no-capture` first, if that trade stops being worth it.
 
+**Preview deploys report too.** `import.meta.env.DEV` is true only under the dev server, so every `vite build` is live the moment the key is scoped to that environment — which is what makes a preview testable, and also what would quietly mix branch deploys, PR previews and whatever automation finds a preview URL into the same funnels as real users. Every event therefore carries `environment`, registered as a super property from `VITE_VERCEL_ENV` (Vercel injects it into Vite builds on its own). Filter on `environment = production` for any number you intend to act on.
+
 Keys go in `.env.example`. With none set, `initAnalytics()` returns immediately and posthog-js is never fetched — the app runs unmeasured rather than broken.
 
 ## Scanning, and why "no match" is not "safe"
