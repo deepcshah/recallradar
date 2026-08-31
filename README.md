@@ -71,6 +71,22 @@ Vercel already redirects `http` to `https` at the edge, but only *after* the pla
 
 `vercel.json` carries a `$schema` line so an editor validates it in place. The headers array is strict: each entry takes `key` and `value` and nothing else, so there is nowhere to leave a comment — which is why this note is here.
 
+## Analytics, and what is deliberately not measured
+
+Three things run: Vercel Web Analytics and Speed Insights, which need no code beyond the two components mounted in `src/main.jsx` and are switched on per-project in the Vercel dashboard, and PostHog, which is configured in `src/lib/analytics.js`.
+
+PostHog is loaded as its own chunk rather than imported into the main bundle. It is about 90kB gzipped — two thirds the size of everything else on the page put together — and this is an app whose entire job is to answer one question quickly, so paying that on the critical path would show up directly in the Speed Insights numbers sitting next to it. The import fires immediately rather than on idle, so the request goes out in parallel with the app's own boot; events raised before it lands are queued, which is what keeps a scan opened straight off a cold load from vanishing.
+
+Requests go to `/ingest` on this domain, rewritten to PostHog at the edge in `vercel.json`. Ad blockers drop requests to `posthog.com` outright, and they drop them for a slice of the audience that skews technical — the bias is invisible in the resulting numbers, which is what makes it worth a rewrite rule.
+
+**What is never sent.** This app knows where its user is standing, and that is the most sensitive thing it holds. No coordinates leave the browser at any precision, and neither does the ZIP or address typed into the box, the city geocoding resolved it to, or the name or address of any nearby store. What goes instead is the two-letter state — the granularity the recall feeds are themselves scoped to, and the coarsest thing that still answers "is this working outside California?" Everything else is a count or an outcome word.
+
+Scanned barcodes *are* sent, and the distinction is deliberate: a UPC identifies a product, not a person, and it is the only way to measure whether the coverage problem described below is actually biting in the field. `scan_completed` carries `notices_with_codes` alongside the result for the same reason the interface shows it — a miss against forty notices and a miss against nothing at all are not the same event.
+
+Session replay is on with `maskAllInputs` and `maskTextSelector: "*"`, which greys out every string in the recording. That is a real cost to how readable a replay is, taken because the flow most worth watching is exactly the flow carrying someone's address. The comment in `src/lib/analytics.js` says precisely what to loosen, and what to mark `ph-no-capture` first, if that trade stops being worth it.
+
+Keys go in `.env.example`. With none set, `initAnalytics()` returns immediately and posthog-js is never fetched — the app runs unmeasured rather than broken.
+
 ## Scanning, and why "no match" is not "safe"
 
 No government feed publishes a barcode field. UPCs turn up inside free text — openFDA's `code_info` and `product_description`, FSIS's `field_product_items` — inconsistently, and CPSC consumer-product recalls have none at all. Coverage is therefore partial and cannot be measured from inside the app, which makes the empty result the dangerous one.

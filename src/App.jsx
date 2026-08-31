@@ -27,6 +27,7 @@ import { DialRoot } from "dialkit";
 import "dialkit/styles.css";
 import { useMotionTuning, cardStagger } from "@/lib/tuning";
 import { useTheme } from "@/lib/theme";
+import { track, miles, geoFailureReason } from "@/lib/analytics";
 
 const CATEGORY_ICONS = {
   pet: PawPrint, kids: Baby, supplement: Pill, drug: Pill, device: Stethoscope,
@@ -585,6 +586,12 @@ export default function App() {
         const found = await findStores(searchChainsRef.current, locArg, radiusArg);
         if (stale()) return;
         setStores(found);
+        track("stores_loaded", {
+          count: found.length,
+          radius_mi: miles(radiusArg),
+          attempt: attempt + 1,
+          chains_searched: searchChainsRef.current.length,
+        });
         setStoresStatus(found.length ? null : {
           empty: true,
           title: "Nothing in range",
@@ -600,6 +607,10 @@ export default function App() {
           continue;
         }
         setStores([]);
+        track("stores_failed", {
+          radius_mi: miles(radiusArg),
+          error: String(err.message || "failed").slice(0, 120),
+        });
         setStoresStatus({
           msg: `Store lookup failed (${err.message}). The recall list is unaffected.`,
           error: true,
@@ -620,6 +631,19 @@ export default function App() {
       setSources(srcs);
       setActiveSources(new Set(fetched.map((r) => r.source)));
 
+      track("recalls_loaded", {
+        count: fetched.length,
+        state: locArg.stateAbbr || null,
+        sources_ok: srcs.filter((x) => x.ok).length,
+        sources_failed: srcs.filter((x) => !x.ok).length,
+      });
+      /* One event per failed feed, not a list on the load event — a feed
+       * going dark is the thing worth alerting on, and it needs its own
+       * breakdown by name. See the four-tier fallback in the README. */
+      for (const x of srcs) {
+        if (!x.ok) track("source_failed", { source: x.name, error: String(x.error || "failed").slice(0, 120) });
+      }
+
       /* USDA blocks our server but usually not the browser, so retry it here and
        * fold the result in when it lands. Deliberately not awaited: the stores
        * lookup is the slow part of the page and must not wait on a source that
@@ -629,6 +653,9 @@ export default function App() {
       // too. Whatever comes back is folded in and re-sorted.
       recoverBlockedSources(locArg, srcs).then((late) => {
         if (!late) return;
+        // Whether the browser can reach what the server could not is the
+        // whole premise of the fallback; without this it is unmeasurable.
+        track("sources_recovered", { count: late.recalls.length });
         setRecalls((prev) => sortRecalls([...prev, ...late.recalls]));
         setSources(late.sources);
         // Source chips are seeded from the first payload, so a source that
@@ -662,9 +689,21 @@ export default function App() {
     loadStores(loc, radius, { quiet });
   }, [loc, radius, chainKey, productsBusy, loadStores]);
 
-  const setLocation = useCallback(async (newLoc) => {
+  /* `method` is carried only so the funnel can separate "tapped locate"
+   * from "typed a ZIP" — the coordinates and the resolved label stay in
+   * the browser either way. */
+  const setLocation = useCallback(async (newLoc, method = "unknown") => {
     setLoc(newLoc);
     setLocStatus(newLoc.state ? null : { msg: "Couldn't determine your state — showing nationwide recalls only." });
+    /* Scoping works off either spelling of the state (see scopeFor and
+     * fdaSearchQuery in lib/sources.js), so "did we get one" is an OR —
+     * reporting only the abbreviation's presence would flag a perfectly
+     * scoped location as unresolved. */
+    track("location_set", {
+      method,
+      state: newLoc.stateAbbr || null,
+      state_resolved: Boolean(newLoc.state || newLoc.stateAbbr),
+    });
     await loadRecalls(newLoc);
   }, [loadRecalls]);
 
@@ -679,8 +718,9 @@ export default function App() {
       } catch (_) {
         resolved = { ...pos, label: "Your location", state: null, stateAbbr: null };
       }
-      await setLocation(resolved);
+      await setLocation(resolved, "geolocation");
     } catch (err) {
+      track("location_failed", { method: "geolocation", reason: geoFailureReason(err) });
       setLocStatus({ msg: `${err.message} — enter a ZIP instead.`, error: true });
     }
   }
@@ -696,8 +736,15 @@ export default function App() {
     setLocEditing(false);
     setLocStatus({ msg: "Finding that place…", busy: true });
     try {
-      await setLocation(await geocodeInput(query));
+      const resolved = await geocodeInput(query);
+      await setLocation(resolved, "search");
     } catch (err) {
+      /* The typed text is the user's ZIP or street address and is never
+       * sent; only whether geocoding could resolve anything at all. */
+      track("location_failed", {
+        method: "search",
+        reason: /not found/i.test(err.message || "") ? "not_found" : "error",
+      });
       setLocStatus({ msg: err.message, error: true });
     }
   }

@@ -5,6 +5,11 @@
       "includeFiles": "public/feeds/**"
     }
   },
+  "rewrites": [
+    { "source": "/ingest/static/:path*", "destination": "https://us-assets.i.posthog.com/static/:path*" },
+    { "source": "/ingest/flags", "destination": "https://us.i.posthog.com/flags" },
+    { "source": "/ingest/:path*", "destination": "https://us.i.posthog.com/:path*" }
+  ],
   "crons": [
     { "path": "/api/refresh-tiles", "schedule": "0 9 * * *" },
     { "path": "/api/refresh-feeds", "schedule": "20 5 * * *" }

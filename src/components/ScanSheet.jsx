@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { isPlausibleUpc, lookupProduct, matchUpc, upcKey } from "@/lib/upc";
+import { track } from "@/lib/analytics";
 
 /* ─────────────────────────────────────────────────────────────────────────
  * SCAN A BARCODE
@@ -127,7 +128,7 @@ export default function ScanSheet({ open, onClose, recalls }) {
   }, []);
 
   /** Everything a barcode leads to, gathered before anything is rendered. */
-  const check = useCallback(async (raw) => {
+  const check = useCallback(async (raw, entry = "camera") => {
     stopCamera();
     setBusy(true);
     const code = upcKey(raw);
@@ -146,6 +147,24 @@ export default function ScanSheet({ open, onClose, recalls }) {
       if (res.ok) history = await res.json();
     } catch (_) { /* static deploy, or offline — the local answer still stands */ }
 
+    /* The barcode is sent; see the privacy note in lib/analytics.js for
+     * why a UPC is treated differently from a location. `checked` is the
+     * honest denominator — a scan with nothing to compare against is not
+     * the same result as a scan that compared against forty notices and
+     * cleared, and only this event can tell the two apart after the fact. */
+    const past = history ? (history.matches || []).length : 0;
+    track("scan_completed", {
+      entry,
+      upc: code || null,
+      outcome: local.exact.length ? "exact" : local.named.length ? "name_match" : "no_match",
+      exact_matches: local.exact.length,
+      name_matches: local.named.length,
+      notices_with_codes: local.checked,
+      identified: Boolean(product),          // Open Food Facts could name it
+      history_available: history !== null,   // false on a static deploy
+      history_matches: past,
+    });
+
     setResult({ raw, code, product, ...local, history });
     setBusy(false);
   }, [recalls, stopCamera]);
@@ -157,7 +176,11 @@ export default function ScanSheet({ open, onClose, recalls }) {
     let cancelled = false;
 
     (async () => {
-      if (!navigator.mediaDevices?.getUserMedia) { setCamera("unsupported"); return; }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        track("scan_camera_blocked", { reason: "unsupported" });
+        setCamera("unsupported");
+        return;
+      }
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 } },
@@ -188,7 +211,9 @@ export default function ScanSheet({ open, onClose, recalls }) {
         tick();
       } catch (err) {
         if (cancelled) return;
-        setCamera(err && /NotAllowed|Permission/i.test(err.name || err.message) ? "denied" : "unsupported");
+        const reason = err && /NotAllowed|Permission/i.test(err.name || err.message) ? "denied" : "unsupported";
+        track("scan_camera_blocked", { reason });
+        setCamera(reason);
       }
     })();
 
@@ -204,6 +229,12 @@ export default function ScanSheet({ open, onClose, recalls }) {
     setManual("");
     setManualOpen(false);
   }, [open, stopCamera]);
+
+  /* The denominator for every scan funnel: how many people open the
+   * scanner at all, against how many reach a result. */
+  useEffect(() => {
+    if (open) track("scan_opened");
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -277,7 +308,7 @@ export default function ScanSheet({ open, onClose, recalls }) {
                  style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))" }}>
               {manualOpen || camera === "denied" || camera === "unsupported" ? (
                 <form
-                  onSubmit={(e) => { e.preventDefault(); if (manual.replace(/\D/g, "").length >= 8) check(manual); }}
+                  onSubmit={(e) => { e.preventDefault(); if (manual.replace(/\D/g, "").length >= 8) check(manual, "manual"); }}
                   className="flex items-center gap-2"
                 >
                   <Input
