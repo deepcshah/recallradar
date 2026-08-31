@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Armchair, Baby, Beef, Bike, Candy, Carrot, Check, ChevronRight, Crosshair, CupSoda,
+  AlertCircle, Armchair, Baby, Beef, Bike, Candy, Carrot, Check, ChevronRight, Crosshair, CupSoda,
   ExternalLink, Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package, PanelRightClose,
   PanelRightOpen, PawPrint, Pill, Plug, Plus, Radar, Rows2, Columns2, Search, SearchX,
   ShieldCheck, Soup, Stethoscope, Sun, Moon, MonitorSmartphone, UtensilsCrossed, Wheat, X, Zap,
@@ -8,6 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Tooltip } from "@/components/ui/tooltip";
 import { FilterButton, FilterSheet, FilterGroup, FilterChoice } from "@/components/FilterSheet";
 import MapView from "@/components/MapView";
 import { browserPosition, reverseGeocode, geocodeInput } from "@/lib/geo";
@@ -288,6 +289,7 @@ export default function App() {
   const [loc, setLoc] = useState(null);
   const [locStatus, setLocStatus] = useState(null); // {msg, error, busy}
   const [query, setQuery] = useState("");
+  const [queryError, setQueryError] = useState("");
   const [radius, setRadius] = useState(16093);
 
   const [recalls, setRecalls] = useState([]);
@@ -326,6 +328,7 @@ export default function App() {
   const splitRef = useRef(null);
   const mainRef = useRef(null);
   const productsScrollRef = useRef(null);
+  const locInputRef = useRef(null);
 
   const { byChain } = useMemo(() => chainsFor(recalls), [recalls]);
 
@@ -449,7 +452,12 @@ export default function App() {
 
   async function onSearch(e) {
     e.preventDefault();
-    if (!query.trim()) return;
+    if (!query.trim()) {
+      setQueryError("Enter a ZIP code, or a city and state.");
+      locInputRef.current && locInputRef.current.focus();
+      return;
+    }
+    setQueryError("");
     setLocStatus({ msg: "Finding that place…", busy: true });
     try {
       await setLocation(await geocodeInput(query));
@@ -801,7 +809,9 @@ export default function App() {
           <span className="flex shrink-0 items-center gap-2">
             <Radar className="size-5 text-mint" />
             <span className="text-base font-bold tracking-tight">Yanked</span>
-            <Badge variant="beta" title="Early release — data and matching are still being refined">beta</Badge>
+            <Tooltip content="Early release — data and matching are still being refined">
+              <Badge variant="beta">beta</Badge>
+            </Tooltip>
           </span>
 
           {loc && (
@@ -817,36 +827,56 @@ export default function App() {
               take their own row — which is also the right emphasis, since on
               the landing screen entering a ZIP is the whole task. */}
           <div className="order-last flex w-full min-w-0 items-center gap-1.5 sm:order-none sm:w-auto sm:flex-1 sm:justify-end">
-            <form id="form-search" onSubmit={onSearch} className="flex min-w-0 flex-1 items-center gap-1.5 sm:flex-none">
+            {/* `noValidate`, and no `required`. The browser's own bubble —
+                "Please fill out this field" — renders in the OS font at the OS
+                size in the OS colours, ignores the app's theme entirely, and
+                is the one piece of UI here nobody designed. Ours says what to
+                type instead of that something is missing. */}
+            <form id="form-search" onSubmit={onSearch} noValidate className="flex min-w-0 flex-1 items-center gap-1.5 sm:flex-none">
               <Input
                 id="input-location"
+                ref={locInputRef}
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => { setQuery(e.target.value); if (queryError) setQueryError(""); }}
                 placeholder="ZIP or address"
                 aria-label="ZIP code or address"
-                required
-                className="h-9 min-w-0 flex-1 text-[13px] sm:w-36 sm:flex-none lg:w-44"
+                aria-invalid={queryError ? "true" : undefined}
+                aria-describedby={queryError ? "input-location-error" : undefined}
+                className={"h-9 min-w-0 flex-1 text-[13px] sm:w-36 sm:flex-none lg:w-44 " +
+                  (queryError ? "border-alert focus-visible:border-alert" : "")}
               />
-              <Button type="submit" variant="outline" size="sm" className="h-9 shrink-0 px-3" aria-label="Search location">
-                <Search />
-              </Button>
+              <Tooltip content="Find recalls around a ZIP code or address">
+                <Button type="submit" variant="outline" size="sm" className="h-9 shrink-0 px-3" aria-label="Search location">
+                  <Search />
+                </Button>
+              </Tooltip>
             </form>
-            <Button id="btn-geolocate" size="sm" className="h-9 shrink-0 px-3" onClick={useGeolocation} aria-label="Use my location">
-              <Crosshair /><span className="hidden xl:inline">My Location</span>
-            </Button>
+            <Tooltip content="Use this device's location instead of typing one">
+              <Button id="btn-geolocate" size="sm" className="h-9 shrink-0 px-3" onClick={useGeolocation} aria-label="Use my location">
+                <Crosshair /><span className="hidden xl:inline">My Location</span>
+              </Button>
+            </Tooltip>
           </div>
 
-          <Button
-            id="btn-theme" variant="secondary" size="icon" className="ml-auto h-9 w-9 shrink-0 sm:ml-0"
-            onClick={cycleTheme}
-            title={`Theme: ${theme} — click to change`}
-            aria-label={`Theme: ${theme}. Click to change.`}
-          >
-            {theme === "dark" ? <Moon /> : theme === "light" ? <Sun /> : <MonitorSmartphone />}
-          </Button>
+          <Tooltip content={theme === "system" ? "Following your system theme — click for light" : `${theme[0].toUpperCase()}${theme.slice(1)} theme — click to change`}>
+            <Button
+              id="btn-theme" variant="secondary" size="icon" className="ml-auto h-9 w-9 shrink-0 sm:ml-0"
+              onClick={cycleTheme}
+              aria-label={`Theme: ${theme}. Click to change.`}
+            >
+              {theme === "dark" ? <Moon /> : theme === "light" ? <Sun /> : <MonitorSmartphone />}
+            </Button>
+          </Tooltip>
         </div>
 
         {(productsBusy || storesStatus?.busy) && <div id="progress" className="progress-track" />}
+
+        {queryError && (
+          <p id="input-location-error" role="alert"
+             className="flex items-center gap-2 border-t border-alert-line bg-alert-soft px-4 py-1.5 text-xs font-semibold text-alert">
+            <AlertCircle className="size-3.5 shrink-0" />{queryError}
+          </p>
+        )}
 
         {locStatus && (
           <p id="locator-status" role="status" aria-live="polite"
@@ -942,16 +972,17 @@ export default function App() {
                 {listHidden ? <><PanelRightOpen /> Show Lists</> : <><PanelRightClose /> Hide Lists</>}
               </Button>
               {!listHidden && (
-                <Button
-                  id="btn-toggle-layout" variant="secondary" size="sm"
-                  aria-pressed={sideBySide}
-                  onClick={toggleLayout}
-                  title={sideBySide ? "Stack the lists" : "Put the lists side by side"}
-                  className="hidden bg-panel/90 px-3 backdrop-blur md:inline-flex"
-                >
-                  {sideBySide ? <Rows2 /> : <Columns2 />}
-                  <span className="hidden lg:inline">{sideBySide ? "Stacked" : "Side by Side"}</span>
-                </Button>
+                <Tooltip content={sideBySide ? "Stack the two lists vertically" : "Put the two lists side by side"}>
+                  <Button
+                    id="btn-toggle-layout" variant="secondary" size="sm"
+                    aria-pressed={sideBySide}
+                    onClick={toggleLayout}
+                    className="hidden bg-panel/90 px-3 backdrop-blur md:inline-flex"
+                  >
+                    {sideBySide ? <Rows2 /> : <Columns2 />}
+                    <span className="hidden lg:inline">{sideBySide ? "Stacked" : "Side by Side"}</span>
+                  </Button>
+                </Tooltip>
               )}
             </div>
           )}
@@ -1028,13 +1059,13 @@ export default function App() {
                     ["area", `In ${loc?.stateAbbr || "your area"} · ${recalls.length}`,
                       "Every notice covering your area — it names no retailer, so it could be on any shelf here"],
                   ].map(([k, lbl, title]) => (
-                    <button key={k} type="button" title={title}
+                    <Tooltip key={k} content={title}><button type="button"
                             disabled={k === "named" && namedCount === 0}
                             onClick={() => { setStoreScope(k); setLimit(25); }}
                             aria-pressed={storeScope === k}
                             className={"chip flex-1 " + (storeScope === k ? "chip-on" : "chip-off")}>
                       <span className="truncate normal-case tracking-normal">{lbl}</span>
-                    </button>
+                    </button></Tooltip>
                   ))}
                 </div>
               </div>
@@ -1066,12 +1097,13 @@ export default function App() {
               <PanelHeader
                 label="Stores" countId="stat-stores" count={scanning ? "…" : stores.length}
                 note={namedStoreCount > 0 && (
-                  <button id="btn-flagged-only" onClick={() => setFlaggedOnly(!flaggedOnly)}
-                          aria-pressed={flaggedOnly}
-                          title="Show only stores whose chain a notice names"
-                          className={"chip " + (flaggedOnly ? "chip-on" : "chip-soft")}>
-                    {namedStoreCount} Named
-                  </button>
+                  <Tooltip content="Show only the stores whose chain a recall notice names">
+                    <button id="btn-flagged-only" onClick={() => setFlaggedOnly(!flaggedOnly)}
+                            aria-pressed={flaggedOnly}
+                            className={"chip " + (flaggedOnly ? "chip-on" : "chip-soft")}>
+                      {namedStoreCount} Named
+                    </button>
+                  </Tooltip>
                 )}
               >
                 <span className="microlabel">Within</span>
@@ -1137,10 +1169,11 @@ export default function App() {
                           </span>
                         )}
                         {s.independent && (
-                          <span className="store-local rounded-full border border-line px-1.5 py-px tnum text-[10px] uppercase tracking-wider text-fog"
-                                title="Not part of a chain we can match against recall notices">
-                            Local
-                          </span>
+                          <Tooltip content="An independent — no recall notice will ever name it, so this is a gap in the data rather than a clean bill of health">
+                            <span className="store-local rounded-full border border-line px-1.5 py-px tnum text-[10px] uppercase tracking-wider text-fog">
+                              Local
+                            </span>
+                          </Tooltip>
                         )}
                         {/* Deliberately unalarmed language and colour. A store
                             appearing here is a name match on a notice, not a
@@ -1381,7 +1414,11 @@ export default function App() {
                               </div>
                               <div className="flex gap-2">
                                 <dt className="microlabel shrink-0">Region</dt>
-                                <dd title={r.distribution || undefined}>{regionLabel(r)}</dd>
+                                <dd>
+                                  <Tooltip content={r.distribution || undefined}>
+                                    <span>{regionLabel(r)}</span>
+                                  </Tooltip>
+                                </dd>
                               </div>
                               {r.firm && (
                                 <div className="flex gap-2">
@@ -1426,8 +1463,10 @@ export default function App() {
         </p>
         <div className="flex items-center gap-2">
           {sources.map((s) => (
-            <span key={s.name} title={s.ok ? `${s.name}: ${s.count} matching` : `${s.name}: ${s.error || "unavailable"}`}
-                  className={"size-1.5 rounded-full " + (s.ok ? "bg-mint" : "bg-amber")} aria-hidden="true" />
+            <Tooltip key={s.name} content={s.ok ? `${s.name} — ${s.count} matching your area` : `${s.name} — unavailable (${s.error || "error"})`}>
+              <span tabIndex={0} aria-label={s.ok ? `${s.name}: ${s.count} matching` : `${s.name}: unavailable`}
+                    className={"size-1.5 rounded-full " + (s.ok ? "bg-mint" : "bg-amber")} />
+            </Tooltip>
           ))}
           <button onClick={() => setAboutOpen(true)}
                   className="inline-flex min-h-8 items-center gap-1 tnum text-[11px] uppercase tracking-wider text-fog hover:text-mint">

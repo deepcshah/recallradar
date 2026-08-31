@@ -557,18 +557,53 @@ button:disabled,
   .map-pin.active .map-pin-label { display: block; line-height: 20px; font-size: 11px; }
 }
 
+/* The map's own bubbles are the app's tooltip, not MapLibre's default: same
+ * surface, same hairline, same radius, same shadow, same type. A popup that
+ * looks like it came from a different library is the fastest way to make an
+ * interface feel assembled rather than designed. */
 .maplibregl-popup-content {
   font-family: var(--font-display);
-  font-size: 0.85rem;
-  background: var(--rr-card);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  background: var(--rr-surface);
   color: var(--rr-text);
   border: 1px solid var(--rr-line);
-  border-radius: 12px;
-  padding: 0.6rem 0.8rem;
+  border-radius: 8px;
+  padding: 0.5rem 0.65rem;
   box-shadow: var(--rr-shadow-3);
 }
-.maplibregl-popup-tip { border-top-color: var(--rr-line) !important; border-bottom-color: var(--rr-line) !important; }
-.maplibregl-popup-close-button { color: var(--rr-muted); font-size: 16px; }
+.maplibregl-popup-content strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 1px;
+}
+.maplibregl-popup-content .pop-sub { color: var(--rr-muted); }
+.maplibregl-popup-content .pop-dist {
+  color: var(--rr-accent);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+/* The tip is drawn as a border triangle, so its colour has to be set on the
+ * side that actually faces the bubble — one per placement. */
+.maplibregl-popup-anchor-top .maplibregl-popup-tip { border-bottom-color: var(--rr-surface) !important; }
+.maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: var(--rr-surface) !important; }
+.maplibregl-popup-anchor-left .maplibregl-popup-tip { border-right-color: var(--rr-surface) !important; }
+.maplibregl-popup-anchor-right .maplibregl-popup-tip { border-left-color: var(--rr-surface) !important; }
+.maplibregl-popup-close-button {
+  color: var(--rr-muted);
+  font-size: 15px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  right: 2px;
+  top: 2px;
+}
+.maplibregl-popup-close-button:hover {
+  background: var(--rr-card-hover);
+  color: var(--rr-text);
+}
 .maplibregl-ctrl-group {
   background: var(--rr-surface) !important;
   border: 1px solid var(--rr-line);

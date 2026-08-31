@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, SlidersHorizontal, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Tooltip } from "@/components/ui/tooltip";
 
 /* ─────────────────────────────────────────────────────────────────────────
  * FILTERS
@@ -87,19 +88,22 @@ export function FilterGroup({ label, options, selected, onChange, allLabel = "Al
         {options.map((o) => {
           const on = chosen.has(o.value);
           return (
-            <button
+            <Tooltip
               key={o.value}
-              type="button"
-              aria-pressed={on}
-              disabled={!on && o.count === 0}
-              title={!on && o.count === 0 ? "Nothing matches this alongside the filters already on" : undefined}
-              onClick={() => toggle(o.value)}
-              className={cn("chip", on ? "chip-on" : "chip-off")}
+              content={!on && o.count === 0 ? "Nothing matches this alongside the filters already on" : undefined}
             >
-              {on && <Check className="size-3 shrink-0" strokeWidth={3} />}
-              <span className="normal-case tracking-normal">{o.label}</span>
-              {o.count != null && <span className="tnum opacity-60">{o.count}</span>}
-            </button>
+              <button
+                type="button"
+                aria-pressed={on}
+                disabled={!on && o.count === 0}
+                onClick={() => toggle(o.value)}
+                className={cn("chip", on ? "chip-on" : "chip-off")}
+              >
+                {on && <Check className="size-3 shrink-0" strokeWidth={3} />}
+                <span className="normal-case tracking-normal">{o.label}</span>
+                {o.count != null && <span className="tnum opacity-60">{o.count}</span>}
+              </button>
+            </Tooltip>
           );
         })}
       </div>
