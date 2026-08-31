@@ -219,18 +219,27 @@ function shortSourceName(name) {
   return String(name).replace(/\s*\([^)]*\)\s*$/, "");
 }
 
-/* A source that is down, or serving a saved copy, said in the list it is
- * missing from.
+/* A source that is *down*, said in the list it is missing from.
  *
  * "USDA data still never shows" was true and the app was close to silent
  * about it: one amber dot in a desktop footer, one line inside About, and
  * nothing at all in the list where the gap actually lives. A missing agency is
  * not a status indicator, it is a hole in the answer, and it belongs in the
- * answer. */
+ * answer.
+ *
+ * A source serving a saved copy is the opposite case and does not belong
+ * here. Its recalls are in the list; what changed is their provenance, and
+ * the note explaining it is written for whoever runs this app rather than
+ * whoever is standing in a shop — "Live fetch failed (HTTP 403 from
+ * www.fsis.usda.gov) and no cache was warm" asks a reader to care about a
+ * WAF, an ingest tier and a cold cache to learn something that does not
+ * change what they should do next. It reads as breakage while describing a
+ * fallback working exactly as designed. That belongs in About, next to the
+ * per-source counts and the feed check, and About already renders every
+ * `note` in full — so this is one place to read it, not none. */
 function SourceNotice({ sources }) {
   const down = sources.filter((s) => !s.ok);
-  const stale = sources.filter((s) => s.ok && s.note);
-  if (!down.length && !stale.length) return null;
+  if (!down.length) return null;
   return (
     <div id="source-notice" role="status"
          className="mb-2 flex flex-col gap-1.5 rounded-xl border border-amber/40 bg-amber-soft px-3 py-2.5">
@@ -242,12 +251,6 @@ function SourceNotice({ sources }) {
             {coverageFor(s.name)} are missing from this list — an empty list is not the same as no
             recalls. <span className="text-subtle">({s.error || "no response"})</span>
           </span>
-        </p>
-      ))}
-      {stale.map((s) => (
-        <p key={s.name} className="flex items-start gap-2 text-[12px] leading-relaxed">
-          <Info className="mt-0.5 size-3.5 shrink-0 text-amber" />
-          <span><span className="font-semibold text-paper">{shortSourceName(s.name)}:</span> {s.note}</span>
         </p>
       ))}
     </div>
