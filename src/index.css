@@ -650,7 +650,21 @@ button:disabled,
  * box is the pin's true bounding box, so `anchor: "bottom"` puts the tip on
  * the coordinate instead of a corner near it. */
 .map-pin {
-  position: relative;
+  /* MUST be absolute, never relative.
+   *
+   * MapLibre positions a marker with `.maplibregl-marker { position: absolute }`
+   * plus an inline transform. This rule has the same specificity and is
+   * emitted later, so `position: relative` here silently won — and every
+   * marker dropped out of absolute positioning into normal flow, stacking
+   * one under the next down the page in a neat vertical line that had
+   * nothing to do with where the stores were. The transforms were still
+   * correct the whole time; nothing was reading them.
+   *
+   * It was added so the numeral could be absolutely positioned inside the
+   * pin. `absolute` is a containing block for absolutely positioned children
+   * just as `relative` is, so the label still centres on the head and
+   * MapLibre keeps the pin on its coordinate. */
+  position: absolute;
   width: 24px;
   height: 28px;
   opacity: 0.85;
