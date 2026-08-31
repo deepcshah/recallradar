@@ -581,22 +581,41 @@ button:disabled,
   height: var(--rr-tabbar-h);
   border-radius: 1.125rem;
   border: 1px solid var(--rr-line);
-  /* Opaque enough to read type against a moving map. Glass is the effect;
-   * contrast is the requirement, and it wins where they disagree. */
-  background: color-mix(in oklab, var(--rr-surface) 78%, transparent);
-  box-shadow: var(--rr-shadow-3);
+  /* The blur was working and looked like nothing, because at 78% over a
+   * white list on a light ground there is almost no contrast left to blur —
+   * glass needs something behind it to bend. Two changes make it read:
+   * more of the backdrop comes through, and the bar gets the bright top
+   * inner edge that actually signals a pane of something. That edge is the
+   * app's own --rr-bevel, not an imported glassmorphism look: the same
+   * highlight every button here already has, at surface scale. */
+  background: color-mix(in oklab, var(--rr-surface) 62%, transparent);
+  border-color: color-mix(in oklab, var(--rr-surface) 70%, var(--rr-line));
+  box-shadow: var(--rr-bevel), var(--rr-shadow-3);
   overflow: hidden;
 }
 /* Only where the browser can actually blur. Without this the fallback is a
  * 78% wash over live content, which is worse than a solid bar. */
 @supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
   .tabbar {
-    -webkit-backdrop-filter: blur(18px) saturate(180%);
-    backdrop-filter: blur(18px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(190%);
+    backdrop-filter: blur(20px) saturate(190%);
   }
 }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .tabbar { background: var(--rr-surface); }
+}
+
+/* Hidden above the breakpoint here rather than with a `lg:hidden` utility,
+ * and placed *after* the rule it overrides.
+ *
+ * `.tabbar` sets `display: flex` from this file, which is emitted after
+ * Tailwind's utilities — so the utility lost and the bar, now `fixed`,
+ * floated across the bottom of the desktop layout on top of the recall
+ * list. Writing the breakpoint here fixes the source of the conflict, but
+ * only below the base rule: both selectors have the same specificity, so
+ * the one that comes last is the one that wins. */
+@media (min-width: 1024px) {
+  .tabbar { display: none; }
 }
 
 .tabbar-item {
@@ -633,7 +652,7 @@ button:disabled,
 .map-pin {
   position: relative;
   width: 24px;
-  height: 32px;
+  height: 28px;
   opacity: 0.85;
   cursor: pointer;
   transform-origin: 50% 100%;   /* grow from the tip: the point stays put */
@@ -642,7 +661,7 @@ button:disabled,
 .map-pin-shape {
   display: block;
   width: 24px;
-  height: 32px;
+  height: 28px;
   fill: var(--rr-pin-idle);
   stroke: var(--rr-surface);
   stroke-width: 1.75;

@@ -1312,7 +1312,7 @@ export default function App() {
           style={mapStyle}
         >
           {loc ? (
-            <MapView ref={mapRef} loc={loc} stores={stores}
+            <MapView ref={mapRef} loc={loc} stores={stores} radius={radius}
                      labels={pinLabels} named={pinNamed} activeIndex={activeStore}
                      theme={resolvedTheme}
                      onMarkerClick={onMarkerClick} />

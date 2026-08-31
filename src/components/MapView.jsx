@@ -39,7 +39,8 @@ const rasterFallback = (theme) => ({
  * circle centred at (12,12), and the label is an unrotated box over exactly
  * that circle — so it is centred because it is centred, not because two
  * rotations happened to cancel. */
-const PIN_PATH = "M12 31.2c0-.1 9-10.6 9-19.2a9 9 0 1 0-18 0c0 8.6 9 19.1 9 19.2Z";
+const PIN_PATH = "M12 27.4c0-.1 10-9.6 10-15.4a10 10 0 1 0-20 0c0 5.8 10 15.3 10 15.4Z";
+const PIN_BOX = "0 0 24 28";
 
 function pinEl(label, isYou) {
   const div = document.createElement("div");
@@ -50,7 +51,7 @@ function pinEl(label, isYou) {
   }
   div.className = "map-pin";
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 24 32");
+  svg.setAttribute("viewBox", PIN_BOX);
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("class", "map-pin-shape");
   const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -76,8 +77,26 @@ function popupHtml(s) {
  * change far more often than the store list itself, so they are applied to
  * existing marker elements rather than triggering a rebuild — recreating the
  * markers would re-fit the map bounds on every selection. */
+/* The bounds of the search area itself — a box around the radius circle.
+ *
+ * Fitting to the stores alone made the radius control inert wherever there
+ * are more stores than the list will hold: findStores caps at 80 and sorts by
+ * distance, so in a dense area 5, 10 and 25 miles all return the same nearest
+ * 80 storefronts. The bounds never moved and changing the radius did nothing
+ * you could see. Fitting to what was asked for, rather than to what came
+ * back, means the map always answers the control. Store bounds are unioned in
+ * so a result sitting just outside the circle is never cropped from view. */
+function radiusBounds(loc, radiusMeters) {
+  const dLat = radiusMeters / 111320;
+  const dLon = radiusMeters / (111320 * Math.max(0.2, Math.cos((loc.lat * Math.PI) / 180)));
+  return new maplibregl.LngLatBounds(
+    [loc.lon - dLon, loc.lat - dLat],
+    [loc.lon + dLon, loc.lat + dLat]
+  );
+}
+
 const MapView = forwardRef(function MapView(
-  { loc, stores, labels, named, activeIndex, theme = "dark", onMarkerClick },
+  { loc, stores, labels, named, activeIndex, theme = "dark", radius, onMarkerClick },
   ref
 ) {
   const containerRef = useRef(null);
@@ -157,7 +176,7 @@ const MapView = forwardRef(function MapView(
     markersRef.current = [];
     if (!stores || !stores.length) return;
 
-    const bounds = new maplibregl.LngLatBounds();
+    const bounds = radius ? radiusBounds(loc, radius) : new maplibregl.LngLatBounds();
     bounds.extend([loc.lon, loc.lat]);
     stores.forEach((s, i) => {
       const el = pinEl(String((labels && labels[i]) || i + 1), false);
@@ -181,12 +200,19 @@ const MapView = forwardRef(function MapView(
      * width, fitBounds computes a zoom for the wrong viewport. */
     const fit = () => {
       map.resize();
-      map.fitBounds(bounds, { padding: 64, maxZoom: 14, duration: 800 });
+      map.fitBounds(bounds, { padding: 48, maxZoom: 15, duration: 800 });
     };
-    if (map.isStyleLoaded()) fit();
+    /* `once("load")` only helps before the map has ever loaded. After that
+     * the event will not fire again, so a run that finds the style briefly
+     * un-loaded — a tile host hiccup, a style swapped for the theme, an
+     * errored source — would queue a fit that never happens and quietly drop
+     * it. Every later fit is dropped the same way, which reads as a radius
+     * control that does nothing for the rest of the session. `map.loaded()`
+     * is the question actually being asked: is this map ready to be moved. */
+    if (map.isStyleLoaded() || map.loaded()) fit();
     else map.once("load", fit);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stores, loc]);
+  }, [stores, loc, radius]);
 
   // A recall names this store's chain, or the user picked it: paint it in
   // place. Unnamed stores stay muted so the named ones carry the map.
