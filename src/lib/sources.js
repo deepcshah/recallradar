@@ -152,7 +152,7 @@ export function normalizeFda(kind, results, loc) {
 }
 
 export function normalizeFsis(list, loc) {
-  const cutoff = Date.now() - LOOKBACK_DAYS * 2 * DAY_MS; // active notices can be older
+  const cutoff = Date.now() - FSIS_LOOKBACK_DAYS * DAY_MS; // active notices can be older
   return (list || [])
     .map((r) => {
       const states = String(r.field_states || "");
@@ -166,10 +166,14 @@ export function normalizeFsis(list, loc) {
 
       const risk = String(r.field_risk_level || "");
       const severity = /high/i.test(risk) ? "high" : /low|marginal/i.test(risk) ? "low" : "med";
+      // true / false / null — see fsisActiveFlag. Only an explicit false is
+      // ever shown to the reader as "Closed".
+      const active = fsisActiveFlag(r);
       const urlPath = String(r.field_recall_url || "");
       return {
         id: `fsis-${r.field_recall_number || urlPath || Math.random().toString(36).slice(2)}`,
         source: "USDA FSIS",
+        active,
         product: r.field_title || r.field_product_items || "(untitled FSIS recall)",
         firm: r.field_establishment || "",
         reason: [r.field_recall_reason, r.field_recall_classification].filter(Boolean).join(" — "),
@@ -230,12 +234,64 @@ export function sortRecalls(recalls) {
   return recalls;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * WHICH USDA NOTICES SURVIVE INTO THE SLIM FEED
+ *
+ * `field_active_notice === "true"` used to be the whole test, and it is why
+ * the first committed snapshot arrived holding exactly one recall: 1.5 KB of
+ * USDA sitting next to 393 KB of CPSC, on a run where USDA had answered 200.
+ * The fetch was never the problem on that run — the filter was.
+ *
+ * A single equality test against somebody else's field is a cliff. Nothing
+ * throws when the value drifts; the feed just quietly empties, and every tier
+ * empties together, because all four of them — the live server fetch, the Blob
+ * warm, the /api/fsis proxy and the committed snapshot — slim through this one
+ * function. That is a lot of redundancy defeated by one string comparison.
+ *
+ * So the flag is now one of two ways in rather than the only one. An active
+ * notice is kept at any age, exactly as before, which makes this a superset of
+ * the old behaviour: it cannot show less than it did. A closed one is kept
+ * while it is recent enough that the product could still be in somebody's
+ * freezer, which is the whole reason a shopper is reading this.
+ *
+ * What it must not do is pass a closed recall off as a live one. The flag
+ * rides along on every slimmed record, `normalizeFsis` turns it into `active`,
+ * and the card prints a "Closed" chip. Absent is not false: a snapshot written
+ * before this change carries no flag at all, and those records are left
+ * unlabelled rather than libelled as closed.
+ * ───────────────────────────────────────────────────────────────────────── */
+export const FSIS_LOOKBACK_DAYS = LOOKBACK_DAYS * 2;
+export const FSIS_CLOSED_LOOKBACK_DAYS = 365;
+
+/** FSIS sends the string "True" today. Accepting the obvious neighbours costs
+ *  nothing and means a change of casing or type is not an outage. */
+export function fsisIsActive(v) {
+  return /^(true|1|yes|active)$/i.test(String(v == null ? "" : v).trim());
+}
+
+/** null when the record does not say, so "unknown" stays distinct from "closed". */
+function fsisActiveFlag(r) {
+  return r.field_active_notice == null ? null : fsisIsActive(r.field_active_notice);
+}
+
 // Shared with api/fsis.js and api/cpsc.js — keep the shapes in sync.
 export function slimFsis(raw) {
   const all = Array.isArray(raw) ? raw : (raw && raw.results) || [];
+  const closedCutoff = Date.now() - FSIS_CLOSED_LOOKBACK_DAYS * DAY_MS;
   return all
-    .filter((r) => String(r.field_active_notice).toLowerCase() === "true")
+    .filter((r) => {
+      if (fsisIsActive(r.field_active_notice)) return true;
+      const t = Date.parse(r.field_recall_date);
+      return Number.isFinite(t) && t >= closedCutoff;
+    })
     .map((r) => ({
+      // Normalised to the two strings this app writes, so a snapshot is
+      // readable without knowing what USDA happened to send that day — but a
+      // record that carried no flag keeps carrying none. Stamping those
+      // "False" would be inventing a closure USDA never reported.
+      ...(r.field_active_notice == null
+        ? null
+        : { field_active_notice: fsisIsActive(r.field_active_notice) ? "True" : "False" }),
       field_title: r.field_title,
       field_recall_number: r.field_recall_number,
       field_states: r.field_states,

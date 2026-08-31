@@ -14,6 +14,7 @@ import { findChainLocations, searchUrl } from "../src/lib/mapbox-server.js";
 import { FEED_HEADERS, FSIS_ENDPOINTS, DIAG_HEADER_SETS, cpscUrl } from "../src/lib/feeds.js";
 import { fdaSearchQuery, CPSC_LOOKBACK_DAYS } from "../src/lib/sources.js";
 import { FEED_BLOBS, readFeedCache, staleness } from "../src/lib/feed-cache.js";
+import { readFreshSnapshot } from "../src/lib/snapshot.js";
 import { blobConfigured, blobTokenVar } from "../src/lib/blob.js";
 
 const PROBE_CHAINS = ["cvs", "safeway", "walmart"];
@@ -107,15 +108,25 @@ export default async function handler(req, res) {
    * too" had nowhere to be answered from — the one button in the app tested a
    * single agency and reported on a single agency. */
   if (["feeds", "fsis"].includes(String(req.query.probe || ""))) {
-    const [feeds, matrix, fsisCache, cpscCache] = await Promise.all([
+    /* Both fallback tiers are read from here, not just Blob. The snapshot
+     * committed by the GitHub Action is now served by the server as well as
+     * the browser, so a diagnosis that only looked at Blob would report a
+     * source as doomed while a perfectly good copy sat in the deployment. */
+    const [feeds, matrix, fsisCache, cpscCache, fsisSnap, cpscSnap] = await Promise.all([
       probeFeeds(),
       probeFsisMatrix(),
       readFeedCache(FEED_BLOBS.fsis),
       readFeedCache(FEED_BLOBS.cpsc),
+      readFreshSnapshot("fsis"),
+      readFreshSnapshot("cpsc"),
     ]);
 
+    const cacheFor = (name) => (name === "USDA FSIS" ? fsisCache : name === "CPSC" ? cpscCache : null);
+    const snapFor = (name) => (name === "USDA FSIS" ? fsisSnap : name === "CPSC" ? cpscSnap : null);
+
     const rows = feeds.map((f) => {
-      const cache = f.name === "USDA FSIS" ? fsisCache : f.name === "CPSC" ? cpscCache : null;
+      const cache = cacheFor(f.name);
+      const snap = snapFor(f.name);
       return {
         url: f.name,
         headers: f.ok ? `${f.count ?? "?"} notices` : "live fetch failed",
@@ -124,12 +135,14 @@ export default async function handler(req, res) {
         ms: f.ms,
         body: f.body,
         cached: cache ? `${cache.list.length} saved ${staleness(cache.uploadedAt)}` : undefined,
+        snapshot: snap
+          ? `${snap.list.length} committed ${staleness(snap.fetchedAt)} (read from ${snap.via})`
+          : undefined,
       };
     });
 
     const down = feeds.filter((f) => !f.ok && f.status !== 404);
-    const covered = down.filter((f) =>
-      (f.name === "USDA FSIS" && fsisCache) || (f.name === "CPSC" && cpscCache));
+    const covered = down.filter((f) => cacheFor(f.name) || snapFor(f.name));
 
     /* The matrix's own conclusion, stated rather than left to be inferred from
      * four rows. This is the whole point of restoring it: the question "is it
@@ -169,19 +182,30 @@ export default async function handler(req, res) {
         "it is about this deployment's address. No header can fix it; the committed snapshot can.";
     })();
 
+    const names = down.map((f) => f.name).join(" and ");
+    const blobNote = blobConfigured()
+      ? ""
+      : " No Vercel Blob token is set in this environment, so the Blob tier is doing nothing at " +
+        "all here — expected RR_BLOB_READ_WRITE_TOKEN (this project's store uses the RR_BLOB_ " +
+        "prefix) or a plain BLOB_READ_WRITE_TOKEN.";
+
     let verdict;
-    if (!down.length) verdict = "Every feed answered live. Nothing is being served from cache.";
-    else if (!blobConfigured()) {
-      verdict = `${down.map((f) => f.name).join(" and ")} refused us, and no Vercel Blob token is ` +
-        "set in this environment — so there is no cached copy to fall back on and the source " +
-        "will show as unavailable. Expected RR_BLOB_READ_WRITE_TOKEN (this project's store uses " +
-        "the RR_BLOB_ prefix) or a plain BLOB_READ_WRITE_TOKEN. Attach the store, redeploy, " +
-        "then run /api/refresh-feeds.";
+    if (!down.length) {
+      verdict = "Every feed answered live. Nothing is being served from cache." + blobNote;
     } else if (covered.length === down.length) {
-      verdict = `${down.map((f) => f.name).join(" and ")} refused us just now, but a cached copy is being served instead.`;
+      /* Which tier answered matters: Blob means this deployment reached the
+       * agency at some point, the snapshot means it never had to. */
+      const how = down
+        .map((f) => `${f.name} from ${cacheFor(f.name) ? "the Blob cache" : "the committed snapshot"}`)
+        .join(", ");
+      verdict = `${names} refused us just now, but a stored copy is being served instead — ${how}.` + blobNote;
     } else {
-      verdict = `${down.map((f) => f.name).join(" and ")} refused us and there is no usable cached copy. ` +
-        "Run /api/refresh-feeds to try warming one.";
+      const stranded = down.filter((f) => !cacheFor(f.name) && !snapFor(f.name)).map((f) => f.name);
+      verdict = `${names} refused us, and ${stranded.join(" and ")} has no usable stored copy ` +
+        "at either tier, so it will show as unavailable. Run /api/refresh-feeds to try warming " +
+        "the cache, and check that the Refresh recall feeds GitHub Action is green — the " +
+        "snapshot it commits is the tier that does not need USDA to answer this deployment." +
+        blobNote;
     }
 
     res.setHeader("Cache-Control", "no-store");

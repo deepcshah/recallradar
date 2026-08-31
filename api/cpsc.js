@@ -26,7 +26,7 @@ async function fetchCpsc() {
 
 export default async function handler(req, res) {
   try {
-    const { list, note } = await feedWithFallback(FEED_BLOBS.cpsc, fetchCpsc, slimCpsc);
+    const { list, note } = await feedWithFallback(FEED_BLOBS.cpsc, fetchCpsc, slimCpsc, "cpsc");
     if (note) res.setHeader("X-Feed-Note", note.replace(/[^\x20-\x7E]/g, " "));
     res.setHeader("Cache-Control", "public, s-maxage=1800, stale-while-revalidate=86400");
     return res.status(200).json(list);

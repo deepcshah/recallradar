@@ -283,6 +283,30 @@ function SeverityBadge({ recall }) {
   );
 }
 
+/* "Closed" is jargon in the same way "Class I" is: it sounds like "resolved,
+ * nothing to do here", and the thing it actually means is "stop reading the
+ * recall, start checking your freezer". So it gets the same disclosure
+ * treatment rather than a bare chip, and a muted variant — a closed notice is
+ * a fact about the paperwork, not a hazard level. */
+function ClosedBadge() {
+  return (
+    <InfoTip
+      title="Closed — USDA is no longer tracking this recall"
+      body={
+        "A notice closes once the recalling firm has finished recovering or disposing of the " +
+        "product it could reach. It does not mean the product is safe, and it does not mean " +
+        "every package came back — recalled food can sit in a freezer for months after the " +
+        "notice closes. If you have it, it is still the recalled product."
+      }
+      label="Closed: what this means"
+      triggerClassName="text-fog"
+      side="bottom"
+    >
+      <Badge variant="scope">Closed</Badge>
+    </InfoTip>
+  );
+}
+
 function Bar({ w }) {
   return <div className="shimmer h-3 rounded-full" style={{ width: w }} />;
 }
@@ -1797,6 +1821,14 @@ export default function App() {
                           className="recall-item fade-item elev-1 rounded-xl border border-line bg-panel-2 p-3.5">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <SeverityBadge recall={r} />
+                          {/* USDA closes a notice when the recalling firm has
+                              finished recovering the product. Closed notices
+                              are listed — recalled food outlives the paperwork
+                              by months in a freezer — but never silently: a
+                              closed recall shown as a live one is worse than
+                              not showing it. Only an explicit false earns the
+                              chip; a feed that did not say stays unlabelled. */}
+                          {r.active === false && <ClosedBadge />}
                           {/* The hazard, on the card and not only in the filter
                               menu — it is the thing that decides whether this
                               notice is about you. */}
@@ -2171,6 +2203,7 @@ export default function App() {
                           <span>{row.headers}</span>
                           <span className="ml-auto">{row.status ?? row.error}</span>
                           {row.cached && <span className="w-full pl-3.5 text-[10px]">cache: {row.cached}</span>}
+                          {row.snapshot && <span className="w-full pl-3.5 text-[10px]">snapshot: {row.snapshot}</span>}
                         </li>
                       ))}
                     </ul>

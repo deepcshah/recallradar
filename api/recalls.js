@@ -92,13 +92,13 @@ async function fetchFda(kind, loc) {
 
 async function fetchFsis(loc) {
   const { list, note } = await feedWithFallback(
-    FEED_BLOBS.fsis, () => fsisFetch({ attempts: 3, timeoutMs: 9000, budgetMs: 34000 }), slimFsis);
+    FEED_BLOBS.fsis, () => fsisFetch({ attempts: 3, timeoutMs: 9000, budgetMs: 34000 }), slimFsis, "fsis");
   return { recalls: normalizeFsis(list, loc), note };
 }
 
 async function fetchCpsc() {
   const { list, note } = await feedWithFallback(
-    FEED_BLOBS.cpsc, () => jfetch(cpscUrl(CPSC_LOOKBACK_DAYS), 34000), slimCpsc);
+    FEED_BLOBS.cpsc, () => jfetch(cpscUrl(CPSC_LOOKBACK_DAYS), 34000), slimCpsc, "cpsc");
   return { recalls: normalizeCpsc(list), note };
 }
 
