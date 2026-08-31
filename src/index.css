@@ -270,6 +270,17 @@ button:disabled,
   @apply opacity-40;
 }
 
+/* A row of chips that scrolls sideways instead of wrapping, so a variable
+ * number of them never changes the row's height — the thing that makes stacked
+ * filter bands creep down a phone screen. The scrollbar is hidden because on a
+ * phone there isn't one; the overflow is discovered by dragging. */
+.scope-row {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior-x: contain;
+}
+.scope-row::-webkit-scrollbar { display: none; }
+
 /* A removable chip in the "what is currently filtered" row. Wider on the
  * right for its ✕, and never uppercase — it carries content (a store name, a
  * hazard) rather than a label. */
