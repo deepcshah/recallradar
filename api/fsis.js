@@ -11,7 +11,7 @@ import { FEED_BLOBS, feedWithFallback } from "../src/lib/feed-cache.js";
 export default async function handler(req, res) {
   try {
     const { list, note } = await feedWithFallback(
-      FEED_BLOBS.fsis, () => fsisFetch({ attempts: 3, timeoutMs: 9000, budgetMs: 25000 }), slimFsis);
+      FEED_BLOBS.fsis, () => fsisFetch({ attempts: 3, timeoutMs: 9000, budgetMs: 25000 }), slimFsis, "fsis");
     // The note rides along in a header: the body's shape is a plain array and
     // several callers depend on that.
     if (note) res.setHeader("X-Feed-Note", note.replace(/[^\x20-\x7E]/g, " "));

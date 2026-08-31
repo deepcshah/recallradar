@@ -27,6 +27,7 @@
  */
 import { head, put } from "@vercel/blob";
 import { blobAuth, blobPutOptions, blobConfigured } from "./blob.js";
+import { readFreshSnapshot } from "./snapshot.js";
 
 export const FEED_BLOBS = {
   fsis: "feeds/fsis-v1.json",
@@ -73,25 +74,61 @@ export function staleness(uploadedAt) {
   return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
-/** Serve a feed, preferring live and falling back to the last good copy.
+/** Serve a feed, preferring live and falling back through everything else.
+ *
+ *  Three tiers, in order of freshness:
+ *
+ *    1. the live upstream fetch
+ *    2. the Blob cache, warmed by /api/refresh-feeds
+ *    3. the snapshot committed by the GitHub Action
+ *
+ *  Tier 3 is new here and it is the one that closes the hole this app kept
+ *  falling into. Tiers 1 and 2 both need USDA to have answered *this
+ *  deployment* at some point: if its egress is refused and no Blob store is
+ *  attached — the token is read from a prefixed name, so "attached" has been
+ *  wrong before now — they are empty together and the server reports USDA as
+ *  unavailable while a perfectly good copy sits in its own filesystem.
+ *
+ *  Tier 3 needs nothing from USDA, nothing from Blob, and no environment
+ *  variable. It was fetched by a different machine on a different network
+ *  before the user arrived, and it ships inside the deployment.
  *
  *  @param path      Blob key for this feed.
  *  @param fetchLive async () => raw upstream payload
  *  @param slim      raw payload -> the small array we cache and normalize
+ *  @param snapshot  name under public/feeds (e.g. "fsis"), or null to skip
  *  @returns {Promise<{list: any[], note?: string, cached: boolean}>}
  */
-export async function feedWithFallback(path, fetchLive, slim) {
+export async function feedWithFallback(path, fetchLive, slim, snapshot = null) {
+  let err;
   try {
     const list = slim(await fetchLive());
     await writeFeedCache(path, list);
     return { list, cached: false };
-  } catch (err) {
-    const hit = await readFeedCache(path);
-    if (!hit || Date.now() - hit.uploadedAt > MAX_STALE_MS) throw err;
+  } catch (e) {
+    err = e;
+  }
+  const why = String((err && err.message) || err).slice(0, 90);
+
+  const hit = await readFeedCache(path);
+  if (hit && Date.now() - hit.uploadedAt <= MAX_STALE_MS) {
     return {
       list: hit.list,
       cached: true,
-      note: `Live fetch failed (${String(err.message || err).slice(0, 90)}) — showing the copy saved ${staleness(hit.uploadedAt)}.`,
+      note: `Live fetch failed (${why}) — showing the copy saved ${staleness(hit.uploadedAt)}.`,
     };
   }
+
+  /* The snapshot is already slimmed — the Action runs the same slimFsis /
+   * slimCpsc this module's callers do — so it goes straight through. */
+  const snap = snapshot ? await readFreshSnapshot(snapshot) : null;
+  if (snap) {
+    return {
+      list: snap.list,
+      cached: true,
+      note: `Live fetch failed (${why}) and no cache was warm — showing the snapshot committed ${staleness(snap.fetchedAt)}.`,
+    };
+  }
+
+  throw err;
 }

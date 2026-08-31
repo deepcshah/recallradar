@@ -4,11 +4,18 @@
 # function, so they all fail together for whatever reason that one caller is
 # being refused. This job runs somewhere else entirely — different network,
 # different IP reputation — and commits what it gets, so the deployment ships
-# with a copy of the data as a static asset. It is the tier that keeps working
-# when USDA will not talk to production at all.
+# with a copy of the data as a static asset. Both the browser and the server
+# read that copy (see the snapshot tier in src/lib/feed-cache.js), which is
+# what makes this the tier that keeps working when USDA will not talk to
+# production at all.
 #
 # Four times a day is ample: FSIS issues a handful of notices per day, and the
 # app labels the snapshot with its own date rather than pretending it is live.
+#
+# On reading a run: the job summary carries a table of what each feed returned
+# and what was kept. A red run means a feed failed or failed its health checks
+# — in which case nothing was written for it and the previous snapshot is still
+# serving. The `feed-report` artifact has the raw upstream shape.
 name: Refresh recall feeds
 
 on:
@@ -26,6 +33,9 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    # The script's own budget is minutes at worst; anything past this is a hang,
+    # and a hung job holds the concurrency group against the next scheduled run.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -36,9 +46,28 @@ jobs:
       # No install step: the script imports two dependency-free modules from
       # src/lib and uses nothing but the Node standard library.
       - name: Fetch feeds
+        id: fetch
         run: node scripts/refresh-feeds.mjs
 
+      # Always, because a failed run is the one you actually need this for:
+      # the report says what USDA returned and how it was shaped, which is the
+      # difference between "USDA has one active recall" and "our filter stopped
+      # matching" — two identical-looking outcomes with opposite fixes.
+      - name: Upload feed diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: feed-report
+          path: .feed-report/
+          retention-days: 14
+          if-no-files-found: warn
+
+      # Also always. The script writes a feed only when that feed passed its
+      # checks, so whatever is on disk is worth committing even when the other
+      # one failed — a broken USDA should not hold back a good CPSC refresh.
+      # The run stays red either way; this step does not mask it.
       - name: Commit any changes
+        if: always()
         run: |
           if [ -z "$(git status --porcelain public/feeds)" ]; then
             echo "No feed changes to commit."
@@ -52,4 +81,18 @@ jobs:
           Fetched from a GitHub runner, which reaches USDA when production
           cannot. Committed so the deployment carries the data as a static
           asset rather than depending on a request-time fetch."
-          git push
+
+          # Another run of this job, or a human, may have landed a commit while
+          # we were waiting on saferproducts.gov. Rebase and retry rather than
+          # dropping a refresh on the floor.
+          for attempt in 1 2 3 4; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo "Pushed on attempt ${attempt}."
+              exit 0
+            fi
+            echo "Push failed (attempt ${attempt}); rebasing and retrying."
+            sleep $((2 ** attempt))
+            git pull --rebase origin "${GITHUB_REF_NAME}" || true
+          done
+          echo "Could not push after 4 attempts."
+          exit 1
