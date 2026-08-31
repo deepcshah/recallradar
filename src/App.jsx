@@ -4,7 +4,7 @@ import {
   Crosshair, CupSoda,
   ExternalLink, Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package, PanelRightClose,
   PanelRightOpen, PawPrint, Pill, Plug, Plus, Radar, Rows2, Columns2, Search, SearchX,
-  ShieldCheck, Soup, Stethoscope, Sun, Moon, MonitorSmartphone, UtensilsCrossed, Wheat, X, Zap,
+  ScanLine, ShieldCheck, Soup, Stethoscope, Sun, Moon, MonitorSmartphone, UtensilsCrossed, Wheat, X, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,8 @@ import { Input } from "@/components/ui/input";
 import { Tooltip } from "@/components/ui/tooltip";
 import { FilterButton, FilterSheet, FilterGroup, FilterChoice } from "@/components/FilterSheet";
 import MapView from "@/components/MapView";
+import ScanSheet from "@/components/ScanSheet";
+import { recallUpcs, lookupProduct } from "@/lib/upc";
 import { browserPosition, reverseGeocode, geocodeInput } from "@/lib/geo";
 import { fetchAll, retryBlockedFsis, sortRecalls } from "@/lib/sources";
 import { findStores } from "@/lib/stores";
@@ -112,6 +114,10 @@ function fmtDate(d) {
  * covers the states that DC serves. Show that scope on every card. */
 function regionLabel(r) {
   const st = r.states || [];
+  /* "Unstated" is its own answer and must never be flattened into
+   * "Nationwide". The notice named a retailer and no geography; saying
+   * nationwide would be inventing a claim the FDA did not make. */
+  if (r.scope === "unstated") return "Region not stated";
   if (r.scope === "nationwide" || !st.length) return "Nationwide";
   if (st.length <= 3) return st.join(" · ");
   return `${st.slice(0, 3).join(" · ")} +${st.length - 3}`;
@@ -124,6 +130,42 @@ function truncate(s, n) {
 
 function plural(n, one, many) {
   return `${n} ${n === 1 ? one : many}`;
+}
+
+/* A photo of the recalled product, where one can be had.
+ *
+ * CPSC publishes images; FDA and FSIS publish none at all. The gap closes
+ * through the barcode: where a notice prints one, Open Food Facts can usually
+ * turn it into a product shot. That lookup is a third-party request, so it
+ * only happens for a card that has actually scrolled into view, once per
+ * barcode per session, and it is silent when it fails — a missing photo is a
+ * missing photo, never an error the reader has to deal with. */
+function RecallImage({ recall }) {
+  const [src, setSrc] = useState(recall.image || "");
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (recall.image) return;
+    const code = recallUpcs(recall)[0];
+    const el = ref.current;
+    if (!code || !el || typeof IntersectionObserver === "undefined") return;
+    let done = false;
+    const io = new IntersectionObserver((entries) => {
+      if (done || !entries.some((e) => e.isIntersecting)) return;
+      done = true;
+      io.disconnect();
+      lookupProduct(code).then((p) => p?.image && setSrc(p.image)).catch(() => {});
+    }, { rootMargin: "200px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [recall]);
+
+  if (!src) return <span ref={ref} aria-hidden="true" className="size-0 shrink-0" />;
+  return (
+    <img ref={ref} src={src} alt="" loading="lazy" referrerPolicy="no-referrer"
+         className="size-14 shrink-0 rounded-lg border border-line bg-panel object-cover"
+         onError={(e) => { e.currentTarget.style.display = "none"; }} />
+  );
 }
 
 function Bar({ w }) {
@@ -339,6 +381,7 @@ export default function App() {
   const [mobileTab, setMobileTab] = useState("stores");
   const [aboutOpen, setAboutOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
   const [sideBySide, setSideBySide] = useState(() => loadPref("rr-side-by-side", false));
   const [splitPct, setSplitPct] = useState(() => loadPref("rr-split", DEFAULT_SPLIT));
   const [mapPct, setMapPct] = useState(() => loadPref("rr-map-pct", DEFAULT_MAP_PCT));
@@ -1359,6 +1402,16 @@ export default function App() {
                     className="h-9 pl-9 text-[13px]"
                   />
                 </div>
+                <Tooltip content="Point the camera at a package and check it against these notices">
+                  <Button
+                    id="btn-scan" variant="secondary" size="sm"
+                    className="h-9 shrink-0 px-3"
+                    onClick={() => setScanOpen(true)}
+                    aria-label="Scan a barcode"
+                  >
+                    <ScanLine /><span className="hidden sm:inline">Scan</span>
+                  </Button>
+                </Tooltip>
                 <div className="relative shrink-0">
                   <FilterButton
                     id="btn-filters"
@@ -1479,11 +1532,7 @@ export default function App() {
                           <div className="min-w-0 flex-1">
                             <p className="recall-product text-sm font-semibold [overflow-wrap:anywhere]">{truncate(r.product, 150)}</p>
                           </div>
-                          {r.image && (
-                            <img src={r.image} alt="" loading="lazy" referrerPolicy="no-referrer"
-                                 className="size-14 shrink-0 rounded-lg border border-line bg-panel object-cover"
-                                 onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                          )}
+                          <RecallImage recall={r} />
                         </div>
                         {r.reason && <p className="recall-reason mt-2 text-[13px] leading-relaxed text-paper [overflow-wrap:anywhere]">{truncate(r.reason, 160)}</p>}
 
@@ -1584,6 +1633,8 @@ export default function App() {
           </button>
         </div>
       </footer>
+
+      <ScanSheet open={scanOpen} onClose={() => setScanOpen(false)} recalls={recalls} />
 
       {/* DialKit authoring panel — renders null in production builds. */}
       <DialRoot position="bottom-left" theme="dark" defaultOpen={false} />

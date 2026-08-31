@@ -61,12 +61,25 @@ async function cachedFetchJSON(url, { timeoutMs = 20000, transform } = {}) {
   }
 }
 
-/** Does this distribution text cover the user's state? */
+/** Does this distribution text cover the user's state?
+ *
+ * Four answers, not two — and the fourth is the point. A notice reading
+ * "Distributed in AZ, NM, TX" names states, none of them yours, so it is
+ * genuinely not yours: null, dropped. But "Sold at Trader Joe's stores" names
+ * no state at all. That is not "somewhere else", it is unsaid — and it was
+ * being dropped exactly like the first case, which meant a notice naming a
+ * chain and nothing else could never reach the map, even though matching
+ * chains to storefronts is the whole premise of the app.
+ *
+ * `unstated` is the caller's problem to earn: normalizeFda keeps one only
+ * when the text names a retailer we can actually put on a map.
+ */
 function scopeFor(text, stateName, stateAbbr) {
   const t = String(text || "");
   if (NATIONWIDE_RE.test(t)) return "nationwide";
   if (stateAbbr && new RegExp(`(^|[^A-Za-z])${stateAbbr}([^A-Za-z]|$)`).test(t)) return "state";
   if (stateName && new RegExp(`(^|[^A-Za-z])${stateName}([^A-Za-z]|$)`, "i").test(t)) return "state";
+  if (!statesIn(t).length) return "unstated";
   return null;
 }
 
@@ -108,7 +121,13 @@ export function normalizeFda(kind, results, loc) {
   return (results || [])
     .map((r) => {
       const scope = scopeFor(r.distribution_pattern, loc.state, loc.stateAbbr);
-      if (!scope) return null; // matched on a token we don't trust; skip
+      if (!scope) return null; // names other states, none of them yours
+      const retailerIds = retailerIdsFor(
+        r.distribution_pattern, r.product_description, r.reason_for_recall, r.recalling_firm);
+      /* A notice that names no state earns its place only by naming a chain.
+       * Without that it is a recall we cannot tie to anywhere at all, and
+       * showing it under a heading about your area would be a lie. */
+      if (scope === "unstated" && !retailerIds.length) return null;
       return {
         id: `fda-${kind}-${r.recall_number || r.event_id || Math.random().toString(36).slice(2)}`,
         source: label,
@@ -120,10 +139,10 @@ export function normalizeFda(kind, results, loc) {
         date: parseFdaDate(r.recall_initiation_date) || parseFdaDate(r.report_date),
         scope,
         distribution: r.distribution_pattern || "",
-        states: scope === "nationwide" ? [] : statesIn(r.distribution_pattern),
+        states: scope === "state" ? statesIn(r.distribution_pattern) : [],
         url: "https://www.accessdata.fda.gov/scripts/ires/index.cfm", // FDA IRES recall search
         searchHint: r.recall_number || "",
-        retailerIds: retailerIdsFor(r.distribution_pattern, r.product_description, r.reason_for_recall, r.recalling_firm),
+        retailerIds,
         quantity: r.product_quantity || "",
         codeInfo: r.code_info || "",
       };
@@ -258,6 +277,14 @@ export function fdaSearchQuery(loc) {
     `status:"Ongoing"+AND+report_date:[${fmtFdaDate(start)}+TO+${fmtFdaDate(now)}]` +
     `+AND+(${parts.join("+OR+")})`
   );
+}
+
+/** Active notices in the lookback window, with no geography clause — the
+ *  pass that catches notices naming a retailer and no state. */
+export function unscopedSearchQuery() {
+  const now = new Date();
+  const start = new Date(now.getTime() - LOOKBACK_DAYS * DAY_MS);
+  return `status:"Ongoing"+AND+report_date:[${fmtFdaDate(start)}+TO+${fmtFdaDate(now)}]`;
 }
 
 // --------------------------------------------------- browser fallback path

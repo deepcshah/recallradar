@@ -13,6 +13,19 @@ Live at [yanked.app](https://yanked.app). Yanked is a responsive, single-page we
 4. **Lists every recalled product to avoid**, newest first (or by risk), with a free-text search and one **Filters** control covering reason for recall, product type, source and sort. Reason for recall — undeclared allergen, Listeria, fire hazard, and so on — is inferred from the notice's own text, since no feed publishes a hazard code comparable across all three agencies. Filter counts are computed against every other filter already on, including a selected store, so a chip never promises results it cannot deliver. Cards carry lot/code details and a link to the official notice.
 
    On a phone the two lists are tabs, and picking a store takes you to its recalls rather than silently re-scoping a list you cannot see. The selected store gets its own bar above the tabs — visible from both of them — a rail down the side of its card, and an enlarged, labelled map pin while the rest dim.
+5. **Scans a barcode** and checks it against the notices, with a typed fallback where there is no camera. See *Scanning, and why "no match" is not "safe"* below.
+
+### Three modes
+
+One control at the top of the panel says how wide a net everything below is casting:
+
+| Mode | Stores | Recalls |
+| --- | --- | --- |
+| **Named** | only stores whose chain a notice names | only notices that name a chain near you |
+| **All stores** | every store nearby, chains and independents | every notice covering your area |
+| **All recalls** | *(the store column steps aside)* | every active notice for your area |
+
+Independents can only ever be exposed at the area level — no notice will name one — so **All stores** is the only mode in which one can honestly appear. The store list is always in distance order; whether a notice names a store is the mode's job, not the sort's.
 
 Everything runs client-side against free, key-less public APIs. There is no server, no build step, no tracking — your location never leaves your browser except as query parameters to the public APIs above.
 
@@ -34,6 +47,20 @@ Vercel already redirects `http` to `https` at the edge, but only *after* the pla
 
 `vercel.json` carries a `$schema` line so an editor validates it in place. The headers array is strict: each entry takes `key` and `value` and nothing else, so there is nowhere to leave a comment — which is why this note is here.
 
+## Scanning, and why "no match" is not "safe"
+
+No government feed publishes a barcode field. UPCs turn up inside free text — openFDA's `code_info` and `product_description`, FSIS's `field_product_items` — inconsistently, and CPSC consumer-product recalls have none at all. Coverage is therefore partial and cannot be measured from inside the app, which makes the empty result the dangerous one.
+
+So the scanner refuses to let a miss look like a green tick. The clear state is grey and interrogative, never green; it never uses the word *safe*; it says how many notices even carried a barcode to compare against; and it runs a second lookup that includes recalls which have since ended.
+
+`src/lib/upc.js` collapses UPC-A, UPC-E, EAN-13 and GTIN-14 to one key so a match is not missed on spelling alone, and verifies the GTIN check digit so a twelve-digit lot number is not read as a barcode. Decoding uses the platform `BarcodeDetector` where it exists and lazy-loads ZXing everywhere else (notably iOS Safari, which has never shipped it) — a separate chunk, so anyone who never scans never downloads it. [Open Food Facts](https://world.openfoodfacts.org) turns a barcode into a brand and product name, which is what makes near-miss matching possible at all, and supplies the product photo for FDA and FSIS notices, neither of which publishes one.
+
+## Is it still recalled?
+
+`/api/lookup?upc=…` (or `?q=…`) is the one endpoint that does **not** filter to active notices. Everywhere else the app asks openFDA for `status:"Ongoing"` and FSIS for `field_active_notice`, which is right for "what should I worry about near me" and wrong for the question people arrive with after seeing a headline. Under an ongoing-only query, a recall that has since been terminated and a recall we never had look identical — both absent.
+
+`status` is openFDA's own lifecycle field (Ongoing / Completed / Terminated / Pending), so "resolved" is public data that was being filtered away rather than a gap in the feeds. This endpoint reports it, which turns silence into an answer.
+
 ## How the store matching works (and its limits)
 
 Government recall data is product-centric, not store-centric. Recall notices name the **chains** that received recalled lots (e.g. "distributed to Costco stores in CA, OR, WA"), but no public feed tracks store-level inventory. Yanked therefore:
@@ -45,6 +72,8 @@ Government recall data is product-centric, not store-centric. Recall notices nam
 For USDA FSIS recalls, store-level *retail distribution lists* are often published as PDFs — the "Official notice" link on each recall card takes you there.
 
 Recalls that don't name any known chain still appear in the **products to avoid** list, filtered to your state or nationwide distribution.
+
+One more case matters, because it is the app's whole premise: a notice whose distribution reads *"Sold at Trader Joe's stores"* names a chain and no geography at all. That is not "somewhere else", it is unsaid — but it used to be dropped exactly like a notice naming three other states. `scopeFor` now returns a fourth answer, `unstated`, and such a notice is kept when its text names a chain we can put on a map (and shown as **Region not stated**, never flattened into "Nationwide"). openFDA has no way to query for "names no state", so one unconstrained page per kind is fetched alongside the state-scoped ones.
 
 ## Architecture
 
@@ -62,8 +91,12 @@ src/lib/sources.js              — openFDA / FSIS / CPSC fetchers → one norma
 src/lib/stores.js               — store lookup + dedupe against the chain dictionary
 src/lib/category.js             — what kind of product it is (icon + type filter)
 src/lib/reason.js               — why it was recalled (hazard label + reason filter)
+src/lib/upc.js                  — barcode normalization, extraction from notice text, matching
+src/components/ScanSheet.jsx    — camera scanner, typed fallback, and the honest empty state
+src/components/ui/tooltip.jsx   — the tooltip every `title=""` became
 src/lib/theme.js, tuning.js     — light/dark, and the DialKit-tunable motion constants
 api/                            — Vercel functions: recalls, stores, per-feed proxies, diagnostics
+api/lookup.js                   — one product across openFDA, INCLUDING finished recalls
 ```
 
 Design notes:
