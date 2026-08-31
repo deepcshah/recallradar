@@ -57,6 +57,15 @@ const DEFAULT_MAP_PCT = 42;
 const MIN_MAP_PCT = 20;
 const MAX_MAP_PCT = 72;
 
+/* The same trade on a wide screen, along the other axis: % of the window
+ * given to the map. It was a fixed 26rem panel against however much was left,
+ * which on a 1440 display meant 928px of basemap carrying five pins beside a
+ * 416px column where all the reading happens. The phone could already drag
+ * this boundary; the desktop could not. */
+const DEFAULT_MAP_WIDTH = 58;
+const MIN_MAP_WIDTH = 28;
+const MAX_MAP_WIDTH = 78;
+
 const RADII = [
   { value: 8047, label: "5" },
   { value: 16093, label: "10" },
@@ -231,9 +240,9 @@ function EmptyState({ icon: Icon, title, children, compact }) {
  *  header whose only remaining content is optional. */
 function PanelHeader({ label, countId, count, note, children, mobileHidden }) {
   return (
-    <div className={(mobileHidden ? "max-md:hidden " : "") +
+    <div className={(mobileHidden ? "max-lg:hidden " : "") +
       "flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line bg-panel px-4 py-2"}>
-      <span className="flex items-center gap-2 max-md:hidden">
+      <span className="flex items-center gap-2 max-lg:hidden">
         <span className="microlabel">{label}</span>
         <span id={countId} className="tnum text-xs font-semibold text-mint">{count}</span>
       </span>
@@ -389,7 +398,9 @@ export default function App() {
   const [sideBySide, setSideBySide] = useState(() => loadPref("rr-side-by-side", false));
   const [splitPct, setSplitPct] = useState(() => loadPref("rr-split", DEFAULT_SPLIT));
   const [mapPct, setMapPct] = useState(() => loadPref("rr-map-pct", DEFAULT_MAP_PCT));
-  const [isWide, setIsWide] = useState(false); // md+ : two lists at once, no tabs
+  const [mapWidthPct, setMapWidthPct] = useState(() => loadPref("rr-map-width", DEFAULT_MAP_WIDTH));
+  const [locEditing, setLocEditing] = useState(false);
+  const [isWide, setIsWide] = useState(false); // lg+ : two lists at once, no bottom nav
 
   const [filterText, setFilterText] = useState("");
   const [categoryKeys, setCategoryKeys] = useState([]); // empty = every type
@@ -540,6 +551,7 @@ export default function App() {
       return;
     }
     setQueryError("");
+    setLocEditing(false);
     setLocStatus({ msg: "Finding that place…", busy: true });
     try {
       await setLocation(await geocodeInput(query));
@@ -618,9 +630,16 @@ export default function App() {
     if (next === "recalls" && !isWide) setTab("recalls");
   }, [isWide]);
 
-  // The columns layout and the list-vs-list divider only exist at md+.
+  /* One breakpoint for the whole information architecture, at lg (1024px).
+   *
+   * It used to be md (768), which put an iPad in portrait — 820px, touch —
+   * into the two-column desktop layout: a 404px map next to a 416px panel,
+   * serving neither. A two-column map-and-list layout needs about 1024px
+   * before the second column is worth what it costs the first. Below that,
+   * the phone's architecture is simply the better one, on a tablet as much as
+   * on a phone. */
   useEffect(() => {
-    const mq = window.matchMedia("(min-width: 768px)");
+    const mq = window.matchMedia("(min-width: 1024px)");
     const sync = () => setIsWide(mq.matches);
     sync();
     mq.addEventListener("change", sync);
@@ -630,6 +649,10 @@ export default function App() {
   const listSplit = useSplitDrag({
     boxRef: splitRef, axis: sideBySide ? "x" : "y", value: splitPct, setValue: setSplitPct,
     storageKey: "rr-split", min: MIN_SPLIT, max: MAX_SPLIT, reset: DEFAULT_SPLIT,
+  });
+  const panelSplit = useSplitDrag({
+    boxRef: mainRef, axis: "x", value: mapWidthPct, setValue: setMapWidthPct,
+    storageKey: "rr-map-width", min: MIN_MAP_WIDTH, max: MAX_MAP_WIDTH, reset: DEFAULT_MAP_WIDTH,
   });
   const mapSplit = useSplitDrag({
     boxRef: mainRef, axis: "y", value: mapPct, setValue: setMapPct,
@@ -660,7 +683,9 @@ export default function App() {
    * landing screen's headline and its one button squeezed into the top of the
    * phone with half the viewport blank underneath. */
   const panelShowing = Boolean(loc) && !listHidden;
-  const mapStyle = isWide ? undefined : { flexBasis: panelShowing ? `${mapPct}%` : "100%" };
+  const mapStyle = isWide
+    ? { flexBasis: `${mapWidthPct}%`, flexGrow: 0, flexShrink: 0 }
+    : { flexBasis: panelShowing ? `${mapPct}%` : "100%" };
 
   const selectedStore = activeStore >= 0 ? stores[activeStore] : null;
 
@@ -905,8 +930,8 @@ export default function App() {
   // Both lookups roll up into one "the app is working" flag.
   const scanning = productsBusy || Boolean(storesStatus?.busy);
 
-  const showStores = "flex " + (tab === "near" ? "" : "max-md:hidden ");
-  const showProducts = "flex " + (tab === "recalls" ? "" : "max-md:hidden ");
+  const showStores = "flex " + (tab === "near" ? "" : "max-lg:hidden ");
+  const showProducts = "flex " + (tab === "recalls" ? "" : "max-lg:hidden ");
 
   /* Where a selected store's recalls actually appear depends on the layout,
    * and getting this wrong is how the card came to say "Showing its recalls
@@ -938,16 +963,26 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setLocOpen(true)}
-                className="inline-flex min-w-0 flex-1 items-center gap-1.5 rounded-full border border-mint-line bg-mint-soft px-3 py-1.5 text-[13px] font-semibold text-mint sm:hidden"
+                className="tap inline-flex min-w-0 max-w-[22rem] flex-1 items-center gap-1.5 rounded-full border border-mint-line bg-mint-soft px-3 py-1.5 text-[13px] font-semibold text-mint lg:hidden"
               >
                 <MapPin className="size-3.5 shrink-0" />
                 <span className="truncate">{loc.label}</span>
                 <ChevronDown className="size-3.5 shrink-0 opacity-70" />
               </button>
-              <span className="hidden min-w-0 items-center gap-1.5 rounded-full border border-mint-line bg-mint-soft px-3 py-1 text-[13px] font-semibold text-mint sm:inline-flex sm:max-w-[14rem]">
+              {/* One control, not two. The chip and the ZIP field were showing
+                  the same place at the same time — "San Francisco, CA 94103"
+                  beside a box reading "94103" — and the field was standing
+                  permanently for a task performed once. The chip is the
+                  control now, on every size; the field is what it opens. */}
+              <button
+                type="button"
+                onClick={() => { setLocEditing(true); setTimeout(() => locInputRef.current?.select(), 0); }}
+                className="tap hidden min-w-0 items-center gap-1.5 rounded-full border border-mint-line bg-mint-soft px-3 py-1 text-[13px] font-semibold text-mint hover:border-mint lg:inline-flex lg:max-w-[18rem]"
+              >
                 <MapPin className="size-3.5 shrink-0" />
                 <span id="location-label" className="truncate">{loc.label}</span>
-              </span>
+                <ChevronDown className="size-3.5 shrink-0 opacity-70" />
+              </button>
             </>
           )}
 
@@ -955,7 +990,8 @@ export default function App() {
               form, a phone gets a chip that opens a sheet — a location is set
               once and then read, so a permanent text field is a row of chrome
               paying rent on a task nobody repeats. */}
-          <div className="order-last hidden w-full min-w-0 items-center gap-1.5 sm:order-none sm:flex sm:w-auto sm:flex-1 sm:justify-end">
+          <div className={"order-last hidden w-full min-w-0 items-center gap-1.5 lg:order-none lg:w-auto lg:flex-1 lg:justify-end " +
+            (loc && !locEditing ? "" : "lg:flex")}>
             {/* `noValidate`, and no `required`. The browser's own bubble —
                 "Please fill out this field" — renders in the OS font at the OS
                 size in the OS colours, ignores the app's theme entirely, and
@@ -971,7 +1007,8 @@ export default function App() {
                 aria-label="ZIP code or address"
                 aria-invalid={queryError ? "true" : undefined}
                 aria-describedby={queryError ? "input-location-error" : undefined}
-                className={"h-9 min-w-0 flex-1 text-[13px] sm:w-36 sm:flex-none lg:w-44 " +
+                onKeyDown={(e) => { if (e.key === "Escape" && loc) { setLocEditing(false); setQueryError(""); } }}
+                className={"h-9 w-44 min-w-0 shrink-0 text-[13px] " +
                   (queryError ? "border-alert focus-visible:border-alert" : "")}
               />
               <Tooltip content="Find recalls around a ZIP code or address">
@@ -981,15 +1018,31 @@ export default function App() {
               </Tooltip>
             </form>
             <Tooltip content="Use this device's location instead of typing one">
-              <Button id="btn-geolocate" size="sm" className="h-9 shrink-0 px-3" onClick={useGeolocation} aria-label="Use my location">
+              <Button id="btn-geolocate" variant="secondary" size="sm" className="h-9 shrink-0 px-3" onClick={useGeolocation} aria-label="Use my location">
                 <Crosshair /><span className="hidden xl:inline">My Location</span>
               </Button>
             </Tooltip>
           </div>
 
+          {/* Scanning is a task, not a filter.
+              On a phone it is a bottom-bar destination; on a desktop it sat in
+              the recalls toolbar next to Filters, styled like a sibling of
+              one — so the same action read as top-level on one screen and as
+              a list control on the other. It is the app's one primary verb,
+              so here it is the header's one primary button. */}
+          <Tooltip content="Point the camera at a package and check it against these notices">
+            <Button
+              id="btn-scan" size="sm"
+              className="hidden h-9 shrink-0 px-3.5 lg:ml-auto lg:inline-flex"
+              onClick={() => setScanOpen(true)}
+            >
+              <ScanLine /> Scan
+            </Button>
+          </Tooltip>
+
           {/* Phone: one overflow control instead of three standing ones. */}
           <Button
-            id="btn-more" variant="secondary" size="icon" className="ml-auto h-9 w-9 shrink-0 sm:hidden"
+            id="btn-more" variant="secondary" size="icon" className="ml-auto h-9 w-9 shrink-0 lg:hidden"
             onClick={() => setMoreOpen(true)}
             aria-label="More: theme, data sources, about"
           >
@@ -997,7 +1050,7 @@ export default function App() {
           </Button>
           <Tooltip content={theme === "system" ? "Following your system theme — click for light" : `${theme[0].toUpperCase()}${theme.slice(1)} theme — click to change`}>
             <Button
-              id="btn-theme" variant="secondary" size="icon" className="hidden h-9 w-9 shrink-0 sm:ml-0 sm:inline-flex"
+              id="btn-theme" variant="secondary" size="icon" className="hidden h-9 w-9 shrink-0 lg:ml-0 lg:inline-flex"
               onClick={cycleTheme}
               aria-label={`Theme: ${theme}. Click to change.`}
             >
@@ -1024,11 +1077,11 @@ export default function App() {
       </header>
 
       {/* ================= body: map + panel ================= */}
-      <main ref={mainRef} className="flex min-h-0 flex-1 flex-col md:flex-row">
+      <main ref={mainRef} className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* -------- map -------- */}
         <div
-          className={"relative min-h-0 shrink-0 md:min-w-0 md:flex-1 md:basis-auto " +
-            (mapHidden || tab === "recalls" ? "hidden md:block " : "") +
+          className={"relative min-h-0 shrink-0 lg:min-w-0 lg:flex-1 lg:basis-auto " +
+            (mapHidden || tab === "recalls" ? "hidden lg:block " : "") +
             (selectedStore ? "map-has-selection" : "")}
           style={mapStyle}
         >
@@ -1058,7 +1111,7 @@ export default function App() {
                     landing screen has to carry it on a phone — which is the
                     right place for it anyway: getting a location is this
                     screen's entire job, and afterwards it is a chip. */}
-                <form onSubmit={onSearch} noValidate className="mx-auto mt-4 flex max-w-xs items-center gap-2 sm:hidden">
+                <form onSubmit={onSearch} noValidate className="mx-auto mt-4 flex max-w-xs items-center gap-2 lg:hidden">
                   <Input
                     value={query}
                     onChange={(e) => { setQuery(e.target.value); if (queryError) setQueryError(""); }}
@@ -1068,7 +1121,7 @@ export default function App() {
                   />
                   <Button type="submit" variant="secondary" className="h-11 shrink-0 px-4">Go</Button>
                 </form>
-                <p className="microlabel mt-3 hidden sm:block">Or enter a ZIP above</p>
+                <p className="microlabel mt-3 hidden lg:block">Or enter a ZIP above</p>
                 <p className="mt-5 text-xs leading-relaxed text-subtle">
                   Beta. Recall data comes from public government feeds and is matched to stores by name —
                   expect gaps and false matches. Not a substitute for the official notice.
@@ -1120,7 +1173,7 @@ export default function App() {
                 aria-pressed={!listHidden}
                 aria-controls="stores-panel"
                 onClick={() => setView(listHidden ? "split" : "map")}
-                className={"bg-panel/90 backdrop-blur " + (listHidden ? "" : "max-md:hidden")}
+                className={"bg-panel/90 backdrop-blur " + (listHidden ? "" : "max-lg:hidden")}
               >
                 {listHidden ? <><PanelRightOpen /> Show Lists</> : <><PanelRightClose /> Hide Lists</>}
               </Button>
@@ -1130,7 +1183,7 @@ export default function App() {
                     id="btn-toggle-layout" variant="secondary" size="sm"
                     aria-pressed={sideBySide}
                     onClick={toggleLayout}
-                    className="hidden bg-panel/90 px-3 backdrop-blur md:inline-flex"
+                    className="hidden bg-panel/90 px-3 backdrop-blur lg:inline-flex"
                   >
                     {sideBySide ? <Rows2 /> : <Columns2 />}
                     <span className="hidden lg:inline">{sideBySide ? "Stacked" : "Side by Side"}</span>
@@ -1141,16 +1194,34 @@ export default function App() {
           )}
         </div>
 
+        {/* ---- map / panel divider (wide screens) ----
+            The desktop counterpart of the phone's grabber: the same gesture,
+            the same hook, the same keyboard handling, on the other axis. */}
+        {loc && !listHidden && isWide && (
+          <div
+            id="panel-split-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize the map"
+            aria-valuenow={Math.round(mapWidthPct)} aria-valuemin={MIN_MAP_WIDTH} aria-valuemax={MAX_MAP_WIDTH}
+            tabIndex={0}
+            {...panelSplit}
+            className="split-handle group hidden w-2 shrink-0 cursor-col-resize items-center justify-center border-x border-line bg-panel hover:bg-mint-soft lg:flex"
+          >
+            <span className="split-grip h-8 w-0.5" />
+          </div>
+        )}
+
         {/* -------- right panel: stores over products -------- */}
         {loc && !listHidden && (
           <aside id="stores-panel"
-                 className={"relative z-10 flex min-h-0 flex-1 flex-col border-t border-line bg-ink shadow-[var(--rr-shadow-2)] md:flex-none md:border-l md:border-t-0 " +
-                   (sideBySide ? "md:w-[38rem] xl:w-[46rem]" : "md:w-[26rem]")}>
+                 className={"relative z-10 flex min-h-0 flex-1 flex-col border-t border-line bg-ink shadow-[var(--rr-shadow-2)] lg:border-t-0 " +
+                   "lg:min-w-[22rem] lg:flex-1"}>
             {/* ---- phone divider: map vs. panel ---- */}
             {/* Only where there is a map to resize. On the recalls screen there
                 isn't one, and a drag handle for an absent element is 32px of
                 furniture. */}
-            <div className={"relative flex shrink-0 items-center border-b border-line bg-panel md:hidden " +
+            <div className={"relative flex shrink-0 items-center border-b border-line bg-panel lg:hidden " +
               (tab === "near" ? "" : "hidden")}>
               <div
                 id="map-split-handle"
@@ -1169,12 +1240,12 @@ export default function App() {
               <div className="absolute right-1.5 flex items-center gap-0.5">
                 <button type="button" onClick={() => stepView(-1)} disabled={view === "map"}
                         aria-label="Show more map"
-                        className="grid size-7 place-items-center rounded-md text-fog disabled:opacity-30 active:bg-panel-3">
+                        className="grid size-9 place-items-center rounded-md text-fog disabled:opacity-30 active:bg-panel-3">
                   <ChevronDown className="size-4" />
                 </button>
                 <button type="button" onClick={() => stepView(1)} disabled={view === "list"}
                         aria-label="Show more list"
-                        className="grid size-7 place-items-center rounded-md text-fog disabled:opacity-30 active:bg-panel-3">
+                        className="grid size-9 place-items-center rounded-md text-fog disabled:opacity-30 active:bg-panel-3">
                   <ChevronUp className="size-4" />
                 </button>
               </div>
@@ -1248,8 +1319,8 @@ export default function App() {
                 answer, and two context bands over a short list is one too many. */}
             {headline && (
               <p id="headline"
-                 className={"shrink-0 border-b border-line px-4 py-2 text-[12px] font-semibold leading-snug md:py-2.5 md:text-[13px] " +
-                   (selectedStore ? "max-md:hidden " : "") +
+                 className={"shrink-0 border-b border-line px-4 py-2 text-[12px] font-semibold leading-snug lg:py-2.5 lg:text-[13px] " +
+                   (selectedStore ? "max-lg:hidden " : "") +
                    (headline.tone === "match" ? "bg-mint-soft text-paper" : "bg-panel text-fog")}>
                 {headline.text}
               </p>
@@ -1257,7 +1328,7 @@ export default function App() {
 
             {/* Both lists live in one measured box so the divider can size them. */}
             <div ref={splitRef}
-                 className={"flex min-h-0 flex-1 " + (sideBySide ? "flex-col md:flex-row" : "flex-col")}>
+                 className={"flex min-h-0 flex-1 " + (sideBySide ? "flex-col lg:flex-row" : "flex-col")}>
             {/* ---- stores ---- */}
             <section className={(mode === "recalls" ? "hidden " : showStores) + "min-h-0 flex-1 flex-col overflow-hidden"}
                      style={mode === "recalls" ? undefined : storesStyle}>
@@ -1357,7 +1428,7 @@ export default function App() {
                           {/* A chevron is how a phone list says "this goes
                               somewhere". Only on the rows that do. */}
                           {!isActive && !isSibling && (
-                            <ChevronRight className="size-3 shrink-0 opacity-70 md:hidden" />
+                            <ChevronRight className="size-3 shrink-0 opacity-70 lg:hidden" />
                           )}
                         </p>
                       </div>
@@ -1387,19 +1458,18 @@ export default function App() {
 
             {/* ---- products ---- */}
             <section className={showProducts + "min-h-0 flex-1 flex-col overflow-hidden " + (isWide ? "" : "border-t border-line")}>
-              <PanelHeader
-                label="Recalls" countId="stat-recalls" count={productsBusy ? "…" : sorted.length}
-                mobileHidden
-                note={highCount > 0 && (
-                  <span id="stat-high" className="tnum text-[11px] text-amber">{highCount} high-risk</span>
-                )}
-              />
-
               {/* ---- the filter bar ----
                   Search and one Filters control, in the panel they filter. */}
               <div className="flex shrink-0 items-center gap-2 border-b border-line bg-panel px-3 py-2">
+                {/* The count and the high-risk tally used to be a band of their
+                    own above this row, which is two rows for one section's
+                    header. They are three words; they fit here. */}
+                <span className="microlabel hidden shrink-0 lg:inline">Recalls</span>
+                <span id="stat-recalls" className="tnum shrink-0 text-xs font-semibold text-mint">
+                  {productsBusy ? "…" : sorted.length}
+                </span>
                 {highCount > 0 && (
-                  <span className="tnum shrink-0 text-[11px] font-semibold text-amber md:hidden">{highCount} high-risk</span>
+                  <span id="stat-high" className="tnum shrink-0 text-[11px] font-semibold text-amber">{highCount} high-risk</span>
                 )}
                 <div className="relative min-w-0 flex-1">
                   <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-fog" />
@@ -1413,16 +1483,6 @@ export default function App() {
                     className="h-9 pl-9 text-[13px]"
                   />
                 </div>
-                <Tooltip content="Point the camera at a package and check it against these notices">
-                  <Button
-                    id="btn-scan" variant="secondary" size="sm"
-                    className="hidden h-9 shrink-0 px-3 md:inline-flex"
-                    onClick={() => setScanOpen(true)}
-                    aria-label="Scan a barcode"
-                  >
-                    <ScanLine /><span className="hidden sm:inline">Scan</span>
-                  </Button>
-                </Tooltip>
                 <div className="relative shrink-0">
                   <FilterButton
                     id="btn-filters"
@@ -1624,7 +1684,7 @@ export default function App() {
 
       {/* ================= footer ================= */}
       <footer
-        className="safe-b z-20 hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line bg-panel px-4 pt-1.5 md:flex"
+        className="safe-b z-20 hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line bg-panel px-4 pt-1.5 lg:flex"
         style={{ "--safe-b-pad": "0.375rem" }}
       >
         <p className="min-w-0 flex-1 truncate text-[11px] text-fog">
@@ -1655,7 +1715,7 @@ export default function App() {
       {loc && (
         <nav
           aria-label="Main"
-          className="z-30 flex shrink-0 items-stretch border-t border-line bg-panel md:hidden"
+          className="z-30 flex shrink-0 items-stretch border-t border-line bg-panel lg:hidden"
           style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
         >
           {[

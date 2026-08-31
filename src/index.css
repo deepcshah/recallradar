@@ -248,7 +248,20 @@ button:disabled,
          px-3 text-[11px] font-semibold uppercase tracking-wider transition-colors;
   min-height: 36px;
 }
-@media (min-width: 768px) {
+/* Keyed to the pointer, not the viewport.
+ *
+ * This was `min-width: 768px`, which is a statement about how much room there
+ * is and not about what is doing the pointing — so an iPad, which is 820px
+ * wide and entirely finger-driven, got the 26px mouse target. That is the
+ * exact bug that was fixed for phones, reintroduced for tablets. A fine
+ * pointer is the thing that earns the smaller box. */
+/* Anything that is a control but not a chip and not a Button — the location
+ * pill, mostly — still has to be reachable by a thumb on a tablet. */
+@media (pointer: coarse) {
+  .tap { min-height: 36px; }
+}
+
+@media (pointer: fine) {
   .chip {
     @apply px-2.5;
     min-height: 26px;
@@ -558,7 +571,7 @@ button:disabled,
  * what you just tapped, and it needs to be findable — so it keeps full size
  * and gets its numeral back, which is also the number you are looking at in
  * the list. */
-@media (max-width: 767px) {
+@media (max-width: 1023px) {
   .map-pin { width: 15px; height: 15px; border-width: 1.5px; }
   .map-pin-label { display: none; }
   /* The element itself grew, so the scale on top of it comes back down —
