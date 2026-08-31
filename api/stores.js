@@ -11,8 +11,16 @@
  * can only return chains we already know the names of. A search that fails
  * degrades on its own — the rest of the lookup still returns — and a stale
  * cached copy always beats an error.
+ *
+ * The Blob token comes from src/lib/blob.js, not from the SDK's own lookup:
+ * this project's store is attached with an `RR_BLOB_` prefix, and every read
+ * and write here is wrapped in a catch that reads a failure as "not cached",
+ * so a token the SDK cannot find would turn the cache into a permanent miss
+ * without a single error to show for it — one Mapbox request per chain per
+ * visitor, forever.
  */
 import { head, put } from "@vercel/blob";
+import { blobAuth, blobPutOptions } from "../src/lib/blob.js";
 import { byId } from "../src/lib/retailers.js";
 import {
   findCategoryPlaces, findChainLocations, pooled, STORE_CATEGORIES,
@@ -27,7 +35,7 @@ export function tileKey(lat, lon, slot) {
 
 async function readBlob(key) {
   try {
-    const meta = await head(key); // throws BlobNotFoundError when missing
+    const meta = await head(key, blobAuth()); // throws BlobNotFoundError when missing
     const res = await fetch(meta.url, { cache: "no-store" });
     if (!res.ok) return null;
     return { body: await res.json(), uploadedAt: new Date(meta.uploadedAt).getTime() };
@@ -38,13 +46,7 @@ async function readBlob(key) {
 
 async function writeBlob(key, body) {
   try {
-    await put(key, JSON.stringify(body), {
-      access: "public",
-      addRandomSuffix: false,
-      allowOverwrite: true,
-      contentType: "application/json",
-      cacheControlMaxAge: 3600,
-    });
+    await put(key, JSON.stringify(body), blobPutOptions());
   } catch (_) { /* best-effort; the response still succeeds */ }
 }
 
