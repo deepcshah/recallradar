@@ -3,11 +3,17 @@
  *   /api/diag?lat=40.65&lon=-73.96
  * and read the JSON. Nothing here echoes the token — only whether it is
  * present, its public prefix, and the upstream status codes and messages.
+ *
+ * /api/diag?probe=feeds skips all of that and reports on the recall feeds
+ * alone: what each one answered just now, whether a cached copy is standing in
+ * for it, and whether Blob is configured to hold one. That is the probe the
+ * app's own "Check the feeds" button calls.
  */
 import { byId } from "../src/lib/retailers.js";
 import { findChainLocations, searchUrl } from "../src/lib/mapbox-server.js";
-import { FEED_HEADERS, FSIS_ENDPOINTS, FSIS_HEADER_SETS } from "../src/lib/feeds.js";
+import { FEED_HEADERS, FSIS_ENDPOINTS, FSIS_HEADER_SETS, cpscUrl } from "../src/lib/feeds.js";
 import { fdaSearchQuery, CPSC_LOOKBACK_DAYS } from "../src/lib/sources.js";
+import { FEED_BLOBS, blobConfigured, readFeedCache, staleness } from "../src/lib/feed-cache.js";
 
 const PROBE_CHAINS = ["cvs", "safeway", "walmart"];
 const PROBE_TIMEOUT_MS = 8000;
@@ -17,11 +23,10 @@ const PROBE_TIMEOUT_MS = 8000;
  * showing up as a missing source in the UI. */
 async function probeFeeds() {
   const key = process.env.openfda;
-  const cpscStart = new Date(Date.now() - CPSC_LOOKBACK_DAYS * 86400000).toISOString().slice(0, 10);
   const loc = { state: "California", stateAbbr: "CA" };
   const targets = [
-    ["USDA FSIS", "https://www.fsis.usda.gov/fsis/api/recall/v/1?format=json"],
-    ["CPSC", `https://www.saferproducts.gov/RestWebServices/Recall?format=json&RecallDateStart=${cpscStart}`],
+    ["USDA FSIS", FSIS_ENDPOINTS[0]],
+    ["CPSC", cpscUrl(CPSC_LOOKBACK_DAYS)],
     ["openFDA food", `https://api.fda.gov/food/enforcement.json?search=${fdaSearchQuery(loc).replace(/ /g, "+")}` +
       `&limit=1` + (key ? `&api_key=${key}` : "")],
   ];
@@ -86,17 +91,55 @@ async function probeFsisMatrix() {
 }
 
 export default async function handler(req, res) {
-  // /api/diag?probe=fsis runs just the FSIS matrix and returns early.
-  if (String(req.query.probe || "") === "fsis") {
-    const matrix = await probeFsisMatrix();
-    const win = matrix.find((r) => r.ok && r.count);
+  /* /api/diag?probe=feeds checks every recall feed, live, plus the cache that
+   * covers for them. This used to be FSIS-only, which is why "CPSC is missing
+   * too" had nowhere to be answered from — the one button in the app tested a
+   * single agency and reported on a single agency. */
+  if (["feeds", "fsis"].includes(String(req.query.probe || ""))) {
+    const [feeds, matrix, fsisCache, cpscCache] = await Promise.all([
+      probeFeeds(),
+      probeFsisMatrix(),
+      readFeedCache(FEED_BLOBS.fsis),
+      readFeedCache(FEED_BLOBS.cpsc),
+    ]);
+
+    const rows = feeds.map((f) => {
+      const cache = f.name === "USDA FSIS" ? fsisCache : f.name === "CPSC" ? cpscCache : null;
+      return {
+        url: f.name,
+        headers: f.ok ? `${f.count ?? "?"} notices` : "live fetch failed",
+        status: f.status ?? f.error,
+        ok: f.ok,
+        ms: f.ms,
+        body: f.body,
+        cached: cache ? `${cache.list.length} saved ${staleness(cache.uploadedAt)}` : undefined,
+      };
+    });
+
+    const down = feeds.filter((f) => !f.ok && f.status !== 404);
+    const covered = down.filter((f) =>
+      (f.name === "USDA FSIS" && fsisCache) || (f.name === "CPSC" && cpscCache));
+
+    let verdict;
+    if (!down.length) verdict = "Every feed answered live. Nothing is being served from cache.";
+    else if (!blobConfigured()) {
+      verdict = `${down.map((f) => f.name).join(" and ")} refused us, and BLOB_READ_WRITE_TOKEN is not set — ` +
+        "so there is no cached copy to fall back on and the source will show as unavailable. " +
+        "Add a Vercel Blob store to the project, then run /api/refresh-feeds.";
+    } else if (covered.length === down.length) {
+      verdict = `${down.map((f) => f.name).join(" and ")} refused us just now, but a cached copy is being served instead.`;
+    } else {
+      verdict = `${down.map((f) => f.name).join(" and ")} refused us and there is no usable cached copy. ` +
+        "Run /api/refresh-feeds to try warming one.";
+    }
+
     res.setHeader("Cache-Control", "no-store");
     return res.status(200).json({
       checkedAt: new Date().toISOString(),
-      verdict: win
-        ? `FSIS works via ${win.url} (${win.headers} headers), ${win.count} notices.`
-        : "No FSIS endpoint answered with JSON — see rows[].status and rows[].body.",
-      rows: matrix,
+      blobConfigured: blobConfigured(),
+      verdict,
+      rows,
+      fsisMatrix: matrix,
     });
   }
 
@@ -121,7 +164,7 @@ export default async function handler(req, res) {
       present: Boolean(process.env.openfda),
       length: process.env.openfda ? String(process.env.openfda).length : 0,
     },
-    blobConfigured: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
+    blobConfigured: blobConfigured(),
     feeds: await probeFeeds(),
     probes: [],
   };

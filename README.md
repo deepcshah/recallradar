@@ -24,17 +24,32 @@ The whole information architecture switches once, at `lg`:
 
 Touch-target sizing is keyed to `pointer: coarse`, not to width — an iPad is 820px wide *and* finger-driven, so viewport width is the wrong question to ask.
 
-### Three modes
+### One scope, two answers
 
-One control at the top of the panel says how wide a net everything below is casting:
+One control at the top of the panel says how wide a net everything below is casting. It is labelled with its unit, because it sits a few hundred pixels above a bottom bar that also counts things:
 
-| Mode | Stores | Recalls |
+```
+RECALLS ⓘ  [ At a store near you · 12 ]  [ Anywhere in CA · 137 ]
+```
+
+| Scope | Recalls | Stores |
 | --- | --- | --- |
-| **Named** | only stores whose chain a notice names | only notices that name a chain near you |
-| **All stores** | every store nearby, chains and independents | every notice covering your area |
-| **All recalls** | *(the store column steps aside)* | every active notice for your area |
+| **At a store near you** | only notices naming a chain with a storefront near you | only those stores |
+| **Anywhere in `ST`** | every active notice covering your area | every store nearby, chains and independents |
 
-Independents can only ever be exposed at the area level — no notice will name one — so **All stores** is the only mode in which one can honestly appear. The store list is always in distance order; whether a notice names a store is the mode's job, not the sort's.
+Both counts are recalls, and both respect whatever else is filtered — a chip says what turning it on would actually leave you with.
+
+This replaced a three-chip control labelled *Named / All stores / All recalls*, which had two problems that fed each other. "Named" was internal vocabulary — a notice *names* a chain — and said neither by whom nor of what. And the three chips counted three different things (8 stores, 20 stores, 137 recalls) inside one segmented control, directly above a bottom bar counting "Near me 20" and "Recalls 137": two rows of numbers, different units, same digits, no stated subject. Two of the three also produced an identical recall list and differed only in whether the store column was on screen, which is a layout question wearing a filter's clothes. Store-list visibility now lives on the store list itself (a fold control on wide screens; on a phone the bottom bar already is it).
+
+Independents can only ever be exposed at the area level — no notice will name one — so **Anywhere in `ST`** is the only scope in which one can honestly appear. The store list is always in distance order; whether a notice names a store is the scope control's job, not the sort's.
+
+### Terms that explain themselves
+
+"Class I" is the loudest thing on a recall card and the only word on it that is not English: an FDA term of art shaped exactly like an ordinal, so read cold it suggests *the first one*, or worse, *the mildest*. It means the opposite.
+
+So the badge is a disclosure, not a label (`src/lib/classification.js`, `InfoTip` in `src/components/ui/tooltip.jsx`). On a mouse it opens on hover after the usual delay. On touch it opens on **tap** and stays until you tap away — never long-press, which is the OS's gesture, collides with selection and the context menu, and has no visible affordance. The affordance is a dotted underline on the term plus an `ⓘ`, both present before any interaction, and the trigger is a real button with `aria-expanded` sized to a full thumb even when the type inside it is 11px.
+
+`Tooltip` (hover-only, `aria-describedby`, supplements a control that already names itself) and `InfoTip` (hover **and** tap, a disclosure on a term) are separate components on one placement engine, because the trigger has to change with the behaviour. Where an agency assigns no class at all — CPSC never does — the badge says "not classified" rather than inventing the "Medium risk" it used to print.
 
 Everything runs client-side against free, key-less public APIs. There is no server, no build step, no tracking — your location never leaves your browser except as query parameters to the public APIs above.
 
@@ -102,15 +117,20 @@ src/lib/category.js             — what kind of product it is (icon + type filt
 src/lib/reason.js               — why it was recalled (hazard label + reason filter)
 src/lib/upc.js                  — barcode normalization, extraction from notice text, matching
 src/components/ScanSheet.jsx    — camera scanner, typed fallback, and the honest empty state
-src/components/ui/tooltip.jsx   — the tooltip every `title=""` became
+src/components/ui/tooltip.jsx   — hover Tooltip + tappable InfoTip, one placement engine
+src/lib/classification.js       — what Class I/II/III and USDA's risk words actually mean
+src/lib/feed-cache.js           — last-good copies of the feeds, in Vercel Blob
 src/lib/theme.js, tuning.js     — light/dark, and the DialKit-tunable motion constants
 api/                            — Vercel functions: recalls, stores, per-feed proxies, diagnostics
 api/lookup.js                   — one product across openFDA, INCLUDING finished recalls
+api/refresh-feeds.js            — daily cron: warm the FSIS and CPSC caches off the request path
 ```
 
 Design notes:
 
-- **Per-source resilience:** each feed is fetched with `Promise.allSettled`; a failed or CORS-blocked feed shows as "unavailable" in the Data sources panel instead of breaking the page. openFDA's "no results" 404 is treated as an empty set.
+- **Per-source resilience:** each feed is fetched with `Promise.allSettled`; one failure never breaks the page. openFDA's "no results" 404 is treated as an empty set.
+- **USDA and CPSC are unreliable, and it is not the URL.** `https://www.fsis.usda.gov/fsis/api/recall/v/1?format=json` is the documented endpoint and it is correct; USDA sits behind a WAF that scores datacenter egress and TLS fingerprints, so a serverless function gets a 403 where a laptop gets JSON (impersonating Chrome makes it worse — Node's handshake never matches the claim). CPSC's `saferproducts.gov` returns 180 days as one uncompressed document and regularly outruns the request budget. Both are handled the same way: a few spaced retries inside the request, every success written to Vercel Blob, a daily cron (`api/refresh-feeds.js`) warming those copies **off** the request path, and a fallback to the last good copy with an explicit "as of". The cache previously filled only when a live user request happened to succeed, which meant a deployment could run for weeks with USDA showing "unavailable" every single time. `BLOB_READ_WRITE_TOKEN` is what makes any of it work; `/api/diag?probe=feeds` says whether it is set.
+- **A missing agency is a hole in the answer, not a status light.** When a feed is down or serving a saved copy, the recall list says so at the top, names what is missing from it, and says an empty list is not the same as no recalls — rather than leaving it to an amber dot in the desktop footer.
 - **Politeness:** responses are cached in `sessionStorage` for 30 minutes; Nominatim is only called once per search.
 - **Touch targets:** every small toggle shares one `.chip` class that is 36px tall on touch and 26px where a mouse is pointing. The type in them stays at 11px — a chip is a label; the box around it is what a thumb has to hit.
 - **Severity model:** FDA Class I / FSIS High Risk → red, Class II / default → amber, Class III / low → gray. The classification badge is the *only* place warm colour appears — a store is never coloured as a hazard.

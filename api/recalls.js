@@ -8,8 +8,8 @@ import {
   normalizeFda, normalizeFsis, normalizeCpsc, sortRecalls,
   slimFsis, slimCpsc, fdaSearchQuery, unscopedSearchQuery, CPSC_LOOKBACK_DAYS,
 } from "../src/lib/sources.js";
-import { FEED_HEADERS, FSIS_ENDPOINTS, FSIS_HEADER_SETS, fetchFirstOk } from "../src/lib/feeds.js";
-import { head, put } from "@vercel/blob";
+import { FEED_HEADERS, fsisFetch, cpscUrl } from "../src/lib/feeds.js";
+import { FEED_BLOBS, feedWithFallback } from "../src/lib/feed-cache.js";
 
 async function jfetch(url, timeoutMs = 25000) {
   const ctrl = new AbortController();
@@ -83,50 +83,23 @@ async function fetchFda(kind, loc) {
   return normalizeFda(kind, results, loc).filter((r) => !seen.has(r.id) && seen.add(r.id));
 }
 
-/* FSIS sits behind a WAF that intermittently 403s server-to-server requests.
- * Every success is written to Blob so an outage degrades to yesterday's meat
- * and poultry recalls instead of no meat and poultry recalls at all. */
-const FSIS_BLOB = "feeds/fsis-v1.json";
-const FSIS_MAX_STALE_MS = 14 * 24 * 60 * 60 * 1000;
-
-async function readFsisCache() {
-  try {
-    const meta = await head(FSIS_BLOB);
-    const res = await fetch(meta.url, { cache: "no-store" });
-    if (!res.ok) return null;
-    return { list: await res.json(), uploadedAt: new Date(meta.uploadedAt).getTime() };
-  } catch (_) {
-    return null; // never cached, or Blob isn't configured here
-  }
-}
+/* Both of these go through the same shape: try live, cache every success,
+ * and fall back to the last good copy rather than dropping a whole agency out
+ * of the answer. See src/lib/feed-cache.js for why each one needs it.
+ *
+ * The budgets are what is left of the 60s function after openFDA's three
+ * paged kinds, which run in parallel with these. */
 
 async function fetchFsis(loc) {
-  try {
-    const { data } = await fetchFirstOk(FSIS_ENDPOINTS, FSIS_HEADER_SETS, 8000, 32000);
-    const list = slimFsis(data);
-    try {
-      await put(FSIS_BLOB, JSON.stringify(list), {
-        access: "public", addRandomSuffix: false, allowOverwrite: true,
-        contentType: "application/json", cacheControlMaxAge: 3600,
-      });
-    } catch (_) { /* best effort — the live answer still goes out */ }
-    return { recalls: normalizeFsis(list, loc) };
-  } catch (err) {
-    const cached = await readFsisCache();
-    if (!cached || Date.now() - cached.uploadedAt > FSIS_MAX_STALE_MS) throw err;
-    const asOf = new Date(cached.uploadedAt).toISOString().slice(0, 10);
-    return {
-      recalls: normalizeFsis(cached.list, loc),
-      note: `USDA is blocking us right now (${String(err.message).slice(0, 80)}) — showing the copy saved ${asOf}.`,
-    };
-  }
+  const { list, note } = await feedWithFallback(
+    FEED_BLOBS.fsis, () => fsisFetch({ attempts: 3, timeoutMs: 9000, budgetMs: 34000 }), slimFsis);
+  return { recalls: normalizeFsis(list, loc), note };
 }
 
 async function fetchCpsc() {
-  const start = new Date(Date.now() - CPSC_LOOKBACK_DAYS * 86400000).toISOString().slice(0, 10);
-  const raw = await jfetch(
-    `https://www.saferproducts.gov/RestWebServices/Recall?format=json&RecallDateStart=${start}`, 30000);
-  return normalizeCpsc(slimCpsc(raw));
+  const { list, note } = await feedWithFallback(
+    FEED_BLOBS.cpsc, () => jfetch(cpscUrl(CPSC_LOOKBACK_DAYS), 34000), slimCpsc);
+  return { recalls: normalizeCpsc(list), note };
 }
 
 export default async function handler(req, res) {

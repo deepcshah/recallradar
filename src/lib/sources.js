@@ -17,6 +17,7 @@
  */
 import { chainsInText } from "./retailers.js";
 import { ABBR_TO_NAME } from "./states.js";
+import { FSIS_ENDPOINTS, cpscUrl } from "./feeds.js";
 
 const DAY_MS = 86400000;
 export const LOOKBACK_DAYS = 365;
@@ -296,13 +297,11 @@ async function fetchOpenFdaDirect(kind, loc) {
   return normalizeFda(kind, (data && data.results) || [], loc);
 }
 
-const FSIS_URL = "https://www.fsis.usda.gov/fsis/api/recall/v/1?format=json";
-
 /** FSIS straight from the browser: a different IP on a different network from
  *  the serverless function, which USDA's WAF blocks outright. Throws if the
  *  browser is blocked too, or if CORS forbids reading the response. */
 export async function fsisFromBrowser(loc) {
-  const list = await cachedFetchJSON(FSIS_URL, { timeoutMs: 12000, transform: slimFsis });
+  const list = await cachedFetchJSON(FSIS_ENDPOINTS[0], { timeoutMs: 12000, transform: slimFsis });
   return normalizeFsis(list || [], loc);
 }
 
@@ -340,15 +339,13 @@ export async function retryBlockedFsis(loc, sources) {
 }
 
 async function fetchCpscDirect() {
-  const start = new Date(Date.now() - CPSC_LOOKBACK_DAYS * DAY_MS).toISOString().slice(0, 10);
   let list;
   try {
-    list = await cachedFetchJSON(
-      `https://www.saferproducts.gov/RestWebServices/Recall?format=json&RecallDateStart=${start}`,
-      { timeoutMs: 30000, transform: slimCpsc }
-    );
+    list = await cachedFetchJSON(cpscUrl(CPSC_LOOKBACK_DAYS), { timeoutMs: 30000, transform: slimCpsc });
   } catch (_) {
-    list = await cachedFetchJSON("/api/cpsc", { timeoutMs: 30000 }); // proxy returns pre-slimmed data
+    // The proxy returns pre-slimmed data, and falls back to its own cached
+    // copy — so this path can still answer when saferproducts.gov cannot.
+    list = await cachedFetchJSON("/api/cpsc", { timeoutMs: 30000 });
   }
   return normalizeCpsc(list || []);
 }

@@ -10,7 +10,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Tooltip } from "@/components/ui/tooltip";
+import { Tooltip, InfoTip } from "@/components/ui/tooltip";
 import { FilterButton, FilterSheet, FilterGroup, FilterChoice } from "@/components/FilterSheet";
 import MapView from "@/components/MapView";
 import ScanSheet from "@/components/ScanSheet";
@@ -21,6 +21,7 @@ import { fetchAll, retryBlockedFsis, sortRecalls } from "@/lib/sources";
 import { findStores } from "@/lib/stores";
 import { byId, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
 import { categoryFor } from "@/lib/category";
+import { classInfo, severityLabel, severityVariant } from "@/lib/classification";
 import { reasonFor, REASON_ORDER } from "@/lib/reason";
 import { DialRoot } from "dialkit";
 import "dialkit/styles.css";
@@ -73,34 +74,52 @@ const RADII = [
 ];
 
 /* ─────────────────────────────────────────────────────────────────────────
- * THE THREE MODES
+ * SCOPE — how wide a net, in recalls
  *
- * One dimension — how wide a net — stated once at the top of the panel
- * instead of inferred from four scattered controls.
+ * This was three chips labelled Named / All stores / All recalls, and it had
+ * two problems that fed each other.
  *
- *   named   the stores a notice actually names, and only the notices that
- *           name them. The app's precise claim, and its smallest answer.
- *   stores  every store near you, chains and independents alike, against
- *           every notice covering your area. An independent can only ever be
- *           exposed at the area level, so this is the only mode in which one
- *           can honestly appear.
- *   recalls no store scoping at all — every active notice for your state.
- *           The store list steps aside; the map stays for context.
+ * The first was the word. "Named" is the app's internal vocabulary: a notice
+ * *names* a chain. Nobody arrives knowing that, and the chip did not say
+ * named by whom, or of what.
  *
- * Independents were the thing this fixes. They were being fetched and
- * rendered the whole time, then sorted below every named chain — on a phone
- * the first one started roughly 300px below the fold with up to 24 chains
- * ahead of it. That is not a filter anyone chose; it was a ranking rule
- * quietly deciding a whole category did not exist.
+ * The second was arithmetic, and it is why the row read as confusing next to
+ * the bottom bar. The three chips counted three different things — 8 stores,
+ * 20 stores, 137 recalls — inside one segmented control, while the bottom
+ * bar underneath counted "Near me 20" and "Recalls 137". Two rows of numbers,
+ * different units, same digits, no stated subject. And two of the three chips
+ * produced an identical recall list: "All stores" and "All recalls" differed
+ * only in whether the store list was on screen, which is a layout question
+ * wearing a filter's clothes.
+ *
+ * So the control was split along the seam it was actually hiding. What is
+ * left is one question with two answers, both counted in recalls, under a
+ * label that says so:
+ *
+ *   Recalls  [ At a store near you · 12 ]  [ Anywhere in CA · 137 ]
+ *
+ * Store-list visibility went where it belongs, to a collapse control on the
+ * store list itself (wide screens; on a phone the bottom bar already is it).
  * ───────────────────────────────────────────────────────────────────────── */
-const MODES = [
-  { id: "named", label: "Named",
-    hint: "Only stores whose chain a recall notice names, and only the notices that name them." },
-  { id: "stores", label: "All stores",
-    hint: "Every store nearby, chains and independents — against every notice covering your area." },
-  { id: "recalls", label: "All recalls",
-    hint: "Every active notice for your area, with no store filtering at all." },
+const SCOPES = [
+  { id: "named",
+    label: "At a store near you",
+    hint: "Only notices that name a chain with a storefront near you. The app's " +
+          "most specific answer — and its smallest, because most notices name no " +
+          "retailer at all." },
+  { id: "area",
+    label: "Anywhere in your area",
+    hint: "Every active notice covering your area, named retailer or not. This is " +
+          "what an independent grocer is exposed to, and it is the only honest " +
+          "answer for one." },
 ];
+
+/* A stored preference from the three-mode version, or a stale value from a
+ * hand-edited localStorage, must not leave the app in a scope that no longer
+ * exists — "recalls" and "stores" were both the wide net. */
+function normalizeScope(v) {
+  return v === "named" ? "named" : "area";
+}
 
 /* The phone's three layouts. The split is draggable between them; these are
  * the two ends it cannot be dragged to. */
@@ -110,10 +129,6 @@ const SORTS = [
   { value: "newest", label: "Newest first" },
   { value: "risk", label: "Highest risk first" },
 ];
-
-function sevLabel(r) {
-  return r.classification || { high: "High risk", med: "Medium risk", low: "Lower risk" }[r.severity];
-}
 
 function fmtDate(d) {
   if (!d || isNaN(d)) return "";
@@ -179,6 +194,95 @@ function RecallImage({ recall }) {
   );
 }
 
+/* What each feed is the only source for. When one is down, this is what is
+ * actually missing from the list — which is the sentence the app owed the
+ * reader and never said. An amber dot in the footer is not a disclosure. */
+const SOURCE_COVERS = {
+  "USDA FSIS": "meat, poultry and egg recalls",
+  CPSC: "consumer product recalls — toys, furniture, appliances, electronics",
+  "FDA Food": "food and supplement recalls",
+  "FDA Drug": "drug recalls",
+  "FDA Device": "medical device recalls",
+};
+
+function coverageFor(name) {
+  const key = Object.keys(SOURCE_COVERS).find((k) => name.startsWith(k));
+  const covers = key ? SOURCE_COVERS[key] : "Some recalls";
+  return covers[0].toUpperCase() + covers.slice(1);
+}
+
+/* The feed names carry their own parenthetical — "USDA FSIS (meat, poultry,
+ * egg)" — which is exactly the phrase the sentence after it is about to use.
+ * Say it once. */
+function shortSourceName(name) {
+  return String(name).replace(/\s*\([^)]*\)\s*$/, "");
+}
+
+/* A source that is down, or serving a saved copy, said in the list it is
+ * missing from.
+ *
+ * "USDA data still never shows" was true and the app was close to silent
+ * about it: one amber dot in a desktop footer, one line inside About, and
+ * nothing at all in the list where the gap actually lives. A missing agency is
+ * not a status indicator, it is a hole in the answer, and it belongs in the
+ * answer. */
+function SourceNotice({ sources }) {
+  const down = sources.filter((s) => !s.ok);
+  const stale = sources.filter((s) => s.ok && s.note);
+  if (!down.length && !stale.length) return null;
+  return (
+    <div id="source-notice" role="status"
+         className="mb-2 flex flex-col gap-1.5 rounded-xl border border-amber/40 bg-amber-soft px-3 py-2.5">
+      {down.map((s) => (
+        <p key={s.name} className="flex items-start gap-2 text-[12px] leading-relaxed">
+          <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-amber" />
+          <span>
+            <span className="font-semibold text-paper">{shortSourceName(s.name)} is unavailable right now.</span>{" "}
+            {coverageFor(s.name)} are missing from this list — an empty list is not the same as no
+            recalls. <span className="text-subtle">({s.error || "no response"})</span>
+          </span>
+        </p>
+      ))}
+      {stale.map((s) => (
+        <p key={s.name} className="flex items-start gap-2 text-[12px] leading-relaxed">
+          <Info className="mt-0.5 size-3.5 shrink-0 text-amber" />
+          <span><span className="font-semibold text-paper">{shortSourceName(s.name)}:</span> {s.note}</span>
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/* The severity badge, which explains itself.
+ *
+ * "Class I" is the loudest thing on a recall card and the only word on it
+ * that is not English — it is an FDA term of art shaped exactly like an
+ * ordinal, so read cold it suggests "the first one", or worse, "the mildest".
+ * It means the opposite: a reasonable probability of serious harm or death.
+ * A reader who guesses wrong here guesses wrong about the only thing on the
+ * card that decides what they do next.
+ *
+ * So the term is a disclosure, not a label. Hover explains it on a mouse; tap
+ * explains it on a phone; the dotted underline and the ⓘ say so before either
+ * happens. Where an agency assigns no class at all — CPSC never does — it says
+ * that, rather than inventing "Medium risk" the way this badge used to. */
+function SeverityBadge({ recall }) {
+  const info = classInfo(recall);
+  const badge = <Badge variant={severityVariant(recall)}>{severityLabel(recall)}</Badge>;
+  if (!info) return badge;
+  return (
+    <InfoTip
+      title={`${info.term} — ${info.plain}`}
+      body={`${info.body} Assigned by ${info.agency}.`}
+      label={`${info.term}: what this means`}
+      triggerClassName="text-fog"
+      side="bottom"
+    >
+      {badge}
+    </InfoTip>
+  );
+}
+
 function Bar({ w }) {
   return <div className="shimmer h-3 rounded-full" style={{ width: w }} />;
 }
@@ -236,18 +340,20 @@ function EmptyState({ icon: Icon, title, children, compact }) {
 /** Section header shared by both panels: label, live count, optional trailing
  *  controls. On a phone the label and count are dropped — the tab directly
  *  above already says "Stores 10", and repeating it costs a row of a list
- *  that has about four to give. `mobileHidden` drops the row entirely for a
- *  header whose only remaining content is optional. */
-function PanelHeader({ label, countId, count, note, children, mobileHidden }) {
+ *  that has about four to give.
+ *
+ *  It used to carry a `note` slot as well, which the store list used for a
+ *  "8 named" tally. That tally was the fourth place the same 8 appeared —
+ *  after the headline, the scope chip and the map pins — so the slot went with
+ *  it. */
+function PanelHeader({ label, countId, count, children }) {
   return (
-    <div className={(mobileHidden ? "max-lg:hidden " : "") +
-      "flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line bg-panel px-4 py-2"}>
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line bg-panel px-4 py-2">
       <span className="flex items-center gap-2 max-lg:hidden">
         <span className="microlabel">{label}</span>
         <span id={countId} className="tnum text-xs font-semibold text-mint">{count}</span>
       </span>
-      {note}
-      <div className="ml-auto flex items-center gap-1.5">{children}</div>
+      <div className="flex items-center gap-1.5 max-lg:mr-auto lg:ml-auto">{children}</div>
     </div>
   );
 }
@@ -268,7 +374,8 @@ function passesFilters(r, f, except) {
   if (except !== "source" && !f.sources.has(r.source)) return false;
   if (except !== "cat" && f.cats && !f.cats.has(categoryFor(r).key)) return false;
   if (except !== "why" && f.whys && !f.whys.has(reasonFor(r).key)) return false;
-  if (f.chainScope && !(r.retailerIds || []).some((id) => f.chainScope.has(id))) return false;
+  if (except !== "chainScope" && f.chainScope &&
+      !(r.retailerIds || []).some((id) => f.chainScope.has(id))) return false;
   if (!f.q) return true;
   return [r.product, r.firm, r.reason, r.distribution, r.source].join(" ").toLowerCase().includes(f.q);
 }
@@ -387,7 +494,11 @@ export default function App() {
   const [stores, setStores] = useState([]);
   const [storesStatus, setStoresStatus] = useState(null);
   const [activeStore, setActiveStore] = useState(-1); // drives map focus AND product filtering
-  const [mode, setMode] = useState(() => loadPref("rr-mode", "stores"));
+  const [scope, setScope] = useState(() => normalizeScope(loadPref("rr-mode", "area")));
+  // Wide screens only: fold the store list down to its header. This is the
+  // capability the old "All recalls" mode provided, moved out of the scope
+  // control and onto the thing it actually acts on.
+  const [storesCollapsed, setStoresCollapsed] = useState(() => loadPref("rr-stores-collapsed", false));
   const [view, setView] = useState("split"); // phone only: map | split | list
   const [tab, setTab] = useState("near"); // phone destinations: near | recalls
   const [locOpen, setLocOpen] = useState(false);
@@ -620,15 +731,18 @@ export default function App() {
     setView((v) => VIEWS[Math.min(VIEWS.length - 1, Math.max(0, VIEWS.indexOf(v) + dir))]);
   }, []);
 
-  const setModePref = useCallback((next) => {
-    setMode(next);
+  const setScopePref = useCallback((next) => {
+    setScope(next);
     savePref("rr-mode", next);
     setLimit(25);
-    // "All recalls" has no store column, so a selection made in another mode
-    // would keep scoping a list that no longer shows you what it is scoped to.
-    if (next === "recalls") setActiveStore(-1);
-    if (next === "recalls" && !isWide) setTab("recalls");
-  }, [isWide]);
+  }, []);
+
+  const toggleStoresCollapsed = useCallback(() => {
+    setStoresCollapsed((prev) => {
+      savePref("rr-stores-collapsed", !prev);
+      return !prev;
+    });
+  }, []);
 
   /* One breakpoint for the whole information architecture, at lg (1024px).
    *
@@ -662,7 +776,7 @@ export default function App() {
   async function runSourceCheck() {
     setDiag({ busy: true });
     try {
-      const res = await fetch("/api/diag?probe=fsis", { headers: { Accept: "application/json" } });
+      const res = await fetch("/api/diag?probe=feeds", { headers: { Accept: "application/json" } });
       const body = await res.json();
       setDiag(res.ok ? body : { error: body.error || `diagnostics returned HTTP ${res.status}` });
     } catch (err) {
@@ -689,9 +803,10 @@ export default function App() {
 
   const selectedStore = activeStore >= 0 ? stores[activeStore] : null;
 
-  /* Every chain with a storefront near you. "Named stores" mode is exactly
-   * this set applied to the recall list: notices that name a chain you could
-   * actually walk into, rather than notices that name any chain anywhere. */
+  /* Every chain with a storefront near you. The "at a store near you" scope is
+   * exactly this set applied to the recall list: notices that name a chain you
+   * could actually walk into, rather than notices that name any chain
+   * anywhere. */
   const nearbyChainIds = useMemo(() => {
     const ids = new Set();
     for (const st of stores) for (const id of st.chainIds || []) ids.add(id);
@@ -706,12 +821,12 @@ export default function App() {
     cats: categoryKeys.length ? new Set(categoryKeys) : null,
     whys: reasonKeys.length ? new Set(reasonKeys) : null,
     /* A selected store is the most specific claim available, so it wins.
-     * Otherwise the mode decides: "named" narrows to chains near you, the
-     * other two do not narrow by store at all. */
+     * Otherwise the scope decides: "named" narrows to the chains standing near
+     * you; "area" does not narrow by store at all. */
     chainScope: selectedStore
       ? (storeScope === "named" ? new Set(selectedStore.chainIds) : null)
-      : (mode === "named" ? nearbyChainIds : null),
-  }), [filterText, activeSources, categoryKeys, reasonKeys, selectedStore, storeScope, mode, nearbyChainIds]);
+      : (scope === "named" ? nearbyChainIds : null),
+  }), [filterText, activeSources, categoryKeys, reasonKeys, selectedStore, storeScope, scope, nearbyChainIds]);
 
   /* The option LIST comes from every recall, so a chip never disappears
    * mid-session; the COUNT on it comes from the current filters, so it never
@@ -864,14 +979,15 @@ export default function App() {
    * as helpful and worked as a filter nobody asked for: independents landed
    * below as many as 24 chains, off the bottom of a phone, and the app looked
    * like it had stopped returning them. Whether a notice names a store is now
-   * the mode's job — a control you can see — and the list is free to answer
-   * the question it is actually labelled with, which is what is near me. */
+   * the scope control's job — something you can see — and the list is free to
+   * answer the question it is actually labelled with, which is what is near
+   * me. */
   const rankedStores = useMemo(() => {
     const withCounts = stores.map((s, i) => ({ s, i, n: namedRecallsFor(s).length }));
-    const list = mode === "named" ? withCounts.filter((x) => x.n > 0) : withCounts;
+    const list = scope === "named" ? withCounts.filter((x) => x.n > 0) : withCounts;
     return [...list].sort((a, b) => a.s.distanceMiles - b.s.distanceMiles);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stores, byChain, mode]);
+  }, [stores, byChain, scope]);
 
   const namedCount = selectedStore ? namedRecallsFor(selectedStore).length : 0;
 
@@ -898,7 +1014,28 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stores, rankedStores, byChain]);
 
-  /* The one line that answers why anyone opened the app. */
+  /* What each scope would leave you with, counted against every other filter
+   * that is already on — the same promise the facet chips make. Both numbers
+   * are recalls, which is the whole point of the row: one subject, one unit,
+   * two answers. */
+  const scopeCounts = useMemo(() => {
+    let named = 0;
+    let area = 0;
+    for (const r of recalls) {
+      if (!passesFilters(r, filterState, "chainScope")) continue;
+      area += 1;
+      if ((r.retailerIds || []).some((id) => nearbyChainIds.has(id))) named += 1;
+    }
+    return { named, area };
+  }, [recalls, filterState, nearbyChainIds]);
+
+  /* The one line that answers why anyone opened the app.
+   *
+   * It states the RELATIONSHIP — which chains, how bad — and deliberately no
+   * longer restates the recall count, because the scope row directly above it
+   * is now two chips whose whole content is that count. The same number in two
+   * adjacent bands is how a screen starts feeling like a dashboard nobody
+   * asked for. */
   const headline = useMemo(() => {
     if (storesStatus?.busy || productsBusy) return null;
     if (!recalls.length) return { tone: "calm", text: "No active recalls match your area." };
@@ -906,31 +1043,28 @@ export default function App() {
     const named = new Set();
     let high = 0;
     for (const st of stores) {
-      for (const r of namedRecallsFor(st)) {
+      const mine = namedRecallsFor(st);
+      for (const r of mine) {
         if (!named.has(r.id)) { named.add(r.id); if (r.severity === "high") high++; }
       }
-      if (namedRecallsFor(st).length) for (const id of st.chainIds) chains.add(id);
+      if (mine.length) for (const id of st.chainIds) chains.add(id);
     }
     if (!named.size) {
       return { tone: "calm",
-        text: `No notice names a store near you — ${recalls.length} recall${recalls.length === 1 ? "" : "s"} cover ${loc?.stateAbbr || "your area"}.` };
+        text: `No recall notice names a store near you. Everything below covers ${loc?.stateAbbr || "your area"} without naming a retailer.` };
     }
-    return { tone: "match",
-      text: `${chains.size} chain${chains.size === 1 ? "" : "s"} near you ${chains.size === 1 ? "is" : "are"} named in ` +
-            `${named.size} recall notice${named.size === 1 ? "" : "s"}${high ? `, ${high} class I` : ""}.` };
+    return { tone: "match", high,
+      text: `${plural(chains.size, "chain", "chains")} near you ${chains.size === 1 ? "is" : "are"} named in a recall notice` };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stores, recalls, byChain, loc, storesStatus, productsBusy]);
-
-  const namedStoreCount = useMemo(
-    () => stores.reduce((n, s) => n + (namedRecallsFor(s).length > 0 ? 1 : 0), 0),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [stores, byChain]
-  );
 
   // Both lookups roll up into one "the app is working" flag.
   const scanning = productsBusy || Boolean(storesStatus?.busy);
 
   const showStores = "flex " + (tab === "near" ? "" : "max-lg:hidden ");
+  // Collapsing is a wide-screen affordance; a phone folds the list by leaving
+  // the tab, so the stored preference must not follow it there.
+  const storesFolded = isWide && storesCollapsed;
   const showProducts = "flex " + (tab === "recalls" ? "" : "max-lg:hidden ");
 
   /* Where a selected store's recalls actually appear depends on the layout,
@@ -1252,14 +1386,34 @@ export default function App() {
             </div>
 
             {/* ---- one scope row ----
-                The mode bar and the selected-store bar were two stacked bands
+                The scope bar and the selected-store bar were two stacked bands
                 — 53px and 93px — both answering the same question: what is
                 this panel currently showing? They were never both needed,
-                because picking a store overrides the mode. So they are one
+                because picking a store overrides the scope. So they are one
                 row that swaps its contents, scrolling sideways rather than
                 wrapping, which is how a phone holds a variable number of
-                chips without changing height. */}
+                chips without changing height.
+
+                The leading "Recalls" label is doing real work, not decoration.
+                Without it this row was a strip of numbers sitting a few
+                hundred pixels above another strip of numbers (the bottom bar),
+                with nothing on either saying what was being counted. Naming
+                the unit once is what separates the two rows into a scope
+                control and a set of destinations. */}
             <div className="scope-row flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-line bg-panel px-3 py-2">
+              <span className="microlabel shrink-0" id="scope-row-label">Recalls</span>
+              {/* The chip tooltips are a mouse affordance and nothing else, so
+                  the row carries one disclosure a thumb can open. It sits
+                  beside the label rather than after the chips: this row scrolls
+                  sideways, and on a 390px phone anything trailing the last chip
+                  is parked off the edge, which is not an affordance at all. */}
+              <InfoTip
+                label="What these scopes mean"
+                title="How wide a net"
+                body={`“${SCOPES[0].label}” shows only notices that name a chain standing near you — the most specific answer this app can give, and the smallest. “Anywhere in ${loc?.stateAbbr || "your area"}” adds every other active notice covering your area, including the many that name no retailer at all. An independent grocer can only ever appear in the second.`}
+                triggerClassName="shrink-0 text-fog"
+                side="bottom"
+              />
               {selectedStore ? (
                 <>
                   <button
@@ -1272,13 +1426,13 @@ export default function App() {
                     <span className="truncate normal-case tracking-normal">{selectedStore.name}</span>
                     <X className="size-3 shrink-0" />
                   </button>
-                  <div id="store-scope" className="flex shrink-0 gap-1.5" role="group" aria-label="How this store relates to the recalls">
+                  <div id="store-scope" className="flex shrink-0 gap-1.5" role="group" aria-label="Which recalls to show for this store">
                     {[
-                      ["named", `Names it · ${namedCount}`, namedCount === 0
-                        ? "No notice names this store's chain"
-                        : "Notices that name this chain by name"],
-                      ["area", `In ${loc?.stateAbbr || "your area"} · ${recalls.length}`,
-                        "Every notice covering your area — it names no retailer, so it could be on any shelf here"],
+                      ["named", `That name it · ${namedCount}`, namedCount === 0
+                        ? "No active notice names this store's chain."
+                        : "Notices that name this store's chain, so its warehouses received the recalled lot."],
+                      ["area", `Anywhere in ${loc?.stateAbbr || "your area"} · ${recalls.length}`,
+                        "Every active notice covering your area. Most name no retailer at all, so any of them could be on this shelf."],
                     ].map(([k, lbl, title]) => (
                       <Tooltip key={k} content={title}><button type="button"
                               disabled={k === "named" && namedCount === 0}
@@ -1291,20 +1445,20 @@ export default function App() {
                   </div>
                 </>
               ) : (
-                <div id="mode-bar" role="group" aria-label="How much to include" className="flex min-w-0 flex-1 gap-1.5">
-                  {MODES.map((m) => {
-                    const n = m.id === "named" ? namedStoreCount
-                      : m.id === "stores" ? stores.length
-                        : recalls.length;
+                <div id="scope-bar" role="group" aria-labelledby="scope-row-label" className="flex items-center gap-1.5">
+                  {SCOPES.map((sc) => {
+                    const n = sc.id === "named" ? scopeCounts.named : scopeCounts.area;
+                    const label = sc.id === "area" && loc?.stateAbbr
+                      ? `Anywhere in ${loc.stateAbbr}` : sc.label;
                     return (
-                      <Tooltip key={m.id} content={m.hint}>
+                      <Tooltip key={sc.id} content={sc.hint}>
                         <button
                           type="button"
-                          aria-pressed={mode === m.id}
-                          onClick={() => setModePref(m.id)}
-                          className={"chip min-w-0 flex-1 px-2 " + (mode === m.id ? "chip-on" : "chip-off")}
+                          aria-pressed={scope === sc.id}
+                          onClick={() => setScopePref(sc.id)}
+                          className={"chip shrink-0 " + (scope === sc.id ? "chip-on" : "chip-off")}
                         >
-                          <span className="truncate normal-case tracking-normal">{m.label}</span>
+                          <span className="normal-case tracking-normal">{label}</span>
                           {!scanning && <span className="tnum opacity-70">{n}</span>}
                         </button>
                       </Tooltip>
@@ -1319,10 +1473,24 @@ export default function App() {
                 answer, and two context bands over a short list is one too many. */}
             {headline && (
               <p id="headline"
-                 className={"shrink-0 border-b border-line px-4 py-2 text-[12px] font-semibold leading-snug lg:py-2.5 lg:text-[13px] " +
+                 className={"flex shrink-0 flex-wrap items-center gap-x-2 border-b border-line px-4 py-2 text-[12px] font-semibold leading-snug lg:py-2.5 lg:text-[13px] " +
                    (selectedStore ? "max-lg:hidden " : "") +
                    (headline.tone === "match" ? "bg-mint-soft text-paper" : "bg-panel text-fog")}>
-                {headline.text}
+                <span>{headline.text}</span>
+                {/* The severity count is the one number worth carrying up here,
+                    and "Class I" is the one word in it nobody can be expected
+                    to know. It explains itself in place rather than sending
+                    anyone to About. */}
+                {headline.high > 0 && (
+                  <InfoTip
+                    title="Class I — the most serious class"
+                    body="The agency believes eating, taking or using the product could cause serious harm or death. Read those notices first."
+                    triggerClassName="text-alert"
+                    side="bottom"
+                  >
+                    <span className="tnum">{headline.high} Class I</span>
+                  </InfoTip>
+                )}
               </p>
             )}
 
@@ -1330,28 +1498,50 @@ export default function App() {
             <div ref={splitRef}
                  className={"flex min-h-0 flex-1 " + (sideBySide ? "flex-col lg:flex-row" : "flex-col")}>
             {/* ---- stores ---- */}
-            <section className={(mode === "recalls" ? "hidden " : showStores) + "min-h-0 flex-1 flex-col overflow-hidden"}
-                     style={mode === "recalls" ? undefined : storesStyle}>
+            <section className={showStores + "min-h-0 flex-col overflow-hidden " +
+                       (storesFolded ? "flex-none" : "flex-1")}
+                     style={storesFolded ? undefined : storesStyle}>
               <PanelHeader
                 label="Stores" countId="stat-stores" count={scanning ? "…" : stores.length}
-                note={namedStoreCount > 0 && mode !== "named" && (
-                  <span className="tnum text-[11px] text-mint">{namedStoreCount} named</span>
-                )}
               >
-                <span className="microlabel">Within</span>
-                <div className="flex gap-1" role="group" aria-label="Store search radius">
-                  {RADII.map((r) => (
-                    <button key={r.value} type="button" onClick={() => setRadius(r.value)}
-                            aria-pressed={radius === r.value}
-                            className={"chip " + (radius === r.value ? "chip-on" : "chip-off")}>
-                      {r.label}
+                {!storesFolded && (
+                  <>
+                    <span className="microlabel">Within</span>
+                    <div className="flex gap-1" role="group" aria-label="Store search radius">
+                      {RADII.map((r) => (
+                        <button key={r.value} type="button" onClick={() => setRadius(r.value)}
+                                aria-pressed={radius === r.value}
+                                className={"chip " + (radius === r.value ? "chip-on" : "chip-off")}>
+                          {r.label}
+                        </button>
+                      ))}
+                      <span className="microlabel self-center">mi</span>
+                    </div>
+                  </>
+                )}
+                {/* Wide screens only: get the whole panel back for reading
+                    recalls. On a phone the bottom bar already does this, and a
+                    second way to hide a list you are looking at is one too
+                    many. */}
+                {isWide && (
+                  <Tooltip content={storesCollapsed ? "Show the store list again" : "Fold the store list away and give the whole panel to recalls"}>
+                    <button
+                      id="btn-collapse-stores"
+                      type="button"
+                      onClick={toggleStoresCollapsed}
+                      aria-expanded={!storesCollapsed}
+                      aria-controls="stores-list-scroll"
+                      aria-label={storesCollapsed ? "Show the store list" : "Hide the store list"}
+                      className="ml-1 grid size-7 shrink-0 place-items-center rounded-md text-fog hover:bg-panel-3 hover:text-paper"
+                    >
+                      {storesCollapsed ? <ChevronDown className="size-4" /> : <ChevronUp className="size-4" />}
                     </button>
-                  ))}
-                  <span className="microlabel self-center">mi</span>
-                </div>
+                  </Tooltip>
+                )}
               </PanelHeader>
 
-              <div className="sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
+              <div id="stores-list-scroll"
+                   className={(storesFolded ? "hidden " : "") + "sunken min-h-0 flex-1 overflow-y-auto px-3 py-3"}>
                 {storesStatus && !storesStatus.empty && (
                   <div id="stores-status" role="status" aria-live="polite"
                        className={"mb-2 flex items-start gap-2 text-xs " + (storesStatus.error ? "text-alert" : "text-fog")}>
@@ -1401,11 +1591,21 @@ export default function App() {
                           </span>
                         )}
                         {s.independent && (
-                          <Tooltip content="An independent — no recall notice will ever name it, so this is a gap in the data rather than a clean bill of health">
+                          /* This was a hover tooltip on a list whose primary
+                             audience is holding a phone, which meant the one
+                             caveat that keeps "Local" from reading as "clear"
+                             was unreachable for most readers. */
+                          <InfoTip
+                            title="Local — an independent store"
+                            body="No recall notice will ever name an independent by name, so it can never show a match here. That is a gap in the data, not a clean bill of health — pick it and switch to “Anywhere in your area” to see what it is actually exposed to."
+                            label="Local: what this means"
+                            triggerClassName="text-fog"
+                            side="top"
+                          >
                             <span className="store-local rounded-full border border-line px-1.5 py-px tnum text-[10px] uppercase tracking-wider text-fog">
                               Local
                             </span>
-                          </Tooltip>
+                          </InfoTip>
                         )}
                         {/* Deliberately unalarmed language and colour. A store
                             appearing here is a name match on a notice, not a
@@ -1420,7 +1620,7 @@ export default function App() {
                               : isSibling
                                 ? "Same chain — included above"
                                 : n > 0
-                                  ? `Named in ${plural(n, "notice", "notices")} — tap to see them`
+                                  ? `Named in ${plural(n, "recall notice", "recall notices")} — tap to see them`
                                   : s.independent
                                     ? "Independent — tap for area notices"
                                     : "No notice names this chain"}
@@ -1440,7 +1640,7 @@ export default function App() {
             </section>
 
             {/* ---- drag divider between the two lists (desktop only) ---- */}
-            {isWide && mode !== "recalls" && (
+            {isWide && !storesFolded && (
               <div
                 id="split-handle"
                 role="separator"
@@ -1559,6 +1759,7 @@ export default function App() {
               )}
 
               <div ref={productsScrollRef} className="sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
+                {!productsBusy && <SourceNotice sources={sources} />}
                 {productsBusy && (
                   <ul className="flex flex-col gap-2">{[0, 1, 2, 3].map((i) => <RecallSkeleton key={i} delay={i * stagger * 2} />)}</ul>
                 )}
@@ -1571,7 +1772,7 @@ export default function App() {
                   <EmptyState icon={selectedStore && !activeFilters.length ? ShieldCheck : SearchX}
                               title={selectedStore && !activeFilters.length ? "Nothing names this store" : "No matches"}>
                     {selectedStore && !activeFilters.length
-                      ? `No active recall names ${selectedStore.name}. Most notices list only a state or "nationwide" and never name a retailer, so this is normal — switch to "in ${loc?.stateAbbr || "your area"}" above to see all ${recalls.length} recalls that could reach this shelf.`
+                      ? `No active recall names ${selectedStore.name}. Most notices list only a state or "nationwide" and never name a retailer, so this is normal — switch to "Anywhere in ${loc?.stateAbbr || "your area"}" above to see all ${recalls.length} recalls that could reach this shelf.`
                       : "Nothing matches the current filters. Remove one of the chips above, or clear them all."}
                   </EmptyState>
                 )}
@@ -1588,7 +1789,7 @@ export default function App() {
                       <li key={r.id} style={{ animationDelay: `${Math.min(i, 8) * stagger}ms` }}
                           className="recall-item fade-item elev-1 rounded-xl border border-line bg-panel-2 p-3.5">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <Badge variant={r.severity}>{sevLabel(r)}</Badge>
+                          <SeverityBadge recall={r} />
                           {/* The hazard, on the card and not only in the filter
                               menu — it is the thing that decides whether this
                               notice is about you. */}
@@ -1864,15 +2065,33 @@ export default function App() {
               <span className="text-paper">Chains vs. independents.</span>{" "}
               A notice can only be tied to a storefront when it names the chain, so independent groceries — marked{" "}
               <span className="tnum text-[11px] uppercase tracking-wider">Local</span> — never show a match.
-              That is a limit of the data, not a clean bill of health: pick a store and switch to the
-              &ldquo;in your area&rdquo; view to see every notice covering your state, which is what an independent
-              is actually exposed to.
+              That is a limit of the data, not a clean bill of health: pick a store and switch to
+              &ldquo;Anywhere in your area&rdquo; to see every notice covering your state, which is what an
+              independent is actually exposed to.
             </p>
             <p className="mt-3">
               <span className="text-paper">Why the region matters.</span>{" "}
               Recalls are usually regional — one supplier ships one lot to one of a chain's distribution centers, so
               the notice covers the states that DC serves. Each recall shows its states; a chain named in a recall
               that never reached your state is a different risk from one that did.
+            </p>
+            <p className="mt-3">
+              <span className="text-paper">What the classes mean.</span>{" "}
+              FDA and USDA rank recalls on the same three-step scale, and the words are not
+              self-explanatory. <span className="text-paper">Class I</span> is the most serious: the agency
+              believes the product could cause serious harm or death. <span className="text-paper">Class II</span>{" "}
+              means a temporary or reversible health problem is possible. <span className="text-paper">Class III</span>{" "}
+              is unlikely to make anyone ill — usually a labelling or manufacturing violation. CPSC does not
+              rank consumer product recalls at all, so those cards read &ldquo;not classified&rdquo; rather than
+              guessing at a severity nobody assigned. Every badge on a card explains itself on tap.
+            </p>
+            <p className="mt-3">
+              <span className="text-paper">When a source is down.</span>{" "}
+              USDA sits behind a bot filter that refuses our servers much of the time, and CPSC&rsquo;s feed is
+              often slower than a page load will wait for. Every successful fetch is saved, so an outage
+              usually degrades to a copy a few hours old rather than a missing agency — the recall list says
+              which, at the top. When neither is possible the source is marked unavailable, and the recalls it
+              alone carries are genuinely not in the list.
             </p>
             <p className="mt-3">
               <span className="text-paper">Reasons are inferred.</span>{" "}
@@ -1912,20 +2131,22 @@ export default function App() {
               ))}
             </ul>
 
-            {/* USDA sits behind a bot filter that blocks us intermittently; this
-                says which endpoint it is refusing today without leaving the app. */}
+            {/* USDA and CPSC both refuse us intermittently; this says which one
+                is refusing today, and whether a saved copy is covering for it,
+                without leaving the app. It used to test USDA alone, which left
+                "CPSC is missing too" with nowhere to be answered. */}
             <div className="mt-4 border-t border-line pt-3">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Button id="btn-check-sources" variant="outline" size="sm"
                         disabled={diag?.busy}
                         onClick={runSourceCheck}>
-                  {diag?.busy ? <Loader2 className="animate-spin" /> : <Stethoscope />} Check USDA Now
+                  {diag?.busy ? <Loader2 className="animate-spin" /> : <Stethoscope />} Check The Feeds
                 </Button>
-                <span className="text-[11px]">tests every USDA endpoint we know of, live</span>
+                <span className="text-[11px]">asks USDA, CPSC and openFDA directly, right now</span>
               </div>
               {diag && !diag.busy && (
                 <div id="diag-result" className="mt-2">
-                  <p className={"text-xs " + (diag.error ? "text-alert" : "text-paper")}>
+                  <p className={"text-xs leading-relaxed " + (diag.error ? "text-alert" : "text-paper")}>
                     {diag.error || diag.verdict}
                   </p>
                   {diag.rows && (
@@ -1933,9 +2154,10 @@ export default function App() {
                       {diag.rows.map((row, i) => (
                         <li key={i} className="flex flex-wrap items-center gap-x-2 tnum text-[10px] text-fog">
                           <span className={"size-1.5 shrink-0 rounded-full " + (row.ok ? "bg-mint" : "bg-amber")} aria-hidden="true" />
-                          <span className="truncate">{row.url.replace("https://", "")}</span>
-                          <span className="text-paper">{row.headers}</span>
+                          <span className="truncate text-paper">{String(row.url).replace("https://", "")}</span>
+                          <span>{row.headers}</span>
                           <span className="ml-auto">{row.status ?? row.error}</span>
+                          {row.cached && <span className="w-full pl-3.5 text-[10px]">cache: {row.cached}</span>}
                         </li>
                       ))}
                     </ul>

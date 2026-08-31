@@ -654,3 +654,46 @@ button:disabled,
   .progress-track::after, .lift { animation: none !important; transition: none !important; }
   .lift:hover { transform: none; }
 }
+
+/* ─────────────────────────────── infotip ──────────────────────────────── */
+
+/* The trigger for a term that explains itself — "Class I", "Local".
+ *
+ * It has to read as openable without a hover state, because half the people
+ * using this app have no pointer at all. Three things do that: the `ⓘ`, which
+ * is the one glyph everyone already reads as "more"; a dotted underbrace on
+ * the term, which is the century-old typographic mark for "defined
+ * elsewhere"; and a real thumb-sized box, so the tap lands where it is aimed.
+ *
+ * `display: inline-flex` with the trigger content unstyled means a Badge can
+ * be dropped straight in and keep its own shape — the button contributes the
+ * target and the mark, not a second box around a box. */
+.infotip {
+  @apply inline-flex max-w-full items-center gap-1 rounded-md align-middle transition-colors;
+  /* Padding rather than min-height: this sits inline in a row of badges, and a
+   * 36px box would push the row apart. The negative margin gives back the
+   * space so the tap target overhangs the badge instead of displacing it. */
+  padding: 6px 4px;
+  margin: -6px -4px;
+  text-decoration: underline dotted currentColor 1px;
+  text-underline-offset: 3px;
+  text-decoration-skip-ink: none;
+}
+.infotip:hover,
+.infotip-open {
+  @apply text-paper;
+  text-decoration-style: solid;
+}
+.infotip .infotip-mark {
+  @apply size-3 shrink-0 opacity-55;
+  /* The mark is not part of the defined term, so it is not underlined. */
+  text-decoration: none;
+}
+.infotip:hover .infotip-mark,
+.infotip-open .infotip-mark {
+  @apply opacity-100;
+}
+/* On a phone the mark is the whole affordance, so it never dims. */
+@media (pointer: coarse) {
+  .infotip .infotip-mark { @apply opacity-80; }
+}
