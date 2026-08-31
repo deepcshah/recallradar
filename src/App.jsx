@@ -239,7 +239,22 @@ function shortSourceName(name) {
  * `note` in full — so this is one place to read it, not none. */
 function SourceNotice({ sources }) {
   const down = sources.filter((s) => !s.ok);
-  if (!down.length) return null;
+  /* Served from a saved copy *and* it matched nothing. Either half alone is
+   * unremarkable — a copy that still found recalls is provenance and lives
+   * in About; a live feed that found none is a real, trustworthy zero. It is
+   * the pair that misleads, because the section renders identically to "no
+   * recalls near you" while the actual claim is only "none in the copy we
+   * had". That is the same mistake the scanner refuses to make about an
+   * unmatched barcode, and it was worth catching here too: production once
+   * shipped a snapshot holding a single New England notice, which every
+   * other state scoped away to a silent nought.
+   *
+   * Only zero is caught. A copy thin enough to return two recalls where the
+   * live feed would return thirty is equally wrong and cannot be told apart
+   * from inside the app — the count it should have had is exactly what is
+   * unavailable. Zero is the case that is both detectable and dangerous. */
+  const quiet = sources.filter((s) => s.ok && s.note && !s.count);
+  if (!down.length && !quiet.length) return null;
   return (
     <div id="source-notice" role="status"
          className="mb-2 flex flex-col gap-1.5 rounded-xl border border-amber/40 bg-amber-soft px-3 py-2.5">
@@ -250,6 +265,18 @@ function SourceNotice({ sources }) {
             <span className="font-semibold text-paper">{shortSourceName(s.name)} is unavailable right now.</span>{" "}
             {coverageFor(s.name)} are missing from this list — an empty list is not the same as no
             recalls. <span className="text-subtle">({s.error || "no response"})</span>
+          </span>
+        </p>
+      ))}
+      {quiet.map((s) => (
+        <p key={s.name} className="flex items-start gap-2 text-[12px] leading-relaxed">
+          <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-amber" />
+          <span>
+            <span className="font-semibold text-paper">
+              {shortSourceName(s.name)} matched nothing near you, from a saved copy.
+            </span>{" "}
+            {coverageFor(s.name)} were checked against a stored copy rather than the live feed. Nothing
+            here means none were found — not that there are none.
           </span>
         </p>
       ))}
