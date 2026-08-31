@@ -139,36 +139,34 @@ export default async function handler(req, res) {
     const fsisVerdict = (() => {
       const rows = matrix.filter((r) => r.status != null || r.error);
       if (!rows.length) return null;
-      const ok = rows.filter((r) => r.ok);
-      const control = rows.find((r) => r.headers === "no-ua");
-      const honest = rows.find((r) => r.headers === "honest");
-      const spoofed = rows.filter((r) => r.headers.startsWith("browser"));
+      const by = (label) => rows.find((r) => r.headers === label);
+      const ladder = ["product", "default", "bare"].map(by).filter(Boolean);
+      const passing = ladder.filter((r) => r.ok);
+      const crawler = by("crawler-ua");
+      const browser = by("browser-ua");
 
-      if (ok.length === rows.length) {
-        return "FSIS answered every header variant. Nothing is blocking us right now — " +
-          "if the app still shows it unavailable, the failure is intermittent, not a policy.";
+      if (passing.length) {
+        const first = passing[0];
+        const note = crawler && !crawler.ok
+          ? " The old crawler-style User-Agent is still refused, which matches what a laptop " +
+            "measured: it is the string, not the address."
+          : "";
+        return `USDA answered the "${first.headers}" rung of the identity ladder, which is what ` +
+          `the request path sends first.${note} Nothing further is needed.`;
       }
-      if (!ok.length) {
-        const codes = [...new Set(rows.map((r) => r.status ?? r.error))];
-        return `FSIS refused all ${rows.length} header variants` +
-          (codes.length === 1 ? ` with the same result (${codes[0]})` : ` (${codes.join(", ")})`) +
-          ". The control with no User-Agent was treated the same as a full Chrome header set, " +
-          "so this is not about the headers — it is a decision about the caller (IP or TLS " +
-          "fingerprint), and no header change can fix it. Use the committed snapshot.";
+
+      // Nothing truthful got through. Distinguish "our address" from "any client".
+      if (browser && browser.ok) {
+        return "Every honest identity was refused and only a spoofed browser User-Agent got " +
+          "through. That is a finding, not a fix — impersonating a browser to a government API " +
+          "is not something this app does. Use the committed snapshot in public/feeds/.";
       }
-      if (honest && !honest.ok && spoofed.some((r) => r.ok)) {
-        return "FSIS accepted a browser User-Agent and refused our honest one. The header " +
-          "theory holds: the request path is sending the variant USDA rejects. Whether to " +
-          "present a browser handshake to a government API is your call — nothing here " +
-          "changed the request path on its own.";
-      }
-      if (control && control.ok && honest && !honest.ok) {
-        return "FSIS accepted a bare request and refused our identified one, which means our " +
-          "User-Agent string itself is being matched. Changing or dropping it should fix this.";
-      }
-      return `Mixed result: ${ok.map((r) => r.headers).join(", ")} succeeded and the rest did ` +
-        "not. That pattern is more consistent with rate limiting or load than with a policy " +
-        "about this client. Re-run the probe a few times before concluding anything.";
+      const codes = [...new Set(rows.map((r) => r.status ?? r.error))];
+      return `USDA refused all ${rows.length} variants` +
+        (codes.length === 1 ? ` identically (${codes[0]})` : ` (${codes.join(", ")})`) +
+        ". A bare request with no User-Agent at all was refused too, and that same request " +
+        "succeeds from a laptop — so this is a second block on top of the User-Agent one, and " +
+        "it is about this deployment's address. No header can fix it; the committed snapshot can.";
     })();
 
     let verdict;

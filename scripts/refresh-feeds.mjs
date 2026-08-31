@@ -1,11 +1,17 @@
 /* Fetch the government recall feeds and write them into public/feeds/.
  *
- * This runs on a GitHub Actions runner, not on Vercel, and that is the entire
- * point. Every other path to USDA in this app leaves from the same place — a
- * Vercel serverless function — so they all fail together for whatever reason
- * that one caller is being refused. A GitHub runner is a different network,
- * different IP reputation, different everything; if USDA will answer anyone,
- * it will answer this.
+ * This runs on a GitHub Actions runner, not on Vercel. Every other path to
+ * USDA in this app leaves from the same place — a Vercel serverless function —
+ * so they all fail together for whatever reason that one caller is refused.
+ * A runner is a different network with a different address, and it is Node,
+ * which USDA demonstrably accepts where curl is refused.
+ *
+ * That is insurance, not a theory. The measured cause of the 403 was our own
+ * crawler-shaped User-Agent, which the ladder in src/lib/feeds.js now avoids,
+ * and this script walks the same ladder. If that is the whole story, this job
+ * is redundant and harmless. If Vercel's address carries a second block on top
+ * of it, this job is the only thing that still gets the data — which is
+ * precisely why it should not have to be right about which.
  *
  * The output is committed to the repository, which is what makes it the
  * bottom tier that cannot fail: it ships with the deployment as a static
@@ -23,7 +29,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { slimFsis, slimCpsc, CPSC_LOOKBACK_DAYS } from "../src/lib/sources.js";
-import { FEED_HEADERS, FSIS_ENDPOINTS, cpscUrl } from "../src/lib/feeds.js";
+import { FEED_HEADERS, FSIS_ENDPOINTS, FSIS_HEADER_SETS, cpscUrl, fetchFirstOk } from "../src/lib/feeds.js";
 
 const OUT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../public/feeds");
 
@@ -35,11 +41,11 @@ const GAP_MS = 5000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function fetchJson(url) {
+async function fetchJson(url, headers = FEED_HEADERS) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
-    const res = await fetch(url, { headers: FEED_HEADERS, signal: ctrl.signal });
+    const res = await fetch(url, { headers, signal: ctrl.signal });
     const text = await res.text();
     if (!res.ok) {
       throw new Error(`HTTP ${res.status} — ${text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 160)}`);
@@ -52,11 +58,11 @@ async function fetchJson(url) {
   }
 }
 
-async function withRetries(label, url) {
+async function withRetries(label, url, load = () => fetchJson(url)) {
   let last;
   for (let i = 1; i <= ATTEMPTS; i++) {
     try {
-      return await fetchJson(url);
+      return await load();
     } catch (err) {
       last = err;
       console.log(`  ${label}: attempt ${i}/${ATTEMPTS} failed — ${err.message}`);
@@ -95,8 +101,19 @@ async function write(name, notices) {
 }
 
 async function main() {
+  /* FSIS walks the same identity ladder the app does, for the same reason: the
+   * crawler-shaped User-Agent this project used to send is refused, and a bare
+   * product token is not. Running the ladder here too means the runner and the
+   * request path are measuring the same thing rather than diverging quietly. */
   const jobs = [
-    ["fsis", async () => slimFsis(await withRetries("fsis", FSIS_ENDPOINTS[0]))],
+    ["fsis", async () => {
+      const { data, headers } = await withRetries("fsis", FSIS_ENDPOINTS[0], async () => {
+        const got = await fetchFirstOk(FSIS_ENDPOINTS, FSIS_HEADER_SETS, TIMEOUT_MS, TIMEOUT_MS * 3);
+        return got;
+      });
+      console.log(`  fsis: answered the "${headers}" rung`);
+      return slimFsis(data);
+    }],
     ["cpsc", async () => slimCpsc(await withRetries("cpsc", cpscUrl(CPSC_LOOKBACK_DAYS)))],
   ];
 
