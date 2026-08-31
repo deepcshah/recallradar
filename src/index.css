@@ -66,11 +66,25 @@
   --rr-shimmer: #ebebeb;
   --rr-shimmer-hi: #d9d9d9;
 
-  /* Map pins are deliberately neutral: grey for every store, green only for
-   * the ones a notice actually names. No red — a store is not a hazard. */
-  --rr-pin-idle: #b5b5b5;
-  --rr-pin-named: var(--rr-accent-hi);
-  --rr-pin-ring: #1a1a1a;
+  /* Pins carry two facts and neither of them is danger — a store is not a
+   * hazard, so there is no red here and never will be.
+   *
+   * "A notice names this chain" is now weight, not hue: light grey for every
+   * store, near-black for the named ones. Green is reserved for the pin you
+   * picked, which is the same thing green means everywhere else in the app.
+   * It used to mean "named", which put the map's most saturated colour on a
+   * fact the list was simultaneously painting green for "selected" — two
+   * meanings, one colour, on one screen. */
+  --rr-pin-idle: #c4c4c4;
+  --rr-pin-named: #4a4a4a;
+  --rr-pin-active: var(--rr-accent);   /* 5.3:1 under white, unlike accent-hi */
+  --rr-pin-ring: #ffffff;
+  /* The number's colour has to follow the pin it sits on. It was hard-coded
+   * white, which was already thin on the old grey and became invisible once
+   * the idle pin lightened — every unnamed pin lost its number outright. */
+  --rr-pin-idle-ink: #2b2b2b;
+  --rr-pin-named-ink: #ffffff;
+  --rr-pin-active-ink: #ffffff;
 }
 
 :root[data-theme="dark"] {
@@ -111,9 +125,14 @@
   --rr-shimmer: #303030;
   --rr-shimmer-hi: #454545;
 
+  /* Inverted for dark: on a dark map the emphasised pin is the light one. */
   --rr-pin-idle: #6b6b6b;
-  --rr-pin-named: var(--rr-accent-hi);
-  --rr-pin-ring: #ffffff;
+  --rr-pin-named: #e8e8e8;
+  --rr-pin-active: var(--rr-accent-hi);
+  --rr-pin-ring: #0b1f14;
+  --rr-pin-idle-ink: #ffffff;
+  --rr-pin-named-ink: #1a1a1a;
+  --rr-pin-active-ink: #0b1f14;
 }
 
 /* No explicit choice: follow the OS. */
@@ -150,8 +169,12 @@
     --rr-shimmer: #303030;
     --rr-shimmer-hi: #454545;
     --rr-pin-idle: #6b6b6b;
-    --rr-pin-named: var(--rr-accent-hi);
-    --rr-pin-ring: #ffffff;
+    --rr-pin-named: #e8e8e8;
+    --rr-pin-active: var(--rr-accent-hi);
+    --rr-pin-ring: #0b1f14;
+    --rr-pin-idle-ink: #ffffff;
+    --rr-pin-named-ink: #1a1a1a;
+    --rr-pin-active-ink: #0b1f14;
   }
 }
 
@@ -530,6 +553,78 @@ button:disabled,
   animation: progressSlide 1.1s ease-in-out infinite;
 }
 
+/* ────────────────────────── bottom tab bar (phone) ────────────────────── */
+
+/* Floating rather than flush. See the note at its markup in App.jsx: welded
+ * to the bottom edge, sharing a fill with the list above it and separated by
+ * one hairline, it was invisible enough to be missed outright.
+ *
+ * `position: fixed` rather than in-flow, so it hovers over the content and
+ * the list scrolls beneath it — which is what makes the blur legible as
+ * depth instead of decoration. The page pays for that with scroll padding
+ * (`--rr-tabbar-space`) on the panes underneath, so the last row of a list
+ * can always clear it. */
+:root {
+  --rr-tabbar-h: 3.75rem;
+  --rr-tabbar-inset: 0.625rem;
+  --rr-tabbar-space: calc(var(--rr-tabbar-h) + var(--rr-tabbar-inset) * 2);
+}
+
+.tabbar {
+  position: fixed;
+  z-index: 40;
+  left: var(--rr-tabbar-inset);
+  right: var(--rr-tabbar-inset);
+  bottom: calc(var(--rr-tabbar-inset) + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  align-items: stretch;
+  height: var(--rr-tabbar-h);
+  border-radius: 1.125rem;
+  border: 1px solid var(--rr-line);
+  /* Opaque enough to read type against a moving map. Glass is the effect;
+   * contrast is the requirement, and it wins where they disagree. */
+  background: color-mix(in oklab, var(--rr-surface) 78%, transparent);
+  box-shadow: var(--rr-shadow-3);
+  overflow: hidden;
+}
+/* Only where the browser can actually blur. Without this the fallback is a
+ * 78% wash over live content, which is worse than a solid bar. */
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .tabbar {
+    -webkit-backdrop-filter: blur(18px) saturate(180%);
+    backdrop-filter: blur(18px) saturate(180%);
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .tabbar { background: var(--rr-surface); }
+}
+
+.tabbar-item {
+  @apply flex flex-1 flex-col items-center justify-center gap-0.5 text-fog;
+  transition: color 0.16s ease, background-color 0.16s ease;
+}
+.tabbar-item:active {
+  background: var(--rr-card-hover);
+}
+/* The selected tab is the one place a filled accent would fight the floating
+ * shape it sits inside, so it is carried by colour and weight only — the
+ * same green that means "you pressed this" everywhere else. */
+.tabbar-item-on {
+  @apply text-mint;
+}
+.tabbar-item span:last-child {
+  @apply text-[10px] font-semibold tracking-wide;
+}
+
+/* Room for it. The bar is out of the flow, so anything that scrolls to the
+ * bottom of the screen has to leave its own gap or the last row sits under
+ * the glass permanently. */
+@media (max-width: 1023.98px) {
+  .tabbar-space {
+    padding-bottom: var(--rr-tabbar-space);
+  }
+}
+
 /* ──────────────────────────────── map ─────────────────────────────────── */
 
 /* A drawn teardrop, not a rotated square — see the note in MapView.jsx. The
@@ -580,6 +675,7 @@ button:disabled,
   transform: scale(1.45);
 }
 .map-pin.active .map-pin-shape {
+  fill: var(--rr-pin-active);
   stroke: var(--rr-pin-ring);
   stroke-width: 2.5;
   filter: drop-shadow(0 0 3px color-mix(in oklab, var(--rr-accent-hi) 75%, transparent))
@@ -620,13 +716,14 @@ button:disabled,
   display: grid;
   place-items: center;
   pointer-events: none;
-  color: #ffffff;
+  color: var(--rr-pin-idle-ink);
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;
 }
-.map-pin.named .map-pin-label { color: var(--rr-accent-ink); }
+.map-pin.named .map-pin-label { color: var(--rr-pin-named-ink); }
+.map-pin.active .map-pin-label { color: var(--rr-pin-active-ink); }
 
 /* On a phone two dozen pins overlap into one mass. Smaller pins with no
  * numerals stay separable; the named/unnamed split does the rest.
@@ -636,13 +733,22 @@ button:disabled,
  * and gets its numeral back, which is also the number you are looking at in
  * the list. */
 @media (max-width: 1023px) {
-  .map-pin { width: 15px; height: 15px; border-width: 1.5px; }
+  /* Scaled, not resized. These rules used to set width/height directly and
+     re-apply `rotate(-45deg)`, both of which belonged to the rotated-square
+     pin: against an SVG they forced a 24x32 drawing into a 15x15 box, so
+     every pin overflowed its own element and sat off its coordinate, and the
+     selected one came out rotated 45 degrees. Scaling from the tip
+     (transform-origin is 50% 100%) shrinks the whole pin and leaves the
+     point exactly where the store is.
+
+     The dot marking you is already small and is not one of a crowd, so it
+     keeps its size. */
+  .map-pin:not(.you) { transform: scale(0.68); }
+  .map-pin:not(.you):hover { transform: scale(0.74); }
   .map-pin-label { display: none; }
-  /* The element itself grew, so the scale on top of it comes back down —
-     otherwise the selected pin is 36px and covers its own neighbours. */
-  .map-pin.active { width: 24px; height: 24px; border-width: 2px; transform: rotate(-45deg) scale(1.1); }
-  .map-pin.active:hover { transform: rotate(-45deg) scale(1.1); }
-  .map-pin.active .map-pin-label { display: block; line-height: 20px; font-size: 11px; }
+  .map-pin.active { transform: scale(1.15); }
+  .map-pin.active:hover { transform: scale(1.15); }
+  .map-pin.active .map-pin-label { display: grid; }
 }
 
 /* The map's own bubbles are the app's tooltip, not MapLibre's default: same

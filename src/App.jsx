@@ -1567,7 +1567,7 @@ export default function App() {
               <p id="headline"
                  className={"flex shrink-0 flex-wrap items-center gap-x-2 border-b border-line px-4 py-2 text-[12px] font-semibold leading-snug lg:py-2.5 lg:text-[13px] " +
                    (selectedStore ? "max-lg:hidden " : "") +
-                   (headline.tone === "match" ? "bg-mint-soft text-paper" : "bg-panel text-fog")}>
+                   (headline.tone === "match" ? "bg-panel-3 text-paper" : "bg-panel text-fog")}>
                 <span>{headline.text}</span>
                 {/* The severity count is the one number worth carrying up here,
                     and "Class I" is the one word in it nobody can be expected
@@ -1633,7 +1633,7 @@ export default function App() {
               </PanelHeader>
 
               <div id="stores-list-scroll"
-                   className={(storesFolded ? "hidden " : "") + "sunken min-h-0 flex-1 overflow-y-auto px-3 py-3"}>
+                   className={(storesFolded ? "hidden " : "") + "tabbar-space sunken min-h-0 flex-1 overflow-y-auto px-3 py-3"}>
                 {storesStatus && !storesStatus.empty && (
                   <div id="stores-status" role="status" aria-live="polite"
                        className={"mb-2 flex items-start gap-2 text-xs " + (storesStatus.error ? "text-alert" : "text-fog")}>
@@ -1668,7 +1668,7 @@ export default function App() {
                         (isActive ? "active elev-2 border-mint bg-mint-soft ring-2 ring-mint"
                           : isSibling ? "same-chain elev-1 border-mint-line bg-panel-3"
                             : "elev-1 " + (activeStore >= 0 ? "receded " : "") +
-                              (n > 0 ? "border-mint-line hover:border-mint" : "border-line hover:border-line-strong"))}
+                              (n > 0 ? "border-line-strong" : "border-line hover:border-line-strong"))}
                     >
                       <div className="flex items-baseline gap-2">
                         <span className="store-name truncate text-sm font-semibold">
@@ -1706,8 +1706,17 @@ export default function App() {
                             verdict on the store — and most independents can
                             never match at all, which is a gap in the data
                             rather than a clean bill of health. */}
+                        {/* Green is the interface saying "you did this", so it
+                            cannot also be the data saying "a notice names this
+                            store" — side by side those read as two selected
+                            cards. A named store is carried by weight and by the
+                            count itself at full text contrast, which is the
+                            emphasis it always deserved and never actually had:
+                            it was tinted, not prioritised. */}
                         <p className={"flex min-w-0 items-center gap-1 tnum text-[11px] " +
-                          (isActive || isSibling || n > 0 ? "text-mint" : "text-subtle")}>
+                          (isActive ? "text-mint"
+                            : n > 0 ? "font-semibold text-paper"
+                              : "text-subtle")}>
                           <span className="truncate">
                             {isActive
                               ? recallsHere
@@ -1852,7 +1861,7 @@ export default function App() {
                 </div>
               )}
 
-              <div ref={productsScrollRef} className="sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
+              <div ref={productsScrollRef} className="tabbar-space sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 {!productsBusy && <SourceNotice sources={sources} />}
                 {productsBusy && (
                   <ul className="flex flex-col gap-2">{[0, 1, 2, 3].map((i) => <RecallSkeleton key={i} delay={i * stagger * 2} />)}</ul>
@@ -2018,8 +2027,22 @@ export default function App() {
       {loc && (
         <nav
           aria-label="Main"
-          className="z-30 flex shrink-0 items-stretch border-t border-line bg-panel lg:hidden"
-          style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+          /* Floating, not welded on.
+           *
+           * It was a flush white strip with a hairline on top, in the flow
+           * below a white scrolling list — so it shared an edge and a fill
+           * with the thing it sits over, and disappeared. It was missed
+           * entirely, which for the app's primary navigation is the whole
+           * ballgame.
+           *
+           * Now it detaches: inset from all three edges, fully rounded,
+           * lifted on the app's deepest shadow, over a blurred translucent
+           * ground so the list visibly passes underneath. Depth is doing the
+           * separating rather than a 1px line — which is the same argument
+           * ui/button.jsx already makes about bevels, applied to a surface.
+           * The blur is a saturated backdrop over a 78%-opaque panel, not a
+           * clear pane: legibility first, glass second. */
+          className="tabbar lg:hidden"
         >
           {[
             { id: "near", label: "Near me", icon: Store, count: stores.length },
@@ -2037,8 +2060,7 @@ export default function App() {
                   setTab(id);
                   if (view === "map") setView("split"); // don't land on a hidden list
                 }}
-                className={"flex flex-1 flex-col items-center justify-center gap-0.5 py-2 transition-colors " +
-                  (on ? "text-mint" : "text-fog active:bg-panel-3")}
+                className={"tabbar-item " + (on ? "tabbar-item-on" : "")}
               >
                 <span className="relative">
                   <Icon className="size-5" strokeWidth={on ? 2.4 : 2} />
