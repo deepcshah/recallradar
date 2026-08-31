@@ -19,12 +19,14 @@
  * empty section labelled "unavailable", which is what the app showed before
  * and what made USDA look permanently missing.
  *
- * Blob is optional. Where `BLOB_READ_WRITE_TOKEN` is not configured every
- * function here fails quietly and the app behaves exactly as it did before —
- * which is worth knowing when a source looks permanently down, so /api/diag
- * reports whether it is configured.
+ * Blob is optional. Where no store is attached every function here fails
+ * quietly and the app behaves exactly as it did before — which is worth
+ * knowing when a source looks permanently down, so /api/diag reports whether
+ * it is configured, and under which environment variable. See src/lib/blob.js:
+ * the token is read from a prefixed name the SDK does not look for on its own.
  */
 import { head, put } from "@vercel/blob";
+import { blobAuth, blobPutOptions, blobConfigured } from "./blob.js";
 
 export const FEED_BLOBS = {
   fsis: "feeds/fsis-v1.json",
@@ -35,14 +37,12 @@ export const FEED_BLOBS = {
  *  Past this the honest answer is "unavailable", not a month-old list. */
 export const MAX_STALE_MS = 14 * 24 * 60 * 60 * 1000;
 
-export function blobConfigured() {
-  return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
-}
+export { blobConfigured };
 
 /** @returns {Promise<{list: any[], uploadedAt: number}|null>} */
 export async function readFeedCache(path) {
   try {
-    const meta = await head(path);
+    const meta = await head(path, blobAuth());
     const res = await fetch(meta.url, { cache: "no-store" });
     if (!res.ok) return null;
     const list = await res.json();
@@ -57,10 +57,7 @@ export async function readFeedCache(path) {
 export async function writeFeedCache(path, list) {
   if (!Array.isArray(list) || !list.length) return false; // never cache an empty feed over a good one
   try {
-    await put(path, JSON.stringify(list), {
-      access: "public", addRandomSuffix: false, allowOverwrite: true,
-      contentType: "application/json", cacheControlMaxAge: 3600,
-    });
+    await put(path, JSON.stringify(list), blobPutOptions());
     return true;
   } catch (_) {
     return false;

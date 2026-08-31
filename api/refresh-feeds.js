@@ -19,7 +19,8 @@
  */
 import { slimFsis, slimCpsc, CPSC_LOOKBACK_DAYS } from "../src/lib/sources.js";
 import { FEED_HEADERS, fsisFetch, cpscUrl } from "../src/lib/feeds.js";
-import { FEED_BLOBS, blobConfigured, writeFeedCache, readFeedCache, staleness } from "../src/lib/feed-cache.js";
+import { FEED_BLOBS, writeFeedCache, readFeedCache, staleness } from "../src/lib/feed-cache.js";
+import { blobConfigured } from "../src/lib/blob.js";
 
 /* The whole point of running off the request path is that we can wait. FSIS
  * gets the larger share because it is the one that refuses us. */
@@ -70,8 +71,10 @@ export default async function handler(req, res) {
     // Not an error the cron can fix, but the single most likely reason a
     // source looks permanently unavailable in production.
     return res.status(503).json({
-      error: "BLOB_READ_WRITE_TOKEN is not set, so there is nowhere to cache these feeds. " +
-             "Add a Vercel Blob store to the project and redeploy.",
+      error: "No Vercel Blob token in this environment, so there is nowhere to cache these " +
+             "feeds. Attach a Blob store to the project and redeploy. This project's store " +
+             "uses the RR_BLOB_ prefix, so the variable is RR_BLOB_READ_WRITE_TOKEN; the " +
+             "unprefixed BLOB_READ_WRITE_TOKEN is also accepted.",
     });
   }
 

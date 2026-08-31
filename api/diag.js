@@ -13,7 +13,8 @@ import { byId } from "../src/lib/retailers.js";
 import { findChainLocations, searchUrl } from "../src/lib/mapbox-server.js";
 import { FEED_HEADERS, FSIS_ENDPOINTS, FSIS_HEADER_SETS, cpscUrl } from "../src/lib/feeds.js";
 import { fdaSearchQuery, CPSC_LOOKBACK_DAYS } from "../src/lib/sources.js";
-import { FEED_BLOBS, blobConfigured, readFeedCache, staleness } from "../src/lib/feed-cache.js";
+import { FEED_BLOBS, readFeedCache, staleness } from "../src/lib/feed-cache.js";
+import { blobConfigured, blobTokenVar } from "../src/lib/blob.js";
 
 const PROBE_CHAINS = ["cvs", "safeway", "walmart"];
 const PROBE_TIMEOUT_MS = 8000;
@@ -123,9 +124,11 @@ export default async function handler(req, res) {
     let verdict;
     if (!down.length) verdict = "Every feed answered live. Nothing is being served from cache.";
     else if (!blobConfigured()) {
-      verdict = `${down.map((f) => f.name).join(" and ")} refused us, and BLOB_READ_WRITE_TOKEN is not set — ` +
-        "so there is no cached copy to fall back on and the source will show as unavailable. " +
-        "Add a Vercel Blob store to the project, then run /api/refresh-feeds.";
+      verdict = `${down.map((f) => f.name).join(" and ")} refused us, and no Vercel Blob token is ` +
+        "set in this environment — so there is no cached copy to fall back on and the source " +
+        "will show as unavailable. Expected RR_BLOB_READ_WRITE_TOKEN (this project's store uses " +
+        "the RR_BLOB_ prefix) or a plain BLOB_READ_WRITE_TOKEN. Attach the store, redeploy, " +
+        "then run /api/refresh-feeds.";
     } else if (covered.length === down.length) {
       verdict = `${down.map((f) => f.name).join(" and ")} refused us just now, but a cached copy is being served instead.`;
     } else {
@@ -137,6 +140,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       checkedAt: new Date().toISOString(),
       blobConfigured: blobConfigured(),
+      blobTokenVar: blobTokenVar(),
       verdict,
       rows,
       fsisMatrix: matrix,
@@ -165,6 +169,7 @@ export default async function handler(req, res) {
       length: process.env.openfda ? String(process.env.openfda).length : 0,
     },
     blobConfigured: blobConfigured(),
+    blobTokenVar: blobTokenVar(),
     feeds: await probeFeeds(),
     probes: [],
   };

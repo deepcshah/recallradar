@@ -4,6 +4,7 @@
  * older than 20 days — so any area someone has ever searched stays warm.
  */
 import { list, put } from "@vercel/blob";
+import { blobAuth, blobPutOptions } from "../src/lib/blob.js";
 import { byId } from "../src/lib/retailers.js";
 import { findChainLocations } from "../src/lib/mapbox-server.js";
 
@@ -24,7 +25,7 @@ export default async function handler(req, res) {
 
   let blobs;
   try {
-    ({ blobs } = await list({ prefix: "stores/v2/", limit: 1000 }));
+    ({ blobs } = await list({ prefix: "stores/v2/", limit: 1000, ...blobAuth() }));
   } catch (err) {
     return res.status(500).json({ error: `blob list failed: ${err.message}` });
   }
@@ -45,13 +46,9 @@ export default async function handler(req, res) {
     if (!chain) continue;
     try {
       const stores = await findChainLocations(token, chain, parseFloat(lat), parseFloat(lon));
-      await put(blob.pathname, JSON.stringify({ fetchedAt: new Date(now).toISOString(), stores }), {
-        access: "public",
-        addRandomSuffix: false,
-        allowOverwrite: true,
-        contentType: "application/json",
-        cacheControlMaxAge: 3600,
-      });
+      await put(blob.pathname,
+        JSON.stringify({ fetchedAt: new Date(now).toISOString(), stores }),
+        blobPutOptions());
       refreshed.push(blob.pathname);
     } catch (err) {
       failed.push(`${blob.pathname}: ${err.message}`); // old copy stays; retried tomorrow
