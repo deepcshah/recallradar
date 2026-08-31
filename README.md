@@ -9,23 +9,66 @@ Live at [yanked.app](https://yanked.app). Yanked is a responsive, single-page we
    - [USDA FSIS recall API](https://www.fsis.usda.gov/science-data/developer-resources/recall-api) — meat, poultry, and egg-product recalls
    - [CPSC recall API](https://www.cpsc.gov/Recalls/CPSC-Recalls-Application-Program-Interface-API-Information) — consumer-product recalls
 2. **Detects retail chains named in those notices** (Walmart, Costco, Trader Joe's, CVS, Home Depot, … ~90 chains) by scanning the recall text, distribution pattern, and CPSC "sold at" data.
-3. **Finds real store locations of those chains near you** via the OpenStreetMap [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API), and shows them on a dynamic [MapLibre GL](https://maplibre.org/) vector map (the open-source Mapbox GL engine, using [OpenFreeMap](https://openfreemap.org/)'s keyless style) — numbered pins synced two-way with a store list that sits beside the map on desktop, below it on mobile, and can be toggled off for a full-width map.
-4. **Lists every recalled product to avoid**, sorted by severity (FDA Class I / FSIS high-risk first), with search and per-source filtering, lot/code details, and links to the official notices.
+3. **Finds real store locations of those chains near you** via Mapbox Search (proxied through `/api/stores`, which holds the token and caches results), and shows them on a dynamic [MapLibre GL](https://maplibre.org/) vector map with CARTO's keyless basemap — numbered pins synced two-way with a store list that sits beside the map on desktop and under it on a phone. Both dividers drag: the one between the two lists on desktop, and the one between the map and the panel on a phone. The lists can be hidden for a full-screen map at any size.
+4. **Lists every recalled product to avoid**, newest first (or by risk), with a free-text search and one **Filters** control covering reason for recall, product type, source and sort. Reason for recall — undeclared allergen, Listeria, fire hazard, and so on — is inferred from the notice's own text, since no feed publishes a hazard code comparable across all three agencies. Filter counts are computed against every other filter already on, including a selected store, so a chip never promises results it cannot deliver. Cards carry lot/code details and a link to the official notice.
+
+   On a phone the two lists are tabs, and picking a store takes you to its recalls rather than silently re-scoping a list you cannot see. The selected store gets its own bar above the tabs — visible from both of them — a rail down the side of its card, and an enlarged, labelled map pin while the rest dim.
+5. **Scans a barcode** and checks it against the notices, with a typed fallback where there is no camera. See *Scanning, and why "no match" is not "safe"* below.
+
+### One breakpoint, at 1024px
+
+The whole information architecture switches once, at `lg`:
+
+- **Below 1024** — a single column with a bottom bar (Near me · Recalls · Scan), a location chip that opens a sheet, and one overflow control for theme, sources and About. This is the phone architecture, and it is also the right one for an iPad in portrait: at 820px the two-column layout gave a 404px map beside a 416px panel and served neither.
+- **1024 and up** — map and panel side by side, with a draggable boundary between them, the location form inline, and Scan as the header's primary action.
+
+Touch-target sizing is keyed to `pointer: coarse`, not to width — an iPad is 820px wide *and* finger-driven, so viewport width is the wrong question to ask.
+
+### Three modes
+
+One control at the top of the panel says how wide a net everything below is casting:
+
+| Mode | Stores | Recalls |
+| --- | --- | --- |
+| **Named** | only stores whose chain a notice names | only notices that name a chain near you |
+| **All stores** | every store nearby, chains and independents | every notice covering your area |
+| **All recalls** | *(the store column steps aside)* | every active notice for your area |
+
+Independents can only ever be exposed at the area level — no notice will name one — so **All stores** is the only mode in which one can honestly appear. The store list is always in distance order; whether a notice names a store is the mode's job, not the sort's.
 
 Everything runs client-side against free, key-less public APIs. There is no server, no build step, no tracking — your location never leaves your browser except as query parameters to the public APIs above.
 
 ## Running it
 
-It's a static site — serve the repo root with anything:
+A Vite app with Vercel serverless functions under `api/`:
 
 ```bash
-python3 -m http.server 8000
-# then open http://localhost:8000
+npm install
+npm run dev      # http://localhost:5173 (the /api routes need `vercel dev`)
+npm run build    # → dist/
 ```
 
-Or deploy the repo as-is to GitHub Pages, Netlify, Cloudflare Pages, etc.
-
 > **Note:** browser geolocation requires a secure context (HTTPS or `localhost`). The ZIP/address search works everywhere.
+
+### On HTTPS
+
+Vercel already redirects `http` to `https` at the edge, but only *after* the plaintext request has gone out. `vercel.json` sends `Strict-Transport-Security`, which closes that first request: once a browser has seen the header it rewrites `http://` to `https://` itself, before anything leaves the machine. Two years, `includeSubDomains`, and deliberately no `preload` — that submits the domain to a list baked into browser binaries and is slow to undo, which is the wrong commitment for a beta.
+
+`vercel.json` carries a `$schema` line so an editor validates it in place. The headers array is strict: each entry takes `key` and `value` and nothing else, so there is nowhere to leave a comment — which is why this note is here.
+
+## Scanning, and why "no match" is not "safe"
+
+No government feed publishes a barcode field. UPCs turn up inside free text — openFDA's `code_info` and `product_description`, FSIS's `field_product_items` — inconsistently, and CPSC consumer-product recalls have none at all. Coverage is therefore partial and cannot be measured from inside the app, which makes the empty result the dangerous one.
+
+So the scanner refuses to let a miss look like a green tick. The clear state is grey and interrogative, never green; it never uses the word *safe*; it says how many notices even carried a barcode to compare against; and it runs a second lookup that includes recalls which have since ended.
+
+`src/lib/upc.js` collapses UPC-A, UPC-E, EAN-13 and GTIN-14 to one key so a match is not missed on spelling alone, and verifies the GTIN check digit so a twelve-digit lot number is not read as a barcode. Decoding uses the platform `BarcodeDetector` where it exists and lazy-loads ZXing everywhere else (notably iOS Safari, which has never shipped it) — a separate chunk, so anyone who never scans never downloads it. [Open Food Facts](https://world.openfoodfacts.org) turns a barcode into a brand and product name, which is what makes near-miss matching possible at all, and supplies the product photo for FDA and FSIS notices, neither of which publishes one.
+
+## Is it still recalled?
+
+`/api/lookup?upc=…` (or `?q=…`) is the one endpoint that does **not** filter to active notices. Everywhere else the app asks openFDA for `status:"Ongoing"` and FSIS for `field_active_notice`, which is right for "what should I worry about near me" and wrong for the question people arrive with after seeing a headline. Under an ongoing-only query, a recall that has since been terminated and a recall we never had look identical — both absent.
+
+`status` is openFDA's own lifecycle field (Ongoing / Completed / Terminated / Pending), so "resolved" is public data that was being filtered away rather than a gap in the feeds. This endpoint reports it, which turns silence into an answer.
 
 ## How the store matching works (and its limits)
 
@@ -39,28 +82,41 @@ For USDA FSIS recalls, store-level *retail distribution lists* are often publish
 
 Recalls that don't name any known chain still appear in the **products to avoid** list, filtered to your state or nationwide distribution.
 
+One more case matters, because it is the app's whole premise: a notice whose distribution reads *"Sold at Trader Joe's stores"* names a chain and no geography at all. That is not "somewhere else", it is unsaid — but it used to be dropped exactly like a notice naming three other states. `scopeFor` now returns a fourth answer, `unstated`, and such a notice is kept when its text names a chain we can put on a map (and shown as **Region not stated**, never flattened into "Nationwide"). openFDA has no way to query for "names no state", so one unconstrained page per kind is fetched alongside the state-scoped ones.
+
 ## Architecture
 
 ```
-index.html          — single page, semantic sections
-css/styles.css      — mobile-first, light/dark via prefers-color-scheme
-js/states.js        — US state name/abbreviation tables
-js/retailers.js     — chain dictionary + recall-text matcher (regex, word-bounded)
-js/geo.js           — browser geolocation, Zippopotam ZIP + Nominatim geocoding, haversine
-js/sources.js       — openFDA / FSIS / CPSC fetchers → one normalized recall shape
-js/stores.js        — Overpass query builder (name/brand regex, with fallback mirror)
-js/ui.js            — rendering (all external text HTML-escaped)
-js/app.js           — orchestration + filters
+index.html                      — shell; applies the stored theme before first paint
+src/index.css                   — design tokens, light/dark, chips, map pins, motion
+src/App.jsx                     — layout, state, filtering, both draggable dividers
+src/components/MapView.jsx      — MapLibre map, markers, selection painting
+src/components/FilterSheet.jsx  — the one filter surface: sheet on a phone, popover at md+
+src/components/ui/              — button, badge, input
+src/lib/states.js               — US state name/abbreviation tables
+src/lib/retailers.js            — chain dictionary + recall-text matcher (regex, word-bounded)
+src/lib/geo.js                  — browser geolocation, Zippopotam ZIP + Nominatim geocoding, haversine
+src/lib/sources.js              — openFDA / FSIS / CPSC fetchers → one normalized recall shape
+src/lib/stores.js               — store lookup + dedupe against the chain dictionary
+src/lib/category.js             — what kind of product it is (icon + type filter)
+src/lib/reason.js               — why it was recalled (hazard label + reason filter)
+src/lib/upc.js                  — barcode normalization, extraction from notice text, matching
+src/components/ScanSheet.jsx    — camera scanner, typed fallback, and the honest empty state
+src/components/ui/tooltip.jsx   — the tooltip every `title=""` became
+src/lib/theme.js, tuning.js     — light/dark, and the DialKit-tunable motion constants
+api/                            — Vercel functions: recalls, stores, per-feed proxies, diagnostics
+api/lookup.js                   — one product across openFDA, INCLUDING finished recalls
 ```
 
 Design notes:
 
 - **Per-source resilience:** each feed is fetched with `Promise.allSettled`; a failed or CORS-blocked feed shows as "unavailable" in the Data sources panel instead of breaking the page. openFDA's "no results" 404 is treated as an empty set.
-- **Politeness:** responses are cached in `sessionStorage` for 30 minutes; Overpass has a fallback mirror; Nominatim is only called once per search.
+- **Politeness:** responses are cached in `sessionStorage` for 30 minutes; Nominatim is only called once per search.
+- **Touch targets:** every small toggle shares one `.chip` class that is 36px tall on touch and 26px where a mouse is pointing. The type in them stays at 11px — a chip is a label; the box around it is what a thumb has to hit.
 - **Severity model:** FDA Class I / FSIS High Risk → red, Class II / default → amber, Class III / low → gray. The classification badge is the *only* place warm colour appears — a store is never coloured as a hazard.
 - **Neutral stance on stores:** a store shows up because a notice names its chain, which is a name match and not a verdict on the store. Most independents can never match at all, so a store with no match gets neutral grey rather than an all-clear. Matched stores and pins are green (the highlight colour), never red.
 - **Palette:** Shopify's grey/black ramp for structure, a green ramp for actions and highlights. Accent tints are solid tokens (`--rr-accent-soft`) rather than alpha washes, which bleach out on a white ground in light mode.
-- **The map is optional:** if the MapLibre CDN is unreachable the map hides and the store list still works; if the vector style fails to load, the map falls back to raster OSM tiles. To use actual Mapbox instead, swap the style URL in `js/ui.js` for a Mapbox style + token.
+- **The map is optional:** if the vector style fails to load, the map falls back to raster CARTO tiles; the store list works either way. The basemap follows the app theme — see `MAP_STYLE` in `src/components/MapView.jsx`.
 
 ## Disclaimer
 

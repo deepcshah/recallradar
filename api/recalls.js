@@ -6,7 +6,7 @@
  */
 import {
   normalizeFda, normalizeFsis, normalizeCpsc, sortRecalls,
-  slimFsis, slimCpsc, fdaSearchQuery, CPSC_LOOKBACK_DAYS,
+  slimFsis, slimCpsc, fdaSearchQuery, unscopedSearchQuery, CPSC_LOOKBACK_DAYS,
 } from "../src/lib/sources.js";
 import { FEED_HEADERS, FSIS_ENDPOINTS, FSIS_HEADER_SETS, fetchFirstOk } from "../src/lib/feeds.js";
 import { head, put } from "@vercel/blob";
@@ -58,7 +58,29 @@ async function fetchFda(kind, loc) {
     results.push(...batch);
     if (batch.length < FDA_PAGE) break;
   }
-  return normalizeFda(kind, results, loc);
+
+  /* One more page, with no distribution clause at all.
+   *
+   * The query above can only match text that names your state or says
+   * nationwide, so a notice whose distribution reads "Sold at Trader Joe's
+   * stores" — a chain and no geography — is invisible to it. That is exactly
+   * the class this app exists to surface. openFDA has no way to ask for
+   * "names no state", so the filtering happens in normalizeFda: everything
+   * here that names a state other than yours is dropped, and what is left
+   * has to name a retailer to survive.
+   *
+   * Deliberately one page, and deliberately best-effort: it is a widening,
+   * not a correctness requirement, and it must never fail the whole fetch. */
+  try {
+    const loose = await jfetch(
+      `https://api.fda.gov/${kind}/enforcement.json?search=${unscopedSearchQuery().replace(/ /g, "+")}` +
+      `&sort=report_date:desc&limit=${FDA_PAGE}` + (key ? `&api_key=${key}` : ""));
+    results.push(...((loose && loose.results) || []));
+  } catch (_) { /* the state-scoped pages above still stand on their own */ }
+
+  // Both passes can return the same notice; normalizeFda's ids are stable.
+  const seen = new Set();
+  return normalizeFda(kind, results, loc).filter((r) => !seen.has(r.id) && seen.add(r.id));
 }
 
 /* FSIS sits behind a WAF that intermittently 403s server-to-server requests.

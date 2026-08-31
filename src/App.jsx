@@ -1,20 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Armchair, Baby, Beef, Bike, Candy, Carrot, Check, Crosshair, CupSoda, ExternalLink,
-  Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package, PanelRightClose, PanelRightOpen,
-  PawPrint, Pill, Plug, Plus, Radar, Rows2, Columns2, Search, SearchX, ShieldCheck, Soup,
-  Stethoscope, Sun, Moon, MonitorSmartphone, UtensilsCrossed, Wheat, X, Zap,
+  AlertCircle, Armchair, Baby, Beef, Bike, Candy, Carrot, Check, ChevronDown, ChevronRight, ChevronUp,
+  Crosshair, CupSoda,
+  ExternalLink, Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package, PanelRightClose,
+  PanelRightOpen, PawPrint, Pill, Plug, Plus, Radar, Rows2, Columns2, Search, SearchX,
+  ScanLine, ShieldCheck, Soup, Stethoscope, Sun, Moon, MonitorSmartphone, MoreHorizontal, Store,
+  ListFilter, UtensilsCrossed, Wheat, X, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { MultiSelect } from "@/components/ui/multi-select";
+import { Tooltip } from "@/components/ui/tooltip";
+import { FilterButton, FilterSheet, FilterGroup, FilterChoice } from "@/components/FilterSheet";
 import MapView from "@/components/MapView";
+import ScanSheet from "@/components/ScanSheet";
+import { Sheet } from "@/components/ui/sheet";
+import { recallUpcs, lookupProduct } from "@/lib/upc";
 import { browserPosition, reverseGeocode, geocodeInput } from "@/lib/geo";
 import { fetchAll, retryBlockedFsis, sortRecalls } from "@/lib/sources";
 import { findStores } from "@/lib/stores";
 import { byId, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
 import { categoryFor } from "@/lib/category";
+import { reasonFor, REASON_ORDER } from "@/lib/reason";
 import { DialRoot } from "dialkit";
 import "dialkit/styles.css";
 import { useMotionTuning, cardStagger } from "@/lib/tuning";
@@ -42,10 +49,66 @@ const DEFAULT_SPLIT = 48; // % of the panel given to the stores list
 const MIN_SPLIT = 18;
 const MAX_SPLIT = 82;
 
+/* The phone layout's own split: % of the body given to the map. It used to be
+ * a hard-coded 42% with no way to change it, which is wrong in both
+ * directions — reading the map you want it bigger, reading the list you want
+ * it gone. */
+const DEFAULT_MAP_PCT = 42;
+const MIN_MAP_PCT = 20;
+const MAX_MAP_PCT = 72;
+
+/* The same trade on a wide screen, along the other axis: % of the window
+ * given to the map. It was a fixed 26rem panel against however much was left,
+ * which on a 1440 display meant 928px of basemap carrying five pins beside a
+ * 416px column where all the reading happens. The phone could already drag
+ * this boundary; the desktop could not. */
+const DEFAULT_MAP_WIDTH = 58;
+const MIN_MAP_WIDTH = 28;
+const MAX_MAP_WIDTH = 78;
+
 const RADII = [
   { value: 8047, label: "5" },
   { value: 16093, label: "10" },
   { value: 40234, label: "25" },
+];
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * THE THREE MODES
+ *
+ * One dimension — how wide a net — stated once at the top of the panel
+ * instead of inferred from four scattered controls.
+ *
+ *   named   the stores a notice actually names, and only the notices that
+ *           name them. The app's precise claim, and its smallest answer.
+ *   stores  every store near you, chains and independents alike, against
+ *           every notice covering your area. An independent can only ever be
+ *           exposed at the area level, so this is the only mode in which one
+ *           can honestly appear.
+ *   recalls no store scoping at all — every active notice for your state.
+ *           The store list steps aside; the map stays for context.
+ *
+ * Independents were the thing this fixes. They were being fetched and
+ * rendered the whole time, then sorted below every named chain — on a phone
+ * the first one started roughly 300px below the fold with up to 24 chains
+ * ahead of it. That is not a filter anyone chose; it was a ranking rule
+ * quietly deciding a whole category did not exist.
+ * ───────────────────────────────────────────────────────────────────────── */
+const MODES = [
+  { id: "named", label: "Named",
+    hint: "Only stores whose chain a recall notice names, and only the notices that name them." },
+  { id: "stores", label: "All stores",
+    hint: "Every store nearby, chains and independents — against every notice covering your area." },
+  { id: "recalls", label: "All recalls",
+    hint: "Every active notice for your area, with no store filtering at all." },
+];
+
+/* The phone's three layouts. The split is draggable between them; these are
+ * the two ends it cannot be dragged to. */
+const VIEWS = ["map", "split", "list"];
+
+const SORTS = [
+  { value: "newest", label: "Newest first" },
+  { value: "risk", label: "Highest risk first" },
 ];
 
 function sevLabel(r) {
@@ -62,6 +125,10 @@ function fmtDate(d) {
  * covers the states that DC serves. Show that scope on every card. */
 function regionLabel(r) {
   const st = r.states || [];
+  /* "Unstated" is its own answer and must never be flattened into
+   * "Nationwide". The notice named a retailer and no geography; saying
+   * nationwide would be inventing a claim the FDA did not make. */
+  if (r.scope === "unstated") return "Region not stated";
   if (r.scope === "nationwide" || !st.length) return "Nationwide";
   if (st.length <= 3) return st.join(" · ");
   return `${st.slice(0, 3).join(" · ")} +${st.length - 3}`;
@@ -70,6 +137,46 @@ function regionLabel(r) {
 function truncate(s, n) {
   s = String(s || "");
   return s.length > n ? s.slice(0, n - 1).trimEnd() + "…" : s;
+}
+
+function plural(n, one, many) {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/* A photo of the recalled product, where one can be had.
+ *
+ * CPSC publishes images; FDA and FSIS publish none at all. The gap closes
+ * through the barcode: where a notice prints one, Open Food Facts can usually
+ * turn it into a product shot. That lookup is a third-party request, so it
+ * only happens for a card that has actually scrolled into view, once per
+ * barcode per session, and it is silent when it fails — a missing photo is a
+ * missing photo, never an error the reader has to deal with. */
+function RecallImage({ recall }) {
+  const [src, setSrc] = useState(recall.image || "");
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (recall.image) return;
+    const code = recallUpcs(recall)[0];
+    const el = ref.current;
+    if (!code || !el || typeof IntersectionObserver === "undefined") return;
+    let done = false;
+    const io = new IntersectionObserver((entries) => {
+      if (done || !entries.some((e) => e.isIntersecting)) return;
+      done = true;
+      io.disconnect();
+      lookupProduct(code).then((p) => p?.image && setSrc(p.image)).catch(() => {});
+    }, { rootMargin: "200px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [recall]);
+
+  if (!src) return <span ref={ref} aria-hidden="true" className="size-0 shrink-0" />;
+  return (
+    <img ref={ref} src={src} alt="" loading="lazy" referrerPolicy="no-referrer"
+         className="size-14 shrink-0 rounded-lg border border-line bg-panel object-cover"
+         onError={(e) => { e.currentTarget.style.display = "none"; }} />
+  );
 }
 
 function Bar({ w }) {
@@ -126,16 +233,108 @@ function EmptyState({ icon: Icon, title, children, compact }) {
   );
 }
 
-/** Section header shared by both panels: label, live count, optional trailing controls. */
-function PanelHeader({ label, countId, count, note, children }) {
+/** Section header shared by both panels: label, live count, optional trailing
+ *  controls. On a phone the label and count are dropped — the tab directly
+ *  above already says "Stores 10", and repeating it costs a row of a list
+ *  that has about four to give. `mobileHidden` drops the row entirely for a
+ *  header whose only remaining content is optional. */
+function PanelHeader({ label, countId, count, note, children, mobileHidden }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line bg-panel px-4 py-2.5">
-      <span className="microlabel">{label}</span>
-      <span id={countId} className="tnum text-xs font-semibold text-mint">{count}</span>
+    <div className={(mobileHidden ? "max-lg:hidden " : "") +
+      "flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line bg-panel px-4 py-2"}>
+      <span className="flex items-center gap-2 max-lg:hidden">
+        <span className="microlabel">{label}</span>
+        <span id={countId} className="tnum text-xs font-semibold text-mint">{count}</span>
+      </span>
       {note}
       <div className="ml-auto flex items-center gap-1.5">{children}</div>
     </div>
   );
+}
+
+/* Two ways a recall can matter at a store, and they are not the same claim:
+ *   named — the notice names this chain, so its warehouses got the lot;
+ *   area  — the notice covers your state but names no retailer, so it could
+ *           be on any shelf here, this one included.
+ * Independents only ever have the second kind.
+ *
+ * `except` drops one facet from the test. That is what lets a filter chip say
+ * what turning it on would actually leave you with, counted against every
+ * other filter that is already on — the selected store included. Counting
+ * against the raw feed instead produced chips like "Undeclared allergen · 1"
+ * that landed on an empty list, because the one allergen notice was not one
+ * of the two that named the store you had picked. */
+function passesFilters(r, f, except) {
+  if (except !== "source" && !f.sources.has(r.source)) return false;
+  if (except !== "cat" && f.cats && !f.cats.has(categoryFor(r).key)) return false;
+  if (except !== "why" && f.whys && !f.whys.has(reasonFor(r).key)) return false;
+  if (f.chainScope && !(r.retailerIds || []).some((id) => f.chainScope.has(id))) return false;
+  if (!f.q) return true;
+  return [r.product, r.firm, r.reason, r.distribution, r.source].join(" ").toLowerCase().includes(f.q);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * DRAGGABLE DIVIDER
+ *
+ * One implementation, used twice: between the two lists inside the desktop
+ * panel, and between the map and the panel on a phone — the second of which
+ * did not exist, so the phone map was pinned at 42% of the viewport whether
+ * you were reading the map or the list under it.
+ *
+ * It is a real separator, not a decoration: the pointer is captured so a drag
+ * that wanders off the 8px handle keeps tracking, arrow keys nudge it for
+ * anyone not using a pointer, and Home (or a double-tap) puts it back.
+ * `touch-action: none` on the handle — see .split-handle in index.css — is
+ * what stops a phone from scrolling the page instead of dragging.
+ * ───────────────────────────────────────────────────────────────────────── */
+function useSplitDrag({ boxRef, axis, value, setValue, storageKey, min, max, reset }) {
+  const dragging = useRef(false);
+  const [live, setLive] = useState(false);
+  // The committed value, tracked outside React so pointerup persists what the
+  // last pointermove actually applied rather than whatever the closure saw.
+  const latest = useRef(value);
+  if (!dragging.current) latest.current = value;
+
+  const apply = useCallback((pct) => {
+    const v = Math.min(max, Math.max(min, pct));
+    latest.current = v;
+    setValue(v);
+    return v;
+  }, [min, max, setValue]);
+
+  const end = useCallback((e) => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    setLive(false);
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) { /* already released */ }
+    savePref(storageKey, latest.current);
+  }, [storageKey]);
+
+  return {
+    "data-dragging": live ? "true" : undefined,
+    onPointerDown(e) {
+      dragging.current = true;
+      setLive(true);
+      e.currentTarget.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    },
+    onPointerMove(e) {
+      if (!dragging.current || !boxRef.current) return;
+      const r = boxRef.current.getBoundingClientRect();
+      apply(axis === "x" ? ((e.clientX - r.left) / r.width) * 100
+                         : ((e.clientY - r.top) / r.height) * 100);
+    },
+    onPointerUp: end,
+    onPointerCancel: end,
+    onDoubleClick() { savePref(storageKey, apply(reset)); },
+    onKeyDown(e) {
+      const back = axis === "x" ? "ArrowLeft" : "ArrowUp";
+      const fwd = axis === "x" ? "ArrowRight" : "ArrowDown";
+      if (e.key !== back && e.key !== fwd && e.key !== "Home") return;
+      e.preventDefault();
+      savePref(storageKey, e.key === "Home" ? apply(reset) : apply(latest.current + (e.key === fwd ? 4 : -4)));
+    },
+  };
 }
 
 /** Top chains named in the given recalls, newest recall first.
@@ -178,6 +377,7 @@ export default function App() {
   const [loc, setLoc] = useState(null);
   const [locStatus, setLocStatus] = useState(null); // {msg, error, busy}
   const [query, setQuery] = useState("");
+  const [queryError, setQueryError] = useState("");
   const [radius, setRadius] = useState(16093);
 
   const [recalls, setRecalls] = useState([]);
@@ -187,31 +387,41 @@ export default function App() {
   const [stores, setStores] = useState([]);
   const [storesStatus, setStoresStatus] = useState(null);
   const [activeStore, setActiveStore] = useState(-1); // drives map focus AND product filtering
-  const [listHidden, setListHidden] = useState(false);
-  const [mobileTab, setMobileTab] = useState("stores");
+  const [mode, setMode] = useState(() => loadPref("rr-mode", "stores"));
+  const [view, setView] = useState("split"); // phone only: map | split | list
+  const [tab, setTab] = useState("near"); // phone destinations: near | recalls
+  const [locOpen, setLocOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
   const [sideBySide, setSideBySide] = useState(() => loadPref("rr-side-by-side", false));
   const [splitPct, setSplitPct] = useState(() => loadPref("rr-split", DEFAULT_SPLIT));
-  const [isWide, setIsWide] = useState(false); // md+ : the only place resizing applies
+  const [mapPct, setMapPct] = useState(() => loadPref("rr-map-pct", DEFAULT_MAP_PCT));
+  const [mapWidthPct, setMapWidthPct] = useState(() => loadPref("rr-map-width", DEFAULT_MAP_WIDTH));
+  const [locEditing, setLocEditing] = useState(false);
+  const [isWide, setIsWide] = useState(false); // lg+ : two lists at once, no bottom nav
 
   const [filterText, setFilterText] = useState("");
   const [categoryKeys, setCategoryKeys] = useState([]); // empty = every type
+  const [reasonKeys, setReasonKeys] = useState([]);     // empty = every reason
   const [sortBy, setSortBy] = useState("newest"); // newest | risk
-  const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [storeScope, setStoreScope] = useState("named"); // named | area
   const [diag, setDiag] = useState(null);
   const [activeSources, setActiveSources] = useState(new Set());
   const [limit, setLimit] = useState(25);
 
   // Live-tunable motion (DialKit panel in dev; shipped defaults in production).
-  const { theme, resolved: resolvedTheme, cycle: cycleTheme } = useTheme();
+  const { theme, setTheme, resolved: resolvedTheme, cycle: cycleTheme } = useTheme();
   const motionStyle = useMotionTuning();
   const stagger = cardStagger(motionStyle);
 
   const mapRef = useRef(null);
   const storeItemRefs = useRef([]);
   const splitRef = useRef(null);
-  const draggingRef = useRef(false);
+  const mainRef = useRef(null);
+  const productsScrollRef = useRef(null);
+  const locInputRef = useRef(null);
 
   const { byChain } = useMemo(() => chainsFor(recalls), [recalls]);
 
@@ -335,7 +545,13 @@ export default function App() {
 
   async function onSearch(e) {
     e.preventDefault();
-    if (!query.trim()) return;
+    if (!query.trim()) {
+      setQueryError("Enter a ZIP code, or a city and state.");
+      locInputRef.current && locInputRef.current.focus();
+      return;
+    }
+    setQueryError("");
+    setLocEditing(false);
     setLocStatus({ msg: "Finding that place…", busy: true });
     try {
       await setLocation(await geocodeInput(query));
@@ -351,74 +567,97 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [stores, byChain]);
 
-  const selectStore = useCallback((i) => {
+  /* Picking a store is a navigation on a phone, not just a highlight.
+   *
+   * At md+ the stores and the recalls are both on screen, so selecting is a
+   * toggle and the recalls beside it re-scope in place. On a phone they are
+   * two tabs, so a selection that only re-scoped a list you cannot see looked
+   * like nothing happened — which is exactly why the old card had to explain
+   * itself with "Showing its recalls below ↓", pointing below at a tab bar.
+   * Now the selection takes you there, the way every master/detail list on a
+   * phone does, and re-tapping the selected store goes back to its recalls
+   * rather than clearing it. Clearing is the ✕ on the selection bar, which is
+   * on screen in both tabs. */
+  const applySelection = useCallback((i, { fly }) => {
     setActiveStore((prev) => {
-      const next = prev === i ? -1 : i;
-      if (next >= 0) mapRef.current && mapRef.current.focusStore(next);
+      const next = prev === i && isWide ? -1 : i;
+      /* The popup says the store's name, address and distance — which is
+       * exactly what the selection bar now says, in a place that does not sit
+       * on top of a map only a third of a phone tall. So the map centres on
+       * the pin either way, and only opens the bubble where there is room. */
+      if (next >= 0 && fly && mapRef.current) mapRef.current.focusStore(next, { popup: isWide });
       setStoreScope(scopeForStore(next));
       return next;
     });
     setLimit(25);
-  }, [scopeForStore]);
+    if (!isWide) setTab("recalls");
+    // A re-scoped list read from wherever the last one was left off.
+    if (productsScrollRef.current) productsScrollRef.current.scrollTop = 0;
+  }, [scopeForStore, isWide]);
+
+  const selectStore = useCallback((i) => applySelection(i, { fly: true }), [applySelection]);
 
   const onMarkerClick = useCallback((i) => {
-    setActiveStore((prev) => {
-      const next = prev === i ? -1 : i;
-      setStoreScope(scopeForStore(next));
-      return next;
-    });
-    setLimit(25);
-    setMobileTab("products");
+    applySelection(i, { fly: false });
     const el = storeItemRefs.current[i];
     if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [scopeForStore]);
+  }, [applySelection]);
+
+  const clearStore = useCallback(() => {
+    setActiveStore(-1);
+    setStoreScope("named");
+    setLimit(25);
+  }, []);
+
+  const listHidden = view === "map";
+  const mapHidden = view === "list" && !isWide;
 
   useEffect(() => {
     mapRef.current && mapRef.current.resize();
-  }, [listHidden, stores, mobileTab, sideBySide, splitPct]);
+  }, [view, stores, tab, sideBySide, splitPct, mapPct]);
 
-  // Resizing and the columns layout only exist at md+, where both lists show.
+  const stepView = useCallback((dir) => {
+    setView((v) => VIEWS[Math.min(VIEWS.length - 1, Math.max(0, VIEWS.indexOf(v) + dir))]);
+  }, []);
+
+  const setModePref = useCallback((next) => {
+    setMode(next);
+    savePref("rr-mode", next);
+    setLimit(25);
+    // "All recalls" has no store column, so a selection made in another mode
+    // would keep scoping a list that no longer shows you what it is scoped to.
+    if (next === "recalls") setActiveStore(-1);
+    if (next === "recalls" && !isWide) setTab("recalls");
+  }, [isWide]);
+
+  /* One breakpoint for the whole information architecture, at lg (1024px).
+   *
+   * It used to be md (768), which put an iPad in portrait — 820px, touch —
+   * into the two-column desktop layout: a 404px map next to a 416px panel,
+   * serving neither. A two-column map-and-list layout needs about 1024px
+   * before the second column is worth what it costs the first. Below that,
+   * the phone's architecture is simply the better one, on a tablet as much as
+   * on a phone. */
   useEffect(() => {
-    const mq = window.matchMedia("(min-width: 768px)");
+    const mq = window.matchMedia("(min-width: 1024px)");
     const sync = () => setIsWide(mq.matches);
     sync();
     mq.addEventListener("change", sync);
     return () => mq.removeEventListener("change", sync);
   }, []);
 
-  const commitSplit = useCallback((pct) => {
-    const clamped = Math.min(MAX_SPLIT, Math.max(MIN_SPLIT, pct));
-    setSplitPct(clamped);
-    return clamped;
-  }, []);
-
-  function onSplitPointerDown(e) {
-    draggingRef.current = true;
-    e.currentTarget.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  }
-  function onSplitPointerMove(e) {
-    if (!draggingRef.current || !splitRef.current) return;
-    const r = splitRef.current.getBoundingClientRect();
-    commitSplit(sideBySide
-      ? ((e.clientX - r.left) / r.width) * 100
-      : ((e.clientY - r.top) / r.height) * 100);
-  }
-  function onSplitPointerUp(e) {
-    if (!draggingRef.current) return;
-    draggingRef.current = false;
-    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch (_) { /* already released */ }
-    savePref("rr-split", splitPct);
-  }
-  function onSplitKeyDown(e) {
-    const back = sideBySide ? "ArrowLeft" : "ArrowUp";
-    const fwd = sideBySide ? "ArrowRight" : "ArrowDown";
-    if (e.key !== back && e.key !== fwd && e.key !== "Home") return;
-    e.preventDefault();
-    savePref("rr-split", e.key === "Home" ? commitSplit(DEFAULT_SPLIT)
-      : commitSplit(splitPct + (e.key === fwd ? 4 : -4)));
-  }
-  function resetSplit() { savePref("rr-split", commitSplit(DEFAULT_SPLIT)); }
+  const listSplit = useSplitDrag({
+    boxRef: splitRef, axis: sideBySide ? "x" : "y", value: splitPct, setValue: setSplitPct,
+    storageKey: "rr-split", min: MIN_SPLIT, max: MAX_SPLIT, reset: DEFAULT_SPLIT,
+  });
+  const panelSplit = useSplitDrag({
+    boxRef: mainRef, axis: "x", value: mapWidthPct, setValue: setMapWidthPct,
+    storageKey: "rr-map-width", min: MIN_MAP_WIDTH, max: MAX_MAP_WIDTH, reset: DEFAULT_MAP_WIDTH,
+  });
+  const mapSplit = useSplitDrag({
+    boxRef: mainRef, axis: "y", value: mapPct, setValue: setMapPct,
+    storageKey: "rr-map-pct", min: MIN_MAP_PCT, max: MAX_MAP_PCT, reset: DEFAULT_MAP_PCT,
+  });
 
   async function runSourceCheck() {
     setDiag({ busy: true });
@@ -437,22 +676,86 @@ export default function App() {
     savePref("rr-side-by-side", next);
   }
 
-  // Inline basis drives both axes; on phones the tabs own the sizing instead.
+  // Inline basis drives both axes; the phone divider owns the map's share.
   const storesStyle = isWide ? { flexBasis: `${splitPct}%`, flexGrow: 0, flexShrink: 0 } : undefined;
+  /* The map only gives up its share when there is a panel to give it to. With
+   * no location yet there is no panel, and the old hard-coded 42% left the
+   * landing screen's headline and its one button squeezed into the top of the
+   * phone with half the viewport blank underneath. */
+  const panelShowing = Boolean(loc) && !listHidden;
+  const mapStyle = isWide
+    ? { flexBasis: `${mapWidthPct}%`, flexGrow: 0, flexShrink: 0 }
+    : { flexBasis: panelShowing ? `${mapPct}%` : "100%" };
 
-  const categoryOptions = useMemo(() => {
+  const selectedStore = activeStore >= 0 ? stores[activeStore] : null;
+
+  /* Every chain with a storefront near you. "Named stores" mode is exactly
+   * this set applied to the recall list: notices that name a chain you could
+   * actually walk into, rather than notices that name any chain anywhere. */
+  const nearbyChainIds = useMemo(() => {
+    const ids = new Set();
+    for (const st of stores) for (const id of st.chainIds || []) ids.add(id);
+    return ids;
+  }, [stores]);
+
+  /* Everything currently narrowing the recall list, in one object so the list
+   * and the facet counts can never disagree about what is on. */
+  const filterState = useMemo(() => ({
+    q: filterText.trim().toLowerCase(),
+    sources: activeSources,
+    cats: categoryKeys.length ? new Set(categoryKeys) : null,
+    whys: reasonKeys.length ? new Set(reasonKeys) : null,
+    /* A selected store is the most specific claim available, so it wins.
+     * Otherwise the mode decides: "named" narrows to chains near you, the
+     * other two do not narrow by store at all. */
+    chainScope: selectedStore
+      ? (storeScope === "named" ? new Set(selectedStore.chainIds) : null)
+      : (mode === "named" ? nearbyChainIds : null),
+  }), [filterText, activeSources, categoryKeys, reasonKeys, selectedStore, storeScope, mode, nearbyChainIds]);
+
+  /* The option LIST comes from every recall, so a chip never disappears
+   * mid-session; the COUNT on it comes from the current filters, so it never
+   * over-promises. A chip that would land on nothing is disabled rather than
+   * hidden — a menu that reshuffles as you use it is a menu you have to
+   * re-read every time. */
+  function facetOptions(keyFn) {
     const m = new Map();
     for (const r of recalls) {
-      const c = categoryFor(r);
-      const hit = m.get(c.key);
-      if (hit) hit.count += 1;
-      else m.set(c.key, { value: c.key, label: c.label, count: 1 });
+      const c = keyFn(r);
+      if (!m.has(c.key)) m.set(c.key, { value: c.key, label: c.label, count: 0 });
     }
-    return [...m.values()].sort((a, b) => a.label.localeCompare(b.label));
-  }, [recalls]);
+    return m;
+  }
 
-  // A new location brings a different set of types; drop any selection that no
-  // longer exists rather than silently filtering everything out.
+  const categoryOptions = useMemo(() => {
+    const m = facetOptions(categoryFor);
+    for (const r of recalls) if (passesFilters(r, filterState, "cat")) m.get(categoryFor(r).key).count += 1;
+    return [...m.values()].sort((a, b) => a.label.localeCompare(b.label));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recalls, filterState]);
+
+  /* Why a thing was recalled, counted the same way its type is. Ordered by
+   * hazard family rather than alphabetically or by count — someone scanning
+   * for "the pathogens" should find them together, and a list that reorders
+   * itself as the counts change is a list you have to re-read every time. */
+  const reasonOptions = useMemo(() => {
+    const m = facetOptions(reasonFor);
+    for (const r of recalls) if (passesFilters(r, filterState, "why")) m.get(reasonFor(r).key).count += 1;
+    return [...m.values()].sort((a, b) => REASON_ORDER.indexOf(a.value) - REASON_ORDER.indexOf(b.value));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recalls, filterState]);
+
+  const sourceOptions = useMemo(() => {
+    const m = new Map();
+    for (const r of recalls) if (!m.has(r.source)) m.set(r.source, { value: r.source, label: r.source, count: 0 });
+    for (const r of recalls) if (passesFilters(r, filterState, "source")) m.get(r.source).count += 1;
+    return [...m.values()];
+  }, [recalls, filterState]);
+
+  // A new location brings a different set of types and hazards; drop any
+  // selection that no longer exists rather than silently filtering everything
+  // out. (Two independent facets, one guard each — a stale reason must not
+  // clear a live type.)
   useEffect(() => {
     if (!categoryKeys.length) return;
     const have = new Set(categoryOptions.map((o) => o.value));
@@ -460,26 +763,17 @@ export default function App() {
     if (next.length !== categoryKeys.length) setCategoryKeys(next);
   }, [categoryOptions, categoryKeys]);
 
-  const selectedStore = activeStore >= 0 ? stores[activeStore] : null;
+  useEffect(() => {
+    if (!reasonKeys.length) return;
+    const have = new Set(reasonOptions.map((o) => o.value));
+    const next = reasonKeys.filter((k) => have.has(k));
+    if (next.length !== reasonKeys.length) setReasonKeys(next);
+  }, [reasonOptions, reasonKeys]);
 
-  /* Two ways a recall can matter at a store, and they are not the same claim:
-   *   named — the notice names this chain, so its warehouses got the lot;
-   *   area  — the notice covers your state but names no retailer, so it could
-   *           be on any shelf here, this one included.
-   * Independents only ever have the second kind. */
-  const filtered = useMemo(() => {
-    const q = filterText.trim().toLowerCase();
-    const chainScope =
-      selectedStore && storeScope === "named" ? new Set(selectedStore.chainIds) : null;
-    const catScope = categoryKeys.length ? new Set(categoryKeys) : null;
-    return recalls.filter((r) => {
-      if (!activeSources.has(r.source)) return false;
-      if (catScope && !catScope.has(categoryFor(r).key)) return false;
-      if (chainScope && !(r.retailerIds || []).some((id) => chainScope.has(id))) return false;
-      if (!q) return true;
-      return [r.product, r.firm, r.reason, r.distribution, r.source].join(" ").toLowerCase().includes(q);
-    });
-  }, [recalls, filterText, activeSources, categoryKeys, selectedStore, storeScope]);
+  const filtered = useMemo(
+    () => recalls.filter((r) => passesFilters(r, filterState)),
+    [recalls, filterState]
+  );
 
   // Severity-first ordering pushed months-old class I notices above this
   // week's, which reads as stale data. Newest is the default; risk is a choice.
@@ -495,6 +789,44 @@ export default function App() {
   const highCount = filtered.filter((r) => r.severity === "high").length;
   const sourceNames = useMemo(() => [...new Set(recalls.map((r) => r.source))], [recalls]);
   const remaining = sorted.length - limit;
+
+  /* Everything currently narrowing the list, as removable chips.
+   *
+   * The filters used to live in three places — the type menu in the global
+   * header, the source toggles in the recalls toolbar, the sort chips in its
+   * header — and none of them told you what was already on. So they all moved
+   * behind one Filters control, and this row is the other half of that trade:
+   * a filter may be one tap out of sight, but it is never invisible. */
+  const activeFilters = useMemo(() => {
+    const out = [];
+    if (filterText.trim()) {
+      out.push({ key: "q", label: `“${truncate(filterText.trim(), 22)}”`, clear: () => setFilterText("") });
+    }
+    for (const k of categoryKeys) {
+      const o = categoryOptions.find((x) => x.value === k);
+      if (o) out.push({ key: `cat:${k}`, label: o.label, clear: () => setCategoryKeys(categoryKeys.filter((x) => x !== k)) });
+    }
+    for (const k of reasonKeys) {
+      const o = reasonOptions.find((x) => x.value === k);
+      if (o) out.push({ key: `why:${k}`, label: o.label, clear: () => setReasonKeys(reasonKeys.filter((x) => x !== k)) });
+    }
+    for (const name of sourceNames) {
+      if (activeSources.has(name)) continue;
+      out.push({
+        key: `src:${name}`, label: `${name} hidden`,
+        clear: () => setActiveSources((prev) => new Set(prev).add(name)),
+      });
+    }
+    return out;
+  }, [filterText, categoryKeys, categoryOptions, reasonKeys, reasonOptions, sourceNames, activeSources]);
+
+  const clearFilters = useCallback(() => {
+    setFilterText("");
+    setCategoryKeys([]);
+    setReasonKeys([]);
+    setActiveSources(new Set(sourceNames));
+    setLimit(25);
+  }, [sourceNames]);
 
   // Nearest found store per chain, so a recall can link to the closest one.
   const nearestByChain = useMemo(() => {
@@ -526,14 +858,20 @@ export default function App() {
     return out;
   }
 
-  /* Stores a recall actually names come first; everything else stays in
-   * distance order so the list still reads as "what is near me". */
+  /* Distance order, always.
+   *
+   * This used to hoist every named store above every unnamed one, which read
+   * as helpful and worked as a filter nobody asked for: independents landed
+   * below as many as 24 chains, off the bottom of a phone, and the app looked
+   * like it had stopped returning them. Whether a notice names a store is now
+   * the mode's job — a control you can see — and the list is free to answer
+   * the question it is actually labelled with, which is what is near me. */
   const rankedStores = useMemo(() => {
     const withCounts = stores.map((s, i) => ({ s, i, n: namedRecallsFor(s).length }));
-    const list = flaggedOnly ? withCounts.filter((x) => x.n > 0) : withCounts;
-    return [...list].sort((a, b) => (b.n > 0) - (a.n > 0) || a.s.distanceMiles - b.s.distanceMiles);
+    const list = mode === "named" ? withCounts.filter((x) => x.n > 0) : withCounts;
+    return [...list].sort((a, b) => a.s.distanceMiles - b.s.distanceMiles);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stores, byChain, flaggedOnly]);
+  }, [stores, byChain, mode]);
 
   const namedCount = selectedStore ? namedRecallsFor(selectedStore).length : 0;
 
@@ -592,85 +930,143 @@ export default function App() {
   // Both lookups roll up into one "the app is working" flag.
   const scanning = productsBusy || Boolean(storesStatus?.busy);
 
-  const showStores = "flex " + (mobileTab === "stores" ? "" : "max-md:hidden ");
-  const showProducts = "flex " + (mobileTab === "products" ? "" : "max-md:hidden ");
+  const showStores = "flex " + (tab === "near" ? "" : "max-lg:hidden ");
+  const showProducts = "flex " + (tab === "recalls" ? "" : "max-lg:hidden ");
+
+  /* Where a selected store's recalls actually appear depends on the layout,
+   * and getting this wrong is how the card came to say "Showing its recalls
+   * below ↓" on a phone, where "below" is a tab you have to go to. */
+  const recallsHere = isWide
+    ? (sideBySide ? "Showing its recalls →" : "Showing its recalls below ↓")
+    : "Showing its recalls — Recalls tab";
 
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden bg-ink" style={motionStyle}>
-      {/* ================= top bar ================= */}
+      {/* ================= top bar =================
+          Identity and location only. The recall search box and the product
+          type menu used to live here too, which put the controls that filter
+          the recall list an entire layout away from the recall list — and on
+          a phone squeezed all four into one 360px row. They now sit in the
+          Recalls panel, next to the thing they act on. */}
       <header className="z-20 shrink-0 border-b border-line bg-panel elev-1">
-        <div className="flex flex-col gap-2 px-3 py-2.5 sm:px-4 md:flex-row md:flex-wrap md:items-center md:gap-x-4">
-          {/* -- left: identity + product search / type filter -- */}
-          <div className="flex min-w-0 items-center gap-2.5 md:flex-1">
-            <span className="flex shrink-0 items-center gap-2">
-              <Radar className="size-5 text-mint" />
-              <span className="hidden text-base font-bold tracking-tight sm:inline">
-                Yanked
-              </span>
-              <Badge variant="beta" title="Early release — data and matching are still being refined">beta</Badge>
-            </span>
-            <div className="relative min-w-0 flex-1 sm:max-w-xs">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-fog" />
-              <Input
-                id="filter-text"
-                type="search"
-                value={filterText}
-                onChange={(e) => { setFilterText(e.target.value); setLimit(25); }}
-                placeholder="Search recalls…"
-                aria-label="Search recalled products"
-                className="h-9 pl-9 text-[13px]"
-              />
-            </div>
-            <MultiSelect
-              id="filter-category"
-              className="shrink-0"
-              options={categoryOptions}
-              selected={categoryKeys}
-              onChange={(next) => { setCategoryKeys(next); setLimit(25); }}
-              allLabel="All Types"
-              itemNoun="Types"
-              searchPlaceholder="Search types…"
-              emptyText="No product types loaded yet"
-            />
-          </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5 sm:px-4">
+          <span className="flex shrink-0 items-center gap-2">
+            <Radar className="size-5 text-mint" />
+            <span className="hidden text-base font-bold tracking-tight sm:inline">Yanked</span>
+            <Tooltip content="Early release — data and matching are still being refined">
+              <Badge variant="beta" className="hidden sm:inline-flex">beta</Badge>
+            </Tooltip>
+          </span>
 
-          {/* -- right: location -- */}
-          <div className="flex min-w-0 items-center gap-2">
-            {loc && (
-              <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 rounded-full border border-mint-line bg-mint-soft px-3 py-1 text-[13px] font-semibold text-mint md:max-w-[15rem] md:flex-none">
+          {loc && (
+            <>
+              <button
+                type="button"
+                onClick={() => setLocOpen(true)}
+                className="tap inline-flex min-w-0 max-w-[22rem] flex-1 items-center gap-1.5 rounded-full border border-mint-line bg-mint-soft px-3 py-1.5 text-[13px] font-semibold text-mint lg:hidden"
+              >
+                <MapPin className="size-3.5 shrink-0" />
+                <span className="truncate">{loc.label}</span>
+                <ChevronDown className="size-3.5 shrink-0 opacity-70" />
+              </button>
+              {/* One control, not two. The chip and the ZIP field were showing
+                  the same place at the same time — "San Francisco, CA 94103"
+                  beside a box reading "94103" — and the field was standing
+                  permanently for a task performed once. The chip is the
+                  control now, on every size; the field is what it opens. */}
+              <button
+                type="button"
+                onClick={() => { setLocEditing(true); setTimeout(() => locInputRef.current?.select(), 0); }}
+                className="tap hidden min-w-0 items-center gap-1.5 rounded-full border border-mint-line bg-mint-soft px-3 py-1 text-[13px] font-semibold text-mint hover:border-mint lg:inline-flex lg:max-w-[18rem]"
+              >
                 <MapPin className="size-3.5 shrink-0" />
                 <span id="location-label" className="truncate">{loc.label}</span>
-              </span>
-            )}
-            <form id="form-search" onSubmit={onSearch} className="flex min-w-0 items-center gap-1.5">
+                <ChevronDown className="size-3.5 shrink-0 opacity-70" />
+              </button>
+            </>
+          )}
+
+          {/* A phone gets none of this. Where a desktop has room for a standing
+              form, a phone gets a chip that opens a sheet — a location is set
+              once and then read, so a permanent text field is a row of chrome
+              paying rent on a task nobody repeats. */}
+          <div className={"order-last hidden w-full min-w-0 items-center gap-1.5 lg:order-none lg:w-auto lg:flex-1 lg:justify-end " +
+            (loc && !locEditing ? "" : "lg:flex")}>
+            {/* `noValidate`, and no `required`. The browser's own bubble —
+                "Please fill out this field" — renders in the OS font at the OS
+                size in the OS colours, ignores the app's theme entirely, and
+                is the one piece of UI here nobody designed. Ours says what to
+                type instead of that something is missing. */}
+            <form id="form-search" onSubmit={onSearch} noValidate className="flex min-w-0 flex-1 items-center gap-1.5 sm:flex-none">
               <Input
                 id="input-location"
+                ref={locInputRef}
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => { setQuery(e.target.value); if (queryError) setQueryError(""); }}
                 placeholder="ZIP or address"
                 aria-label="ZIP code or address"
-                required
-                className="h-9 w-24 text-[13px] sm:w-32 lg:w-44"
+                aria-invalid={queryError ? "true" : undefined}
+                aria-describedby={queryError ? "input-location-error" : undefined}
+                onKeyDown={(e) => { if (e.key === "Escape" && loc) { setLocEditing(false); setQueryError(""); } }}
+                className={"h-9 w-44 min-w-0 shrink-0 text-[13px] " +
+                  (queryError ? "border-alert focus-visible:border-alert" : "")}
               />
-              <Button type="submit" variant="outline" size="sm" className="h-9 px-3" aria-label="Search location">
-                <Search />
-              </Button>
+              <Tooltip content="Find recalls around a ZIP code or address">
+                <Button type="submit" variant="outline" size="sm" className="h-9 shrink-0 px-3" aria-label="Search location">
+                  <Search />
+                </Button>
+              </Tooltip>
             </form>
-            <Button id="btn-geolocate" size="sm" className="h-9 px-3" onClick={useGeolocation} aria-label="Use my location">
-              <Crosshair /><span className="hidden xl:inline">My Location</span>
-            </Button>
+            <Tooltip content="Use this device's location instead of typing one">
+              <Button id="btn-geolocate" variant="secondary" size="sm" className="h-9 shrink-0 px-3" onClick={useGeolocation} aria-label="Use my location">
+                <Crosshair /><span className="hidden xl:inline">My Location</span>
+              </Button>
+            </Tooltip>
+          </div>
+
+          {/* Scanning is a task, not a filter.
+              On a phone it is a bottom-bar destination; on a desktop it sat in
+              the recalls toolbar next to Filters, styled like a sibling of
+              one — so the same action read as top-level on one screen and as
+              a list control on the other. It is the app's one primary verb,
+              so here it is the header's one primary button. */}
+          <Tooltip content="Point the camera at a package and check it against these notices">
             <Button
-              id="btn-theme" variant="secondary" size="icon" className="h-9 w-9 shrink-0"
+              id="btn-scan" size="sm"
+              className="hidden h-9 shrink-0 px-3.5 lg:ml-auto lg:inline-flex"
+              onClick={() => setScanOpen(true)}
+            >
+              <ScanLine /> Scan
+            </Button>
+          </Tooltip>
+
+          {/* Phone: one overflow control instead of three standing ones. */}
+          <Button
+            id="btn-more" variant="secondary" size="icon" className="ml-auto h-9 w-9 shrink-0 lg:hidden"
+            onClick={() => setMoreOpen(true)}
+            aria-label="More: theme, data sources, about"
+          >
+            <MoreHorizontal />
+          </Button>
+          <Tooltip content={theme === "system" ? "Following your system theme — click for light" : `${theme[0].toUpperCase()}${theme.slice(1)} theme — click to change`}>
+            <Button
+              id="btn-theme" variant="secondary" size="icon" className="hidden h-9 w-9 shrink-0 lg:ml-0 lg:inline-flex"
               onClick={cycleTheme}
-              title={`Theme: ${theme} — click to change`}
               aria-label={`Theme: ${theme}. Click to change.`}
             >
               {theme === "dark" ? <Moon /> : theme === "light" ? <Sun /> : <MonitorSmartphone />}
             </Button>
-          </div>
+          </Tooltip>
         </div>
 
         {(productsBusy || storesStatus?.busy) && <div id="progress" className="progress-track" />}
+
+        {queryError && (
+          <p id="input-location-error" role="alert"
+             className="flex items-center gap-2 border-t border-alert-line bg-alert-soft px-4 py-1.5 text-xs font-semibold text-alert">
+            <AlertCircle className="size-3.5 shrink-0" />{queryError}
+          </p>
+        )}
 
         {locStatus && (
           <p id="locator-status" role="status" aria-live="polite"
@@ -681,9 +1077,14 @@ export default function App() {
       </header>
 
       {/* ================= body: map + panel ================= */}
-      <main className="flex min-h-0 flex-1 flex-col md:flex-row">
+      <main ref={mainRef} className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* -------- map -------- */}
-        <div className="relative min-h-0 shrink-0 basis-[42%] md:min-w-0 md:flex-1 md:basis-auto">
+        <div
+          className={"relative min-h-0 shrink-0 lg:min-w-0 lg:flex-1 lg:basis-auto " +
+            (mapHidden || tab === "recalls" ? "hidden lg:block " : "") +
+            (selectedStore ? "map-has-selection" : "")}
+          style={mapStyle}
+        >
           {loc ? (
             <MapView ref={mapRef} loc={loc} stores={stores}
                      labels={pinLabels} named={pinNamed} activeIndex={activeStore}
@@ -705,7 +1106,22 @@ export default function App() {
                 <Button className="mx-auto mt-4" onClick={useGeolocation}>
                   <Crosshair /> Use My Location
                 </Button>
-                <p className="microlabel mt-3">Or enter a ZIP above</p>
+
+                {/* The header's location form is desktop-only now, so the
+                    landing screen has to carry it on a phone — which is the
+                    right place for it anyway: getting a location is this
+                    screen's entire job, and afterwards it is a chip. */}
+                <form onSubmit={onSearch} noValidate className="mx-auto mt-4 flex max-w-xs items-center gap-2 lg:hidden">
+                  <Input
+                    value={query}
+                    onChange={(e) => { setQuery(e.target.value); if (queryError) setQueryError(""); }}
+                    placeholder="Or enter a ZIP"
+                    aria-label="ZIP code or address"
+                    className="h-11 min-w-0 flex-1"
+                  />
+                  <Button type="submit" variant="secondary" className="h-11 shrink-0 px-4">Go</Button>
+                </form>
+                <p className="microlabel mt-3 hidden lg:block">Or enter a ZIP above</p>
                 <p className="mt-5 text-xs leading-relaxed text-subtle">
                   Beta. Recall data comes from public government feeds and is matched to stores by name —
                   expect gaps and false matches. Not a substitute for the official notice.
@@ -726,7 +1142,7 @@ export default function App() {
                       style={{ animationDelay: `calc(var(--rr-radar-stagger) * ${i})` }} />
               ))}
               <span className="radar-dot" />
-              <div className="absolute bottom-6 flex w-full max-w-[19rem] flex-col items-center gap-2 px-4">
+              <div className="absolute bottom-4 flex w-full max-w-[19rem] flex-col items-center gap-2 px-4 sm:bottom-6">
                 <p className="text-sm font-semibold text-paper">Scanning {loc?.label || "your area"}</p>
                 <ul id="scan-steps" role="status" aria-live="polite"
                     className="elev-2 flex w-full flex-col gap-1.5 rounded-xl border border-line bg-panel px-3 py-2.5">
@@ -747,72 +1163,179 @@ export default function App() {
             </div>
           )}
 
+          {/* The lists toggle exists at every size now. It was md-and-up only,
+              so on a phone — the one place where a full-screen map is most
+              worth having — there was no way to get one. */}
           {loc && (
-            <div className="absolute left-3 top-3 z-10 hidden items-center gap-1.5 md:flex">
+            <div className="absolute left-3 top-3 z-10 flex items-center gap-1.5">
               <Button
                 id="btn-toggle-list" variant="secondary" size="sm"
                 aria-pressed={!listHidden}
-                onClick={() => setListHidden(!listHidden)}
-                className="bg-panel/90 backdrop-blur"
+                aria-controls="stores-panel"
+                onClick={() => setView(listHidden ? "split" : "map")}
+                className={"bg-panel/90 backdrop-blur " + (listHidden ? "" : "max-lg:hidden")}
               >
                 {listHidden ? <><PanelRightOpen /> Show Lists</> : <><PanelRightClose /> Hide Lists</>}
               </Button>
               {!listHidden && (
-                <Button
-                  id="btn-toggle-layout" variant="secondary" size="sm"
-                  aria-pressed={sideBySide}
-                  onClick={toggleLayout}
-                  title={sideBySide ? "Stack the lists" : "Put the lists side by side"}
-                  className="bg-panel/90 px-3 backdrop-blur"
-                >
-                  {sideBySide ? <Rows2 /> : <Columns2 />}
-                  <span className="hidden lg:inline">{sideBySide ? "Stacked" : "Side by Side"}</span>
-                </Button>
+                <Tooltip content={sideBySide ? "Stack the two lists vertically" : "Put the two lists side by side"}>
+                  <Button
+                    id="btn-toggle-layout" variant="secondary" size="sm"
+                    aria-pressed={sideBySide}
+                    onClick={toggleLayout}
+                    className="hidden bg-panel/90 px-3 backdrop-blur lg:inline-flex"
+                  >
+                    {sideBySide ? <Rows2 /> : <Columns2 />}
+                    <span className="hidden lg:inline">{sideBySide ? "Stacked" : "Side by Side"}</span>
+                  </Button>
+                </Tooltip>
               )}
             </div>
           )}
         </div>
 
+        {/* ---- map / panel divider (wide screens) ----
+            The desktop counterpart of the phone's grabber: the same gesture,
+            the same hook, the same keyboard handling, on the other axis. */}
+        {loc && !listHidden && isWide && (
+          <div
+            id="panel-split-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize the map"
+            aria-valuenow={Math.round(mapWidthPct)} aria-valuemin={MIN_MAP_WIDTH} aria-valuemax={MAX_MAP_WIDTH}
+            tabIndex={0}
+            {...panelSplit}
+            className="split-handle group hidden w-2 shrink-0 cursor-col-resize items-center justify-center border-x border-line bg-panel hover:bg-mint-soft lg:flex"
+          >
+            <span className="split-grip h-8 w-0.5" />
+          </div>
+        )}
+
         {/* -------- right panel: stores over products -------- */}
         {loc && !listHidden && (
           <aside id="stores-panel"
-                 className={"relative z-10 flex min-h-0 flex-1 flex-col border-t border-line bg-ink shadow-[var(--rr-shadow-2)] md:flex-none md:border-l md:border-t-0 " +
-                   (sideBySide ? "md:w-[38rem] xl:w-[46rem]" : "md:w-[26rem]")}>
-            {/* The answer, before either list. */}
+                 className={"relative z-10 flex min-h-0 flex-1 flex-col border-t border-line bg-ink shadow-[var(--rr-shadow-2)] lg:border-t-0 " +
+                   "lg:min-w-[22rem] lg:flex-1"}>
+            {/* ---- phone divider: map vs. panel ---- */}
+            {/* Only where there is a map to resize. On the recalls screen there
+                isn't one, and a drag handle for an absent element is 32px of
+                furniture. */}
+            <div className={"relative flex shrink-0 items-center border-b border-line bg-panel lg:hidden " +
+              (tab === "near" ? "" : "hidden")}>
+              <div
+                id="map-split-handle"
+                role="separator"
+                aria-orientation="horizontal"
+                aria-label="Resize the map"
+                aria-valuenow={Math.round(mapPct)} aria-valuemin={MIN_MAP_PCT} aria-valuemax={MAX_MAP_PCT}
+                tabIndex={0}
+                {...mapSplit}
+                className="split-handle group flex h-8 flex-1 cursor-row-resize items-center justify-center"
+              >
+                <span className="split-grip h-1 w-10" />
+              </div>
+              {/* The two ends the drag cannot reach: map only, and list only.
+                  Dragging covers everything in between. */}
+              <div className="absolute right-1.5 flex items-center gap-0.5">
+                <button type="button" onClick={() => stepView(-1)} disabled={view === "map"}
+                        aria-label="Show more map"
+                        className="grid size-9 place-items-center rounded-md text-fog disabled:opacity-30 active:bg-panel-3">
+                  <ChevronDown className="size-4" />
+                </button>
+                <button type="button" onClick={() => stepView(1)} disabled={view === "list"}
+                        aria-label="Show more list"
+                        className="grid size-9 place-items-center rounded-md text-fog disabled:opacity-30 active:bg-panel-3">
+                  <ChevronUp className="size-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* ---- one scope row ----
+                The mode bar and the selected-store bar were two stacked bands
+                — 53px and 93px — both answering the same question: what is
+                this panel currently showing? They were never both needed,
+                because picking a store overrides the mode. So they are one
+                row that swaps its contents, scrolling sideways rather than
+                wrapping, which is how a phone holds a variable number of
+                chips without changing height. */}
+            <div className="scope-row flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-line bg-panel px-3 py-2">
+              {selectedStore ? (
+                <>
+                  <button
+                    id="btn-clear-store"
+                    onClick={clearStore}
+                    aria-label={`Clear ${selectedStore.name} and show all nearby stores`}
+                    className="chip chip-on shrink-0 max-w-[11rem]"
+                  >
+                    <MapPin className="size-3 shrink-0" />
+                    <span className="truncate normal-case tracking-normal">{selectedStore.name}</span>
+                    <X className="size-3 shrink-0" />
+                  </button>
+                  <div id="store-scope" className="flex shrink-0 gap-1.5" role="group" aria-label="How this store relates to the recalls">
+                    {[
+                      ["named", `Names it · ${namedCount}`, namedCount === 0
+                        ? "No notice names this store's chain"
+                        : "Notices that name this chain by name"],
+                      ["area", `In ${loc?.stateAbbr || "your area"} · ${recalls.length}`,
+                        "Every notice covering your area — it names no retailer, so it could be on any shelf here"],
+                    ].map(([k, lbl, title]) => (
+                      <Tooltip key={k} content={title}><button type="button"
+                              disabled={k === "named" && namedCount === 0}
+                              onClick={() => { setStoreScope(k); setLimit(25); }}
+                              aria-pressed={storeScope === k}
+                              className={"chip shrink-0 " + (storeScope === k ? "chip-on" : "chip-off")}>
+                        <span className="normal-case tracking-normal">{lbl}</span>
+                      </button></Tooltip>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div id="mode-bar" role="group" aria-label="How much to include" className="flex min-w-0 flex-1 gap-1.5">
+                  {MODES.map((m) => {
+                    const n = m.id === "named" ? namedStoreCount
+                      : m.id === "stores" ? stores.length
+                        : recalls.length;
+                    return (
+                      <Tooltip key={m.id} content={m.hint}>
+                        <button
+                          type="button"
+                          aria-pressed={mode === m.id}
+                          onClick={() => setModePref(m.id)}
+                          className={"chip min-w-0 flex-1 px-2 " + (mode === m.id ? "chip-on" : "chip-off")}
+                        >
+                          <span className="truncate normal-case tracking-normal">{m.label}</span>
+                          {!scanning && <span className="tnum opacity-70">{n}</span>}
+                        </button>
+                      </Tooltip>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* The answer, before either list. It stands down on a phone once a
+                store is selected — the scope row above is the more specific
+                answer, and two context bands over a short list is one too many. */}
             {headline && (
               <p id="headline"
-                 className={"shrink-0 border-b border-line px-4 py-2.5 text-[13px] font-semibold " +
+                 className={"shrink-0 border-b border-line px-4 py-2 text-[12px] font-semibold leading-snug lg:py-2.5 lg:text-[13px] " +
+                   (selectedStore ? "max-lg:hidden " : "") +
                    (headline.tone === "match" ? "bg-mint-soft text-paper" : "bg-panel text-fog")}>
                 {headline.text}
               </p>
             )}
 
-            {/* mobile tab switch */}
-            <div className="flex shrink-0 border-b border-line md:hidden" role="tablist">
-              {[["stores", `Stores · ${stores.length}`], ["products", `Recalls · ${filtered.length}`]].map(([k, lbl]) => (
-                <button key={k} role="tab" aria-selected={mobileTab === k} onClick={() => setMobileTab(k)}
-                        className={"flex-1 py-2.5 tnum text-[11px] uppercase tracking-wider transition-colors " +
-                          (mobileTab === k ? "border-b-2 border-mint text-mint" : "text-fog")}>
-                  {lbl}
-                </button>
-              ))}
-            </div>
-
             {/* Both lists live in one measured box so the divider can size them. */}
             <div ref={splitRef}
-                 className={"flex min-h-0 flex-1 " + (sideBySide ? "flex-col md:flex-row" : "flex-col")}>
+                 className={"flex min-h-0 flex-1 " + (sideBySide ? "flex-col lg:flex-row" : "flex-col")}>
             {/* ---- stores ---- */}
-            <section className={showStores + "min-h-0 flex-1 flex-col overflow-hidden"} style={storesStyle}>
+            <section className={(mode === "recalls" ? "hidden " : showStores) + "min-h-0 flex-1 flex-col overflow-hidden"}
+                     style={mode === "recalls" ? undefined : storesStyle}>
               <PanelHeader
                 label="Stores" countId="stat-stores" count={scanning ? "…" : stores.length}
-                note={namedStoreCount > 0 && (
-                  <button id="btn-flagged-only" onClick={() => setFlaggedOnly(!flaggedOnly)}
-                          aria-pressed={flaggedOnly}
-                          title="Show only stores whose chain a notice names"
-                          className={"rounded-full border px-2 py-0.5 tnum text-[10px] uppercase tracking-wider transition-colors " +
-                            (flaggedOnly ? "border-mint bg-mint text-mint-ink" : "border-mint-line bg-mint-soft text-mint hover:border-mint")}>
-                    {namedStoreCount} Named
-                  </button>
+                note={namedStoreCount > 0 && mode !== "named" && (
+                  <span className="tnum text-[11px] text-mint">{namedStoreCount} named</span>
                 )}
               >
                 <span className="microlabel">Within</span>
@@ -820,8 +1343,7 @@ export default function App() {
                   {RADII.map((r) => (
                     <button key={r.value} type="button" onClick={() => setRadius(r.value)}
                             aria-pressed={radius === r.value}
-                            className={"rounded-full border px-2 py-0.5 tnum text-[11px] transition-colors " +
-                              (radius === r.value ? "border-mint bg-mint-soft text-mint" : "border-line text-fog hover:border-mint-line")}>
+                            className={"chip " + (radius === r.value ? "chip-on" : "chip-off")}>
                       {r.label}
                     </button>
                   ))}
@@ -850,15 +1372,19 @@ export default function App() {
                 )}
 
                 <ul id="stores-list" className="flex flex-col gap-2">
-                  {rankedStores.map(({ s, i, n }, pos) => (
+                  {rankedStores.map(({ s, i, n }, pos) => {
+                    const isActive = activeStore === i;
+                    const isSibling = !isActive && selectedStore && sameChain(s);
+                    return (
                     <li
                       key={`${s.name}-${s.lat}-${s.lon}`}
                       ref={(el) => (storeItemRefs.current[i] = el)}
                       data-index={i}
+                      aria-current={isActive ? "true" : undefined}
                       onClick={() => selectStore(i)}
-                      className={"store-item lift fade-item elev-1 cursor-pointer rounded-xl border bg-panel-2 p-3 " +
-                        (activeStore === i ? "active border-mint bg-mint-soft ring-1 ring-mint"
-                          : selectedStore && sameChain(s) ? "same-chain border-mint-line bg-panel-3"
+                      className={"store-item lift fade-item elev-1 cursor-pointer rounded-xl border bg-panel-2 py-3 pl-4 pr-3 " +
+                        (isActive ? "active border-mint bg-mint-soft ring-2 ring-mint"
+                          : isSibling ? "same-chain border-mint-line bg-panel-3"
                             : n > 0 ? "border-mint-line hover:border-mint" : "border-line hover:border-line-strong")}
                     >
                       <div className="flex items-baseline gap-2">
@@ -869,38 +1395,52 @@ export default function App() {
                       </div>
                       {s.address && <p className="mt-0.5 truncate text-[11px] text-fog">{s.address}</p>}
                       <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
-                        {s.independent && (
-                          <span className="store-local rounded-full border border-line px-1.5 py-px tnum text-[10px] uppercase tracking-wider text-fog"
-                                title="Not part of a chain we can match against recall notices">
-                            Local
+                        {isActive && (
+                          <span className="rounded-full border border-mint bg-mint px-1.5 py-px tnum text-[10px] font-bold uppercase tracking-wider text-mint-ink">
+                            Selected
                           </span>
+                        )}
+                        {s.independent && (
+                          <Tooltip content="An independent — no recall notice will ever name it, so this is a gap in the data rather than a clean bill of health">
+                            <span className="store-local rounded-full border border-line px-1.5 py-px tnum text-[10px] uppercase tracking-wider text-fog">
+                              Local
+                            </span>
+                          </Tooltip>
                         )}
                         {/* Deliberately unalarmed language and colour. A store
                             appearing here is a name match on a notice, not a
                             verdict on the store — and most independents can
                             never match at all, which is a gap in the data
                             rather than a clean bill of health. */}
-                        <p className={"tnum text-[11px] " +
-                          (activeStore === i || (selectedStore && sameChain(s)) || n > 0 ? "text-mint" : "text-subtle")}>
-                          {activeStore === i
-                            ? (sideBySide && isWide ? "Showing its recalls →" : "Showing its recalls below ↓")
-                            : selectedStore && sameChain(s)
-                              ? "Same chain — included above"
-                              : n > 0
-                                ? `Named in ${n} notice${n === 1 ? "" : "s"} — tap to filter`
-                                : s.independent
-                                  ? "Independent — tap for area notices"
-                                  : "No notice names this chain"}
+                        <p className={"flex min-w-0 items-center gap-1 tnum text-[11px] " +
+                          (isActive || isSibling || n > 0 ? "text-mint" : "text-subtle")}>
+                          <span className="truncate">
+                            {isActive
+                              ? recallsHere
+                              : isSibling
+                                ? "Same chain — included above"
+                                : n > 0
+                                  ? `Named in ${plural(n, "notice", "notices")} — tap to see them`
+                                  : s.independent
+                                    ? "Independent — tap for area notices"
+                                    : "No notice names this chain"}
+                          </span>
+                          {/* A chevron is how a phone list says "this goes
+                              somewhere". Only on the rows that do. */}
+                          {!isActive && !isSibling && (
+                            <ChevronRight className="size-3 shrink-0 opacity-70 lg:hidden" />
+                          )}
                         </p>
                       </div>
                     </li>
-                  ))}
+                    );
+                  })}
                 </ul>
               </div>
             </section>
 
-            {/* ---- drag divider (desktop only) ---- */}
-            {isWide && (
+            {/* ---- drag divider between the two lists (desktop only) ---- */}
+            {isWide && mode !== "recalls" && (
               <div
                 id="split-handle"
                 role="separator"
@@ -908,98 +1448,117 @@ export default function App() {
                 aria-label="Resize the lists"
                 aria-valuenow={Math.round(splitPct)} aria-valuemin={MIN_SPLIT} aria-valuemax={MAX_SPLIT}
                 tabIndex={0}
-                onPointerDown={onSplitPointerDown}
-                onPointerMove={onSplitPointerMove}
-                onPointerUp={onSplitPointerUp}
-                onPointerCancel={onSplitPointerUp}
-                onDoubleClick={resetSplit}
-                onKeyDown={onSplitKeyDown}
-                className={"group flex shrink-0 items-center justify-center border-line bg-panel transition-colors hover:bg-mint-soft focus-visible:bg-mint-soft focus-visible:outline-none " +
+                {...listSplit}
+                className={"split-handle group flex shrink-0 items-center justify-center border-line bg-panel transition-colors hover:bg-mint-soft " +
                   (sideBySide ? "w-2 cursor-col-resize border-x" : "h-2 cursor-row-resize border-y")}
               >
-                <span className={"rounded-full bg-line transition-colors group-hover:bg-mint " +
-                  (sideBySide ? "h-8 w-0.5" : "h-0.5 w-8")} />
+                <span className={"split-grip " + (sideBySide ? "h-8 w-0.5" : "h-0.5 w-8")} />
               </div>
             )}
 
             {/* ---- products ---- */}
             <section className={showProducts + "min-h-0 flex-1 flex-col overflow-hidden " + (isWide ? "" : "border-t border-line")}>
-              <PanelHeader
-                label="Recalls" countId="stat-recalls" count={productsBusy ? "…" : sorted.length}
-                note={highCount > 0 && (
-                  <span id="stat-high" className="tnum text-[11px] text-amber">{highCount} high-risk</span>
+              {/* ---- the filter bar ----
+                  Search and one Filters control, in the panel they filter. */}
+              <div className="flex shrink-0 items-center gap-2 border-b border-line bg-panel px-3 py-2">
+                {/* The count and the high-risk tally used to be a band of their
+                    own above this row, which is two rows for one section's
+                    header. They are three words; they fit here. */}
+                <span className="microlabel hidden shrink-0 lg:inline">Recalls</span>
+                <span id="stat-recalls" className="tnum shrink-0 text-xs font-semibold text-mint">
+                  {productsBusy ? "…" : sorted.length}
+                </span>
+                {highCount > 0 && (
+                  <span id="stat-high" className="tnum shrink-0 text-[11px] font-semibold text-amber">{highCount} high-risk</span>
                 )}
-              >
-                <span className="microlabel">Sort</span>
-                {[["newest", "Newest"], ["risk", "Risk"]].map(([k, lbl]) => (
-                  <button key={k} type="button" onClick={() => { setSortBy(k); setLimit(25); }}
-                          aria-pressed={sortBy === k}
-                          className={"rounded-full border px-2 py-0.5 tnum text-[10px] uppercase tracking-wider transition-colors " +
-                            (sortBy === k ? "border-mint bg-mint-soft text-mint" : "border-line text-fog hover:border-mint-line")}>
-                    {lbl}
-                  </button>
-                ))}
-              </PanelHeader>
-
-              {/* scope + source filters */}
-              <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line px-3 py-2">
-                {selectedStore ? (
-                  <>
-                    <button
-                      id="btn-clear-store"
-                      onClick={() => setActiveStore(-1)}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-mint bg-mint-soft px-2.5 py-0.5 text-[11px] font-semibold text-mint hover:bg-mint hover:text-mint-ink"
-                    >
-                      <MapPin className="size-3" /> {truncate(selectedStore.name, 22)}
-                      {activeChainStores.length > 1 && (
-                        <span className="tnum text-[10px] opacity-80">
-                          · {activeChainStores.length} locations
-                        </span>
-                      )}
-                      <X className="size-3" />
-                    </button>
-                    <div id="store-scope" className="flex gap-1" role="group" aria-label="How this store relates to the recall">
-                      {[
-                        ["named", `Names It · ${namedCount}`, namedCount === 0
-                          ? "No notice names this store's chain"
-                          : "Notices that name this chain by name"],
-                        ["area", `In ${loc?.stateAbbr || "Your Area"} · ${recalls.length}`,
-                          "Every notice covering your area — it names no retailer, so it could be on any shelf here"],
-                      ].map(([k, lbl, title]) => (
-                        <button key={k} type="button" title={title}
-                                disabled={k === "named" && namedCount === 0}
-                                onClick={() => { setStoreScope(k); setLimit(25); }}
-                                aria-pressed={storeScope === k}
-                                className={"rounded-full border px-2 py-0.5 tnum text-[10px] uppercase tracking-wider transition-colors disabled:cursor-not-allowed disabled:opacity-40 " +
-                                  (storeScope === k ? "border-mint bg-mint-soft text-mint" : "border-line text-fog hover:border-mint-line")}>
-                          {lbl}
-                        </button>
-                      ))}
-                    </div>
-                  </>
-                ) : (
-                  <span className="microlabel">All nearby stores</span>
-                )}
-                <div id="source-chips" className="ml-auto flex flex-wrap gap-1" role="group" aria-label="Filter by source">
-                  {sourceNames.map((name) => {
-                    const on = activeSources.has(name);
-                    return (
-                      <button key={name} type="button" aria-pressed={on}
-                        onClick={() => {
-                          const next = new Set(activeSources);
-                          on ? next.delete(name) : next.add(name);
-                          setActiveSources(next); setLimit(25);
-                        }}
-                        className={"rounded-full border px-2 py-0.5 tnum text-[10px] uppercase tracking-wider transition-colors " +
-                          (on ? "border-mint bg-mint-soft text-mint" : "border-line text-fog hover:border-mint-line")}>
-                        {name}
-                      </button>
-                    );
-                  })}
+                <div className="relative min-w-0 flex-1">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-fog" />
+                  <Input
+                    id="filter-text"
+                    type="search"
+                    value={filterText}
+                    onChange={(e) => { setFilterText(e.target.value); setLimit(25); }}
+                    placeholder="Search recalls…"
+                    aria-label="Search recalled products"
+                    className="h-9 pl-9 text-[13px]"
+                  />
+                </div>
+                <div className="relative shrink-0">
+                  <FilterButton
+                    id="btn-filters"
+                    open={filtersOpen}
+                    count={activeFilters.length}
+                    onClick={() => setFiltersOpen((v) => !v)}
+                  />
+                  <FilterSheet
+                    open={filtersOpen}
+                    onClose={() => setFiltersOpen(false)}
+                    anchored={isWide}
+                    count={activeFilters.length}
+                    onClear={clearFilters}
+                    resultLabel={`${plural(sorted.length, "recall", "recalls")}`}
+                  >
+                    <FilterGroup
+                      label="Reason for recall"
+                      options={reasonOptions}
+                      selected={reasonKeys}
+                      onChange={(next) => { setReasonKeys(next); setLimit(25); }}
+                      allLabel="Any reason"
+                    />
+                    <FilterGroup
+                      label="Product type"
+                      options={categoryOptions}
+                      selected={categoryKeys}
+                      onChange={(next) => { setCategoryKeys(next); setLimit(25); }}
+                      allLabel="All types"
+                    />
+                    <FilterGroup
+                      label="Source"
+                      options={sourceOptions}
+                      /* Empty means "everything", so a full set reads as empty
+                       * — otherwise the All chip could never be the on state. */
+                      selected={sourceNames.every((n) => activeSources.has(n)) ? [] : sourceNames.filter((n) => activeSources.has(n))}
+                      onChange={(next) => {
+                        setActiveSources(new Set(next.length ? next : sourceNames));
+                        setLimit(25);
+                      }}
+                      allLabel="All sources"
+                    />
+                    <FilterChoice
+                      label="Sort by"
+                      options={SORTS}
+                      value={sortBy}
+                      onChange={(v) => { setSortBy(v); setLimit(25); }}
+                    />
+                  </FilterSheet>
                 </div>
               </div>
 
-              <div className="sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
+              {(activeFilters.length > 0 || sortBy !== "newest") && (
+                <div id="active-filters" className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line bg-panel px-3 py-2">
+                  {activeFilters.map((f) => (
+                    <button key={f.key} type="button" onClick={() => { f.clear(); setLimit(25); }}
+                            className="chip-active" title={`Remove filter: ${f.label}`}>
+                      <span className="truncate">{f.label}</span>
+                      <X className="size-3 shrink-0" />
+                    </button>
+                  ))}
+                  {sortBy !== "newest" && (
+                    <button type="button" onClick={() => setSortBy("newest")} className="chip-active" title="Back to newest first">
+                      <span className="truncate">Highest risk first</span>
+                      <X className="size-3 shrink-0" />
+                    </button>
+                  )}
+                  {activeFilters.length > 1 && (
+                    <button type="button" onClick={clearFilters}
+                            className="ml-auto tnum text-[11px] font-semibold uppercase tracking-wider text-fog hover:text-mint">
+                      Clear all
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <div ref={productsScrollRef} className="sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 {productsBusy && (
                   <ul className="flex flex-col gap-2">{[0, 1, 2, 3].map((i) => <RecallSkeleton key={i} delay={i * stagger * 2} />)}</ul>
                 )}
@@ -1009,17 +1568,18 @@ export default function App() {
                   </EmptyState>
                 )}
                 {!productsBusy && recalls.length > 0 && sorted.length === 0 && (
-                  <EmptyState icon={selectedStore ? ShieldCheck : SearchX}
-                              title={selectedStore ? "Nothing names this store" : "No matches"}>
-                    {selectedStore
-                      ? `No active recall names ${selectedStore.name}. Most notices list only a state or "nationwide" and never name a retailer, so this is normal — switch to "in ${loc?.stateAbbr || "your area"}" to see all ${recalls.length} recalls that could reach this shelf.`
-                      : "Nothing matches the current filters — clear the search box, the type filter, or re-enable a source."}
+                  <EmptyState icon={selectedStore && !activeFilters.length ? ShieldCheck : SearchX}
+                              title={selectedStore && !activeFilters.length ? "Nothing names this store" : "No matches"}>
+                    {selectedStore && !activeFilters.length
+                      ? `No active recall names ${selectedStore.name}. Most notices list only a state or "nationwide" and never name a retailer, so this is normal — switch to "in ${loc?.stateAbbr || "your area"}" above to see all ${recalls.length} recalls that could reach this shelf.`
+                      : "Nothing matches the current filters. Remove one of the chips above, or clear them all."}
                   </EmptyState>
                 )}
 
                 <ul id="products-list" className="flex flex-col gap-2">
                   {sorted.slice(0, limit).map((r, i) => {
                     const cat = categoryFor(r);
+                    const why = reasonFor(r);
                     const CatIcon = CATEGORY_ICONS[cat.key] || Package;
                     const nearby = nearbyStoresFor(r);
                     const linked = new Set(nearby.flatMap((si) => stores[si].chainIds));
@@ -1029,6 +1589,10 @@ export default function App() {
                           className="recall-item fade-item elev-1 rounded-xl border border-line bg-panel-2 p-3.5">
                         <div className="flex flex-wrap items-center gap-1.5">
                           <Badge variant={r.severity}>{sevLabel(r)}</Badge>
+                          {/* The hazard, on the card and not only in the filter
+                              menu — it is the thing that decides whether this
+                              notice is about you. */}
+                          <Badge variant="neutral">{why.label}</Badge>
                           <span className="tnum ml-auto text-[11px] text-fog">{fmtDate(r.date)}</span>
                         </div>
                         <div className="mt-2 flex items-start gap-2.5">
@@ -1039,11 +1603,7 @@ export default function App() {
                           <div className="min-w-0 flex-1">
                             <p className="recall-product text-sm font-semibold [overflow-wrap:anywhere]">{truncate(r.product, 150)}</p>
                           </div>
-                          {r.image && (
-                            <img src={r.image} alt="" loading="lazy" referrerPolicy="no-referrer"
-                                 className="size-14 shrink-0 rounded-lg border border-line bg-panel object-cover"
-                                 onError={(e) => { e.currentTarget.style.display = "none"; }} />
-                          )}
+                          <RecallImage recall={r} />
                         </div>
                         {r.reason && <p className="recall-reason mt-2 text-[13px] leading-relaxed text-paper [overflow-wrap:anywhere]">{truncate(r.reason, 160)}</p>}
 
@@ -1051,7 +1611,7 @@ export default function App() {
                           <div className="mt-2 flex flex-wrap items-center gap-1.5">
                             {nearby.map((si) => (
                               <button key={si} type="button" onClick={() => selectStore(si)}
-                                className="inline-flex items-center gap-1 rounded-full border border-mint-line bg-mint-soft px-2 py-0.5 text-[11px] font-semibold text-mint hover:border-mint">
+                                className="inline-flex min-h-8 items-center gap-1 rounded-full border border-mint-line bg-mint-soft px-2.5 py-0.5 text-[11px] font-semibold text-mint hover:border-mint">
                                 <MapPin className="size-3" /> {truncate(stores[si].name, 18)} · {stores[si].distanceMiles.toFixed(1)} mi
                               </button>
                             ))}
@@ -1067,12 +1627,12 @@ export default function App() {
                         )}
 
                         <div className="mt-2.5 flex items-center gap-3">
-                          <a className="inline-flex items-center gap-1 text-[13px] font-semibold text-mint underline-offset-2 hover:underline"
+                          <a className="inline-flex min-h-8 items-center gap-1 text-[13px] font-semibold text-mint underline-offset-2 hover:underline"
                              href={r.url} target="_blank" rel="noopener noreferrer">
                             Official Notice <ExternalLink className="size-3" />
                           </a>
                           <details className="recall-details min-w-0 flex-1">
-                            <summary className="cursor-pointer tnum text-[11px] text-fog hover:text-mint">Details</summary>
+                            <summary className="inline-flex min-h-8 items-center tnum text-[11px] text-fog hover:text-mint">Details</summary>
                             <dl className="mt-1.5 flex flex-col gap-1 text-[11px] text-fog">
                               <div className="flex gap-2">
                                 <dt className="microlabel shrink-0">Source</dt>
@@ -1084,7 +1644,11 @@ export default function App() {
                               </div>
                               <div className="flex gap-2">
                                 <dt className="microlabel shrink-0">Region</dt>
-                                <dd title={r.distribution || undefined}>{regionLabel(r)}</dd>
+                                <dd>
+                                  <Tooltip content={r.distribution || undefined}>
+                                    <span>{regionLabel(r)}</span>
+                                  </Tooltip>
+                                </dd>
                               </div>
                               {r.firm && (
                                 <div className="flex gap-2">
@@ -1107,7 +1671,7 @@ export default function App() {
                 </ul>
 
                 {remaining > 0 && (
-                  <Button id="btn-more" variant="outline" size="sm" className="mx-auto mt-3 flex" onClick={() => setLimit(limit + 25)}>
+                  <Button id="btn-more" variant="outline" size="sm" className="mx-auto mt-3 flex h-10" onClick={() => setLimit(limit + 25)}>
                     <Plus /> Show {Math.min(remaining, 25)} More · {remaining} Left
                   </Button>
                 )}
@@ -1119,22 +1683,152 @@ export default function App() {
       </main>
 
       {/* ================= footer ================= */}
-      <footer className="z-20 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line bg-panel px-4 py-1.5">
+      <footer
+        className="safe-b z-20 hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line bg-panel px-4 pt-1.5 lg:flex"
+        style={{ "--safe-b-pad": "0.375rem" }}
+      >
         <p className="min-w-0 flex-1 truncate text-[11px] text-fog">
           <span className="font-semibold text-paper">Beta — no warranty.</span> Informational only, provided
           &ldquo;as is&rdquo;; verify every notice with the official source before acting on it.
         </p>
         <div className="flex items-center gap-2">
           {sources.map((s) => (
-            <span key={s.name} title={s.ok ? `${s.name}: ${s.count} matching` : `${s.name}: ${s.error || "unavailable"}`}
-                  className={"size-1.5 rounded-full " + (s.ok ? "bg-mint" : "bg-amber")} aria-hidden="true" />
+            <Tooltip key={s.name} content={s.ok ? `${s.name} — ${s.count} matching your area` : `${s.name} — unavailable (${s.error || "error"})`}>
+              <span tabIndex={0} aria-label={s.ok ? `${s.name}: ${s.count} matching` : `${s.name}: unavailable`}
+                    className={"size-1.5 rounded-full " + (s.ok ? "bg-mint" : "bg-amber")} />
+            </Tooltip>
           ))}
           <button onClick={() => setAboutOpen(true)}
-                  className="inline-flex items-center gap-1 tnum text-[11px] uppercase tracking-wider text-fog hover:text-mint">
+                  className="inline-flex min-h-8 items-center gap-1 tnum text-[11px] uppercase tracking-wider text-fog hover:text-mint">
             <Info className="size-3" /> About
           </button>
         </div>
       </footer>
+
+      {/* ================= bottom navigation (phone) =================
+          Three destinations, in the half of the screen a thumb reaches.
+          This replaces a tab strip that sat two-thirds of the way up the
+          panel, under five other bands — and it absorbs the footer, whose
+          only unique content was a disclaimer already written out in full
+          inside About. Two rows of chrome removed, one added, and everything
+          you press most is now where your hand already is. */}
+      {loc && (
+        <nav
+          aria-label="Main"
+          className="z-30 flex shrink-0 items-stretch border-t border-line bg-panel lg:hidden"
+          style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+        >
+          {[
+            { id: "near", label: "Near me", icon: Store, count: stores.length },
+            { id: "recalls", label: "Recalls", icon: ListFilter, count: filtered.length },
+            { id: "scan", label: "Scan", icon: ScanLine },
+          ].map(({ id, label, icon: Icon, count }) => {
+            const on = id !== "scan" && tab === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                aria-current={on ? "page" : undefined}
+                onClick={() => {
+                  if (id === "scan") { setScanOpen(true); return; }
+                  setTab(id);
+                  if (view === "map") setView("split"); // don't land on a hidden list
+                }}
+                className={"flex flex-1 flex-col items-center justify-center gap-0.5 py-2 transition-colors " +
+                  (on ? "text-mint" : "text-fog active:bg-panel-3")}
+              >
+                <span className="relative">
+                  <Icon className="size-5" strokeWidth={on ? 2.4 : 2} />
+                  {/* The dot says the recall list is scoped to a store — the
+                      one thing you cannot see from the other screen. */}
+                  {id === "recalls" && selectedStore && (
+                    <span className="absolute -right-1.5 -top-0.5 size-1.5 rounded-full bg-mint" />
+                  )}
+                </span>
+                <span className="text-[10px] font-semibold tracking-wide">
+                  {label}{count != null && !scanning ? ` ${count}` : ""}
+                </span>
+              </button>
+            );
+          })}
+        </nav>
+      )}
+
+      {/* ---- location, on a phone ---- */}
+      <Sheet open={locOpen} onClose={() => setLocOpen(false)} title="Location">
+        <div className="flex flex-col gap-3 px-4 py-4">
+          {loc && (
+            <p className="flex items-center gap-2 rounded-xl border border-mint-line bg-mint-soft px-3 py-2.5 text-[13px] font-semibold text-mint">
+              <MapPin className="size-4 shrink-0" /> {loc.label}
+            </p>
+          )}
+          <form
+            onSubmit={(e) => { onSearch(e); setLocOpen(false); }}
+            noValidate
+            className="flex items-center gap-2"
+          >
+            <Input
+              value={query}
+              onChange={(e) => { setQuery(e.target.value); if (queryError) setQueryError(""); }}
+              placeholder="ZIP or address"
+              aria-label="ZIP code or address"
+              className="h-11 flex-1"
+            />
+            <Button type="submit" className="h-11 shrink-0">Search</Button>
+          </form>
+          {queryError && <p role="alert" className="text-xs font-semibold text-alert">{queryError}</p>}
+          <Button variant="secondary" className="h-11 w-full"
+                  onClick={() => { setLocOpen(false); useGeolocation(); }}>
+            <Crosshair /> Use my location
+          </Button>
+        </div>
+      </Sheet>
+
+      {/* ---- theme, sources, about ---- */}
+      <Sheet open={moreOpen} onClose={() => setMoreOpen(false)} title="Yanked">
+        <div className="flex flex-col divide-y divide-line">
+          <div className="px-4 py-3">
+            <p className="microlabel">Appearance</p>
+            <div className="mt-2 flex gap-1.5" role="group" aria-label="Theme">
+              {[["light", "Light", Sun], ["dark", "Dark", Moon], ["system", "System", MonitorSmartphone]].map(([k, lbl, Icon]) => (
+                <button key={k} type="button" aria-pressed={theme === k} onClick={() => setTheme(k)}
+                        className={"chip flex-1 " + (theme === k ? "chip-on" : "chip-off")}>
+                  <Icon className="size-3.5" />
+                  <span className="normal-case tracking-normal">{lbl}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="px-4 py-3">
+            <p className="microlabel">Data sources</p>
+            <ul className="mt-2 flex flex-col gap-1.5">
+              {sources.map((src) => (
+                <li key={src.name} className="flex items-center gap-2 text-[13px]">
+                  <span className={"size-1.5 shrink-0 rounded-full " + (src.ok ? "bg-mint" : "bg-amber")} aria-hidden="true" />
+                  <span className="min-w-0 flex-1 truncate">{src.name}</span>
+                  <span className="tnum shrink-0 text-[11px] text-fog">
+                    {src.ok ? `${src.count} matching` : "unavailable"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="px-4 py-3">
+            <Button variant="secondary" className="h-11 w-full"
+                    onClick={() => { setMoreOpen(false); setAboutOpen(true); }}>
+              <Info /> About this data
+            </Button>
+            <p className="mt-3 text-[12px] leading-relaxed text-subtle">
+              <span className="font-semibold text-paper">Beta — no warranty.</span> Informational only,
+              provided &ldquo;as is&rdquo;; verify every notice with the official source before acting on it.
+            </p>
+          </div>
+        </div>
+      </Sheet>
+
+      <ScanSheet open={scanOpen} onClose={() => setScanOpen(false)} recalls={recalls} />
 
       {/* DialKit authoring panel — renders null in production builds. */}
       <DialRoot position="bottom-left" theme="dark" defaultOpen={false} />
@@ -1143,11 +1837,11 @@ export default function App() {
       {aboutOpen && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/70 p-4 sm:items-center"
              onClick={() => setAboutOpen(false)} role="dialog" aria-modal="true" aria-label="About this data">
-          <div className="fade-item max-h-[80vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-line bg-panel p-5 text-sm text-fog"
+          <div className="fade-item max-h-[80dvh] w-full max-w-xl overflow-y-auto overscroll-contain rounded-2xl border border-line bg-panel p-5 text-sm text-fog"
                onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between">
               <p className="microlabel text-paper">About this data</p>
-              <button onClick={() => setAboutOpen(false)} aria-label="Close" className="text-fog hover:text-paper"><X className="size-4" /></button>
+              <button onClick={() => setAboutOpen(false)} aria-label="Close" className="grid size-8 place-items-center rounded-lg text-fog hover:bg-panel-3 hover:text-paper"><X className="size-4" /></button>
             </div>
             <p className="mt-3">
               Yanked aggregates public recall data from{" "}
@@ -1179,6 +1873,12 @@ export default function App() {
               Recalls are usually regional — one supplier ships one lot to one of a chain's distribution centers, so
               the notice covers the states that DC serves. Each recall shows its states; a chain named in a recall
               that never reached your state is a different risk from one that did.
+            </p>
+            <p className="mt-3">
+              <span className="text-paper">Reasons are inferred.</span>{" "}
+              The &ldquo;reason for recall&rdquo; label on each card — and the filter built on it — is read out of the
+              notice's own free text, because no feed publishes a hazard code we can compare across all three
+              agencies. It is a reading aid, not a classification: the notice itself is the authority.
             </p>
             <p className="mt-3">Your location is only used to query the sources above — nothing is stored.</p>
             <div className="mt-4 rounded-xl border border-amber/40 bg-amber-soft p-3.5">
