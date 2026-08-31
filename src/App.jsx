@@ -279,6 +279,7 @@ function SeverityBadge({ recall }) {
       title={`${info.term} — ${info.plain}`}
       body={`${info.body} Assigned by ${info.agency}.`}
       label={`${info.term}: what this means`}
+      variant="badge"
       triggerClassName="text-fog"
       side="bottom"
     >
@@ -303,6 +304,7 @@ function ClosedBadge() {
         "notice closes. If you have it, it is still the recalled product."
       }
       label="Closed: what this means"
+      variant="badge"
       triggerClassName="text-fog"
       side="bottom"
     >
@@ -878,9 +880,17 @@ export default function App() {
    * landing screen's headline and its one button squeezed into the top of the
    * phone with half the viewport blank underneath. */
   const panelShowing = Boolean(loc) && !listHidden;
-  const mapStyle = isWide
-    ? { flexBasis: `${mapWidthPct}%`, flexGrow: 0, flexShrink: 0 }
-    : { flexBasis: panelShowing ? `${mapPct}%` : "100%" };
+  /* Before a location there is no map and no panel, only the landing screen —
+   * so the split must not exist yet. It did: on a wide window this column kept
+   * its ~48% basis with flexGrow 0, which centred the landing copy inside the
+   * left half of an otherwise empty page and read as a layout that had failed
+   * to load. Getting a location is this screen's whole job, so it gets the
+   * whole screen. */
+  const mapStyle = !loc
+    ? { flexBasis: "100%", flexGrow: 1, flexShrink: 1 }
+    : isWide
+      ? { flexBasis: `${mapWidthPct}%`, flexGrow: 0, flexShrink: 0 }
+      : { flexBasis: panelShowing ? `${mapPct}%` : "100%" };
 
   const selectedStore = activeStore >= 0 ? stores[activeStore] : null;
 
@@ -1295,7 +1305,8 @@ export default function App() {
       <main ref={mainRef} className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* -------- map -------- */}
         <div
-          className={"relative min-h-0 shrink-0 lg:min-w-0 lg:flex-1 lg:basis-auto " +
+          className={"relative min-h-0 lg:min-w-0 lg:flex-1 lg:basis-auto " +
+            (loc ? "shrink-0 " : "") +
             (mapHidden || tab === "recalls" ? "hidden lg:block " : "") +
             (selectedStore ? "map-has-selection" : "")}
           style={mapStyle}
@@ -1653,10 +1664,11 @@ export default function App() {
                       data-index={i}
                       aria-current={isActive ? "true" : undefined}
                       onClick={() => selectStore(i)}
-                      className={"store-item lift fade-item elev-1 cursor-pointer rounded-xl border bg-panel-2 py-3 pl-4 pr-3 " +
-                        (isActive ? "active border-mint bg-mint-soft ring-2 ring-mint"
-                          : isSibling ? "same-chain border-mint-line bg-panel-3"
-                            : n > 0 ? "border-mint-line hover:border-mint" : "border-line hover:border-line-strong")}
+                      className={"store-item lift fade-item cursor-pointer rounded-xl border bg-panel-2 py-3 pl-4 pr-3 " +
+                        (isActive ? "active elev-2 border-mint bg-mint-soft ring-2 ring-mint"
+                          : isSibling ? "same-chain elev-1 border-mint-line bg-panel-3"
+                            : "elev-1 " + (activeStore >= 0 ? "receded " : "") +
+                              (n > 0 ? "border-mint-line hover:border-mint" : "border-line hover:border-line-strong"))}
                     >
                       <div className="flex items-baseline gap-2">
                         <span className="store-name truncate text-sm font-semibold">
@@ -1680,6 +1692,7 @@ export default function App() {
                             title="Local — an independent store"
                             body="No recall notice will ever name an independent by name, so it can never show a match here. That is a gap in the data, not a clean bill of health — pick it and switch to “Anywhere in your area” to see what it is actually exposed to."
                             label="Local: what this means"
+                            variant="badge"
                             triggerClassName="text-fog"
                             side="top"
                           >

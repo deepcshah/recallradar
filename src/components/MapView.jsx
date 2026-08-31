@@ -27,9 +27,36 @@ const rasterFallback = (theme) => ({
   layers: [{ id: "carto", type: "raster", source: "carto" }],
 });
 
+/* The pin was a square div with `border-radius: 50% 50% 50% 0` rotated -45deg,
+ * and its number a span rotated +45deg back. Two problems, both visible: a
+ * rotated square's optical centre is not where the label's box thinks it is,
+ * so every number sat a little low and left of the head it was meant to be
+ * inside; and the counter-rotation ran through the browser's text rasteriser,
+ * so the digits came out softer than any other type on screen. Scaling the
+ * selected pin by 1.5 magnified both.
+ *
+ * A path has neither problem. The teardrop is drawn once, the head is a real
+ * circle centred at (12,12), and the label is an unrotated box over exactly
+ * that circle — so it is centred because it is centred, not because two
+ * rotations happened to cancel. */
+const PIN_PATH = "M12 31.2c0-.1 9-10.6 9-19.2a9 9 0 1 0-18 0c0 8.6 9 19.1 9 19.2Z";
+
 function pinEl(label, isYou) {
   const div = document.createElement("div");
-  div.className = "map-pin" + (isYou ? " you" : "");
+  // "You are here" is a location, not a numbered result: a dot, not a pin.
+  if (isYou) {
+    div.className = "map-pin you";
+    return div;
+  }
+  div.className = "map-pin";
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 32");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("class", "map-pin-shape");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", PIN_PATH);
+  svg.appendChild(path);
+  div.appendChild(svg);
   const span = document.createElement("span");
   span.className = "map-pin-label";
   span.textContent = label || "";
@@ -116,7 +143,8 @@ const MapView = forwardRef(function MapView(
     if (youRef.current) youRef.current.remove();
     youRef.current = new maplibregl.Marker({ element: pinEl("", true) })
       .setLngLat([loc.lon, loc.lat])
-      .setPopup(new maplibregl.Popup({ offset: 14 }).setHTML("You are here"))
+      .setPopup(new maplibregl.Popup({ offset: 14, closeButton: false, className: "popup-bare" })
+        .setHTML("You are here"))
       .addTo(map);
     map.jumpTo({ center: [loc.lon, loc.lat], zoom: 11 });
   }, [loc]);

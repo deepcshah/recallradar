@@ -192,8 +192,20 @@ export function Tooltip({ content, children, side = "top", className, disabled }
  * The trigger keeps its own text as its accessible name and adds
  * `aria-expanded` / `aria-controls`, which is the disclosure pattern: the
  * definition is content that appears, not a label that has to be summoned. */
+/* `variant`:
+ *   "term"  (default) — the child is a word in a sentence. The trigger wraps
+ *                       it, dotted-underlines it, and sets the ⓘ after it.
+ *   "badge"           — the child is a pill. The trigger *becomes* the pill
+ *                       and the ⓘ goes inside it.
+ *
+ * The second exists because the first was being used for both. Wrapping a
+ * rounded badge put the mark after the badge's right edge, so "Not classified
+ * ⓘ Injury hazard" rendered as a floating glyph between two pills, attached
+ * to neither and looking like a third, broken one. A badge is a box; a
+ * disclosure about it belongs inside the box. */
 export function InfoTip({
   title, body, children, side = "top", className, triggerClassName, label,
+  variant = "term",
 }) {
   const [open, setOpen] = React.useState(false);
   const pinned = React.useRef(false);
@@ -249,10 +261,21 @@ export function InfoTip({
         }}
         onFocus={(e) => { if (e.target.matches?.(":focus-visible")) setOpen(true); }}
         onBlur={() => { if (!pinned.current) setOpen(false); }}
-        className={cn("infotip", open && "infotip-open", triggerClassName)}
+        className={cn(variant === "badge" ? "infotip-badge" : "infotip",
+                      open && (variant === "badge" ? "infotip-badge-open" : "infotip-open"),
+                      triggerClassName)}
       >
-        {children}
-        <Info className="infotip-mark" aria-hidden="true" />
+        {variant === "badge" && React.isValidElement(children)
+          /* Cloned rather than wrapped, so the mark lands inside the badge's
+           * own border and inherits its colour. Wrapping could only ever put
+           * it outside, which is the bug this variant exists to fix. */
+          ? React.cloneElement(children, undefined,
+              children.props.children,
+              <Info key="infotip-mark" className="infotip-mark" aria-hidden="true" />)
+          : (<>
+              {children}
+              <Info className="infotip-mark" aria-hidden="true" />
+            </>)}
       </button>
 
       {open && createPortal(
