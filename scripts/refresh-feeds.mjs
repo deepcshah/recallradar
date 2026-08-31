@@ -75,11 +75,27 @@ async function withRetries(label, url, load = () => fetchJson(url)) {
 /* Never overwrite a good snapshot with an empty one. An upstream that answers
  * 200 with zero notices is far more likely to be having a bad day than it is
  * to be reporting that America has no active meat recalls. */
-async function write(name, notices) {
+async function write(name, notices, rawCount) {
   if (!Array.isArray(notices) || !notices.length) {
     throw new Error("upstream returned no notices — keeping the previous snapshot");
   }
   const path = resolve(OUT_DIR, `${name}.json`);
+
+  /* The first real run produced ONE active FSIS notice out of the whole feed,
+   * which is either correct (FSIS marks very few notices active at a time) or
+   * a slimming filter that has quietly stopped matching — and from the output
+   * alone the two are indistinguishable. So both numbers are recorded, and the
+   * ratio is printed on every run: a raw count in the hundreds collapsing to a
+   * single kept notice is a thing you want to notice from the log, not from a
+   * user asking where the meat recalls went. */
+  if (rawCount != null) {
+    const pct = rawCount ? Math.round((notices.length / rawCount) * 100) : 0;
+    console.log(`  ${name}: kept ${notices.length} of ${rawCount} raw notices (${pct}%)`);
+    if (rawCount > 20 && notices.length <= 2) {
+      console.log(`  ${name}: WARNING — the filter kept almost nothing. Check whether the ` +
+                  `upstream field this slims on still has the shape it used to.`);
+    }
+  }
 
   /* Only rewrite when the notices actually changed. `fetchedAt` moves on every
    * run, so stamping it unconditionally would commit a new copy of an
@@ -95,7 +111,12 @@ async function write(name, notices) {
 
   await mkdir(OUT_DIR, { recursive: true });
   await writeFile(path,
-    JSON.stringify({ fetchedAt: new Date().toISOString(), count: notices.length, notices }, null, 0) + "\n");
+    JSON.stringify({
+      fetchedAt: new Date().toISOString(),
+      count: notices.length,
+      rawCount: rawCount ?? null,   // so the ratio is auditable after the fact
+      notices,
+    }, null, 0) + "\n");
   console.log(`  ${name}: wrote ${notices.length} notices`);
   return { name, ok: true, count: notices.length, changed: true };
 }
@@ -107,21 +128,24 @@ async function main() {
    * request path are measuring the same thing rather than diverging quietly. */
   const jobs = [
     ["fsis", async () => {
-      const { data, headers } = await withRetries("fsis", FSIS_ENDPOINTS[0], async () => {
-        const got = await fetchFirstOk(FSIS_ENDPOINTS, FSIS_HEADER_SETS, TIMEOUT_MS, TIMEOUT_MS * 3);
-        return got;
-      });
+      const { data, headers } = await withRetries("fsis", FSIS_ENDPOINTS[0], () =>
+        fetchFirstOk(FSIS_ENDPOINTS, FSIS_HEADER_SETS, TIMEOUT_MS, TIMEOUT_MS * 3));
       console.log(`  fsis: answered the "${headers}" rung`);
-      return slimFsis(data);
+      const raw = Array.isArray(data) ? data : (data && data.results) || [];
+      return { notices: slimFsis(data), rawCount: raw.length };
     }],
-    ["cpsc", async () => slimCpsc(await withRetries("cpsc", cpscUrl(CPSC_LOOKBACK_DAYS)))],
+    ["cpsc", async () => {
+      const raw = await withRetries("cpsc", cpscUrl(CPSC_LOOKBACK_DAYS));
+      return { notices: slimCpsc(raw), rawCount: Array.isArray(raw) ? raw.length : null };
+    }],
   ];
 
   const results = [];
   for (const [name, load] of jobs) {
     console.log(`${name}:`);
     try {
-      results.push(await write(name, await load()));
+      const { notices, rawCount } = await load();
+      results.push(await write(name, notices, rawCount));
     } catch (err) {
       console.log(`  ${name}: FAILED — ${err.message}`);
       results.push({ name, ok: false, error: err.message });
