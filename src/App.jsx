@@ -17,7 +17,7 @@ import ScanSheet from "@/components/ScanSheet";
 import { Sheet } from "@/components/ui/sheet";
 import { recallUpcs, lookupProduct } from "@/lib/upc";
 import { browserPosition, reverseGeocode, geocodeInput } from "@/lib/geo";
-import { fetchAll, retryBlockedFsis, sortRecalls } from "@/lib/sources";
+import { fetchAll, recoverBlockedSources, sortRecalls } from "@/lib/sources";
 import { findStores } from "@/lib/stores";
 import { byId, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
 import { categoryFor } from "@/lib/category";
@@ -600,13 +600,20 @@ export default function App() {
        * fold the result in when it lands. Deliberately not awaited: the stores
        * lookup is the slow part of the page and must not wait on a source that
        * may well be blocked here too. */
-      retryBlockedFsis(locArg, srcs).then((late) => {
+      // Deliberately not awaited: the store lookup is the slow part of this
+      // page and must not wait on sources that may be unreachable from here
+      // too. Whatever comes back is folded in and re-sorted.
+      recoverBlockedSources(locArg, srcs).then((late) => {
         if (!late) return;
         setRecalls((prev) => sortRecalls([...prev, ...late.recalls]));
         setSources(late.sources);
         // Source chips are seeded from the first payload, so a source that
         // arrives late has to opt itself in or its notices stay filtered out.
-        setActiveSources((prev) => new Set(prev).add("USDA FSIS"));
+        setActiveSources((prev) => {
+          const next = new Set(prev);
+          for (const r of late.recalls) next.add(r.source);
+          return next;
+        });
       });
     } finally {
       setProductsBusy(false);
@@ -2149,6 +2156,12 @@ export default function App() {
                   <p className={"text-xs leading-relaxed " + (diag.error ? "text-alert" : "text-paper")}>
                     {diag.error || diag.verdict}
                   </p>
+                  {/* The header experiment's own conclusion. It is the answer to
+                      "why is USDA down", and it is not something anyone should
+                      have to derive from four status codes. */}
+                  {diag.fsisVerdict && (
+                    <p className="mt-1.5 text-[11px] leading-relaxed text-fog">{diag.fsisVerdict}</p>
+                  )}
                   {diag.rows && (
                     <ul className="mt-1.5 flex flex-col gap-1">
                       {diag.rows.map((row, i) => (

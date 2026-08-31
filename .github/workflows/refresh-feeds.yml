@@ -1,0 +1,55 @@
+# Fetch the government recall feeds from a GitHub runner and commit the result.
+#
+# Every other path this app has to USDA leaves from a Vercel serverless
+# function, so they all fail together for whatever reason that one caller is
+# being refused. This job runs somewhere else entirely — different network,
+# different IP reputation — and commits what it gets, so the deployment ships
+# with a copy of the data as a static asset. It is the tier that keeps working
+# when USDA will not talk to production at all.
+#
+# Four times a day is ample: FSIS issues a handful of notices per day, and the
+# app labels the snapshot with its own date rather than pretending it is live.
+name: Refresh recall feeds
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"   # 00:17, 06:17, 12:17, 18:17 UTC — off the hour, where every other cron piles up
+  workflow_dispatch:          # and on demand, which is how you test it
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-feeds
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # No install step: the script imports two dependency-free modules from
+      # src/lib and uses nothing but the Node standard library.
+      - name: Fetch feeds
+        run: node scripts/refresh-feeds.mjs
+
+      - name: Commit any changes
+        run: |
+          if [ -z "$(git status --porcelain public/feeds)" ]; then
+            echo "No feed changes to commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/feeds
+          git commit -m "Refresh recall feed snapshots
+
+          Fetched from a GitHub runner, which reaches USDA when production
+          cannot. Committed so the deployment carries the data as a static
+          asset rather than depending on a request-time fetch."
+          git push

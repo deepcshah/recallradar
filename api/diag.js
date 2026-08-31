@@ -11,7 +11,7 @@
  */
 import { byId } from "../src/lib/retailers.js";
 import { findChainLocations, searchUrl } from "../src/lib/mapbox-server.js";
-import { FEED_HEADERS, FSIS_ENDPOINTS, FSIS_HEADER_SETS, cpscUrl } from "../src/lib/feeds.js";
+import { FEED_HEADERS, FSIS_ENDPOINTS, DIAG_HEADER_SETS, cpscUrl } from "../src/lib/feeds.js";
 import { fdaSearchQuery, CPSC_LOOKBACK_DAYS } from "../src/lib/sources.js";
 import { FEED_BLOBS, readFeedCache, staleness } from "../src/lib/feed-cache.js";
 import { blobConfigured, blobTokenVar } from "../src/lib/blob.js";
@@ -60,13 +60,23 @@ async function probeFeeds() {
   }));
 }
 
-/* Every FSIS endpoint x header combination, so a persistent 403 tells us
- * which variant (if any) the WAF will accept. Run together: walking nine
- * combinations one at a time timed the whole function out, which is why this
- * endpoint appeared to be broken. */
+/* Every FSIS endpoint x header variant, in parallel, so one request settles
+ * the question the repository has answered two contradictory ways: is the 403
+ * about the headers, or about the caller?
+ *
+ * Read it like an experiment, because that is what it is. If "browser-ua" or
+ * "browser-full" comes back 200 and "honest" comes back 403, the header theory
+ * holds and the request path is sending the wrong thing. If all four fail
+ * identically — including "no-ua", the control — headers are irrelevant and
+ * the decision is being made about the IP or the TLS handshake, which no
+ * header can change. Anything else (mixed, or intermittent across repeats)
+ * means it is rate limiting or load, not a policy about us at all.
+ *
+ * Run together deliberately: walking the combinations one at a time is what
+ * timed this endpoint out and made it look broken. */
 async function probeFsisMatrix() {
   const combos = FSIS_ENDPOINTS.flatMap((url) =>
-    FSIS_HEADER_SETS.map(([label, headers]) => ({ url, label, headers })));
+    DIAG_HEADER_SETS.map(([label, headers]) => ({ url, label, headers })));
 
   return Promise.all(combos.map(async ({ url, label, headers }) => {
     const ctrl = new AbortController();
@@ -121,6 +131,46 @@ export default async function handler(req, res) {
     const covered = down.filter((f) =>
       (f.name === "USDA FSIS" && fsisCache) || (f.name === "CPSC" && cpscCache));
 
+    /* The matrix's own conclusion, stated rather than left to be inferred from
+     * four rows. This is the whole point of restoring it: the question "is it
+     * the headers or the caller" has a different answer for each shape of
+     * result, and reading it wrong is exactly how this repo ended up with two
+     * commits asserting opposite causes. */
+    const fsisVerdict = (() => {
+      const rows = matrix.filter((r) => r.status != null || r.error);
+      if (!rows.length) return null;
+      const ok = rows.filter((r) => r.ok);
+      const control = rows.find((r) => r.headers === "no-ua");
+      const honest = rows.find((r) => r.headers === "honest");
+      const spoofed = rows.filter((r) => r.headers.startsWith("browser"));
+
+      if (ok.length === rows.length) {
+        return "FSIS answered every header variant. Nothing is blocking us right now — " +
+          "if the app still shows it unavailable, the failure is intermittent, not a policy.";
+      }
+      if (!ok.length) {
+        const codes = [...new Set(rows.map((r) => r.status ?? r.error))];
+        return `FSIS refused all ${rows.length} header variants` +
+          (codes.length === 1 ? ` with the same result (${codes[0]})` : ` (${codes.join(", ")})`) +
+          ". The control with no User-Agent was treated the same as a full Chrome header set, " +
+          "so this is not about the headers — it is a decision about the caller (IP or TLS " +
+          "fingerprint), and no header change can fix it. Use the committed snapshot.";
+      }
+      if (honest && !honest.ok && spoofed.some((r) => r.ok)) {
+        return "FSIS accepted a browser User-Agent and refused our honest one. The header " +
+          "theory holds: the request path is sending the variant USDA rejects. Whether to " +
+          "present a browser handshake to a government API is your call — nothing here " +
+          "changed the request path on its own.";
+      }
+      if (control && control.ok && honest && !honest.ok) {
+        return "FSIS accepted a bare request and refused our identified one, which means our " +
+          "User-Agent string itself is being matched. Changing or dropping it should fix this.";
+      }
+      return `Mixed result: ${ok.map((r) => r.headers).join(", ")} succeeded and the rest did ` +
+        "not. That pattern is more consistent with rate limiting or load than with a policy " +
+        "about this client. Re-run the probe a few times before concluding anything.";
+    })();
+
     let verdict;
     if (!down.length) verdict = "Every feed answered live. Nothing is being served from cache.";
     else if (!blobConfigured()) {
@@ -142,6 +192,7 @@ export default async function handler(req, res) {
       blobConfigured: blobConfigured(),
       blobTokenVar: blobTokenVar(),
       verdict,
+      fsisVerdict,
       rows,
       fsisMatrix: matrix,
     });

@@ -314,28 +314,105 @@ async function fetchFsisDirect(loc) {
   }
 }
 
-/** USDA blocks the datacenter the API runs in, so /api/recalls usually comes
- *  back with FSIS unavailable while FDA and CPSC succeed. The browser is a
- *  client USDA has no reason to block, so it is worth one attempt from here
- *  before we tell the user the source is down. Resolves to null when there is
- *  nothing to add, so the caller can skip the state update entirely. */
-export async function retryBlockedFsis(loc, sources) {
-  const i = (sources || []).findIndex((s) => s.name.startsWith("USDA FSIS"));
-  if (i === -1 || sources[i].ok) return null;
-  let recalls;
-  try {
-    recalls = await fsisFromBrowser(loc);
-  } catch (_) {
-    return null; // blocked here too, or CORS — leave the source marked unavailable
-  }
-  const next = sources.slice();
-  next[i] = {
-    name: sources[i].name,
-    ok: true,
-    count: recalls.length,
-    note: "USDA blocks our server, so your browser fetched this directly.",
-  };
-  return { recalls, sources: next };
+/* ─────────────────────────────────────────────────────────────────────────
+ * THE COMMITTED SNAPSHOT — the tier that cannot be blocked
+ *
+ * `public/feeds/*.json` is written by a GitHub Action (see
+ * scripts/refresh-feeds.mjs) and committed to the repository, so it ships with
+ * the deployment as a static asset served off the CDN.
+ *
+ * That is what makes it different in kind from every other fallback here.
+ * The live fetch, the retry loop and the Blob cache all ultimately depend on
+ * USDA answering *this deployment* at some point; if it never does, they are
+ * all empty together. The snapshot was fetched from somewhere else entirely,
+ * by a different machine on a different network, before the user ever arrived.
+ * Nothing USDA decides about this app's egress can take it away.
+ *
+ * The cost is honesty about age, which is why it carries `fetchedAt` and the
+ * UI prints it. A three-hour-old list of meat recalls is worth enormously more
+ * than an empty panel labelled "unavailable"; a three-hour-old list presented
+ * as live is worth less than nothing.
+ * ───────────────────────────────────────────────────────────────────────── */
+async function readSnapshot(name) {
+  const snap = await cachedFetchJSON(`/feeds/${name}.json`, { timeoutMs: 8000 });
+  if (!snap || !Array.isArray(snap.notices) || !snap.notices.length) return null;
+  return snap;
+}
+
+function snapshotAge(fetchedAt) {
+  const t = new Date(fetchedAt).getTime();
+  if (!Number.isFinite(t)) return "at an unknown time";
+  const hours = Math.floor((Date.now() - t) / 3600000);
+  if (hours < 1) return "less than an hour ago";
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+/** Recover the sources /api/recalls could not reach, from wherever we still
+ *  can. Two ladders, tried in order of freshness:
+ *
+ *    USDA FSIS — the browser first, because it is a different client on a
+ *                different network and may simply not be blocked; then the
+ *                committed snapshot.
+ *    CPSC      — the snapshot only. saferproducts.gov is slow rather than
+ *                hostile, and a browser that waits 30s for it has already
+ *                lost; the snapshot is instant and a few hours old at worst.
+ *
+ *  Resolves to null when there is nothing to add, so the caller can skip the
+ *  state update entirely. */
+export async function recoverBlockedSources(loc, sources) {
+  const list = sources || [];
+  const targets = [
+    {
+      match: (n) => n.startsWith("USDA FSIS"),
+      recover: async () => {
+        try {
+          return {
+            recalls: await fsisFromBrowser(loc),
+            note: "USDA would not answer our server, so your browser fetched this directly.",
+          };
+        } catch (_) { /* blocked here too, or CORS — fall through to the snapshot */ }
+        const snap = await readSnapshot("fsis");
+        if (!snap) return null;
+        return {
+          recalls: normalizeFsis(snap.notices, loc),
+          note: `USDA would not answer our server or your browser — showing the snapshot saved ${snapshotAge(snap.fetchedAt)}.`,
+        };
+      },
+    },
+    {
+      match: (n) => n.startsWith("CPSC"),
+      recover: async () => {
+        const snap = await readSnapshot("cpsc");
+        if (!snap) return null;
+        return {
+          recalls: normalizeCpsc(snap.notices),
+          note: `CPSC did not answer in time — showing the snapshot saved ${snapshotAge(snap.fetchedAt)}.`,
+        };
+      },
+    },
+  ];
+
+  const jobs = targets
+    .map((t) => ({ t, i: list.findIndex((s) => t.match(s.name)) }))
+    .filter(({ i }) => i !== -1 && !list[i].ok);
+  if (!jobs.length) return null;
+
+  const settled = await Promise.all(jobs.map(({ t }) => t.recover().catch(() => null)));
+
+  const next = list.slice();
+  const recalls = [];
+  const names = [];
+  settled.forEach((got, k) => {
+    if (!got || !got.recalls.length) return;
+    const { i } = jobs[k];
+    next[i] = { name: list[i].name, ok: true, count: got.recalls.length, note: got.note };
+    recalls.push(...got.recalls);
+    names.push(list[i].name.replace(/\s*\([^)]*\)\s*$/, ""));
+  });
+
+  return recalls.length ? { recalls, sources: next, names } : null;
 }
 
 async function fetchCpscDirect() {

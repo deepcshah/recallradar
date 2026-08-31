@@ -1,10 +1,9 @@
 /* The government feed endpoints, and how to ask them for data.
  *
- * We identify the app honestly. Impersonating Chrome was tried and does not
- * work: FSIS's WAF decides on IP reputation and TLS fingerprint, and Node's
- * handshake never matches the claimed browser, so the spoof only added a
- * mismatch to score against. Volume is trivial either way — one cached call
- * per state per 15 minutes.
+ * The request path identifies the app honestly. That is a deliberate default
+ * and not a finding: see DIAG_HEADER_SETS below for what is actually known
+ * about USDA's 403, which is less than earlier versions of this file claimed.
+ * Volume is trivial either way — one cached call per state per 15 minutes.
  */
 export const FEED_HEADERS = {
   "User-Agent": "Yanked/1.0 (public recall aggregator; +https://yanked.app)",
@@ -12,28 +11,85 @@ export const FEED_HEADERS = {
   "Accept-Language": "en-US,en;q=0.9",
 };
 
-/* USDA's documented Recall API. This is the right URL — it is the one on
- * fsis.usda.gov/science-data/developer-resources/recall-api, and the reason it
- * so often fails is not the path but the caller: USDA sits behind a WAF that
- * blocks datacenter egress and fingerprints the TLS handshake rather than the
- * User-Agent, so a serverless function gets a 403 where a laptop gets JSON.
- * Node's handshake never looks like Chrome, so claiming to be Chrome is both a
- * lie and a mismatch the WAF scores against us. The old ladder walked three
- * endpoints x three header sets sequentially to earn nine identical 403s.
+/* USDA's documented Recall API.
+ *
+ * The URL is right — it is the one published at
+ * fsis.usda.gov/science-data/developer-resources/recall-api, and it takes no
+ * API key: it is served off the agency's own web host, not from behind
+ * api.data.gov, so there is no credential a 403 could be asking for.
  * (origin-www is dropped: it resolved to nothing and only ever timed out.)
  *
- * What actually helps is not a different URL, it is not being on the critical
- * path: a cron warms a Blob copy (api/refresh-feeds.js), the request path
- * falls back to it, and the browser retries directly from the user's own
- * network, where the block may not apply — see fsisFromBrowser in sources.js.
+ * WHY it 403s is genuinely not established — see DIAG_HEADER_SETS. What is
+ * established is that the app should not depend on the answer: the data is
+ * fetched from three places that fail independently. A cron warms a Blob copy
+ * off the request path (api/refresh-feeds.js); the request path falls back to
+ * it; the browser retries from the user's own network, where the block may not
+ * apply (fsisFromBrowser in sources.js); and underneath all of it sits a
+ * snapshot committed by a GitHub Action from a completely different network,
+ * which is the only tier that cannot be blocked by anything USDA decides about
+ * this deployment.
  */
 export const FSIS_ENDPOINTS = [
   "https://www.fsis.usda.gov/fsis/api/recall/v/1?format=json",
 ];
 
-/** Still a list so fetchFirstOk's shape is unchanged and a future variant is a
- *  one-line addition; there is only one worth sending today. */
-export const FSIS_HEADER_SETS = [["plain", FEED_HEADERS]];
+/** What the request path actually sends. One honest identification, and
+ *  nothing else — see DIAG_HEADER_SETS below for why this is still a list. */
+export const FSIS_HEADER_SETS = [["honest", FEED_HEADERS]];
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * THE VARIANTS, FOR DIAGNOSIS ONLY
+ *
+ * This repository has believed two contradictory things about the 403, and
+ * changed the code for each:
+ *
+ *   852c7d0  "FSIS sits behind a WAF that rejects clients without a browser
+ *             user agent" — added browser-like headers, and the commit title
+ *             says it fixed the 403.
+ *   4c0676c  "That is an IP and TLS fingerprint decision, not a header one" —
+ *             removed those headers and deleted the header matrix as useless.
+ *
+ * Neither commit recorded a measurement, and no public bug report anywhere
+ * corroborates either story. So the second theory currently governs the code,
+ * having overturned a change that claimed to fix the exact same symptom — and
+ * if the first theory was right, the second one re-broke it.
+ *
+ * Deleting the matrix removed the only thing that could settle it. It was the
+ * right call for the request path, where walking nine combinations in sequence
+ * spent most of the function's budget to collect nine identical failures. It
+ * was the wrong call for the diagnostic, where the combinations run in
+ * parallel, latency is the point, and one request answers the question.
+ *
+ * So it lives here, reachable only from /api/diag, and the request path still
+ * sends exactly one honest header set. Nothing here is adopted automatically:
+ * if the browser variant turns out to be the one that works, whether to
+ * present a Chrome handshake to a government API is a decision for a person,
+ * not a fallback for a retry loop to take on its own.
+ * ───────────────────────────────────────────────────────────────────────── */
+const CHROME_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+
+export const DIAG_HEADER_SETS = [
+  // What we send today.
+  ["honest", FEED_HEADERS],
+  // 852c7d0's claim: a browser User-Agent is what the WAF is checking.
+  ["browser-ua", { ...FEED_HEADERS, "User-Agent": CHROME_UA }],
+  // The same claim, taken further: everything a browser sends, not just the UA.
+  ["browser-full", {
+    "User-Agent": CHROME_UA,
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
+  }],
+  // The control. If a bare request with no identification at all is treated
+  // the same as the other three, the header theory is dead and the decision is
+  // being made about the caller, not the call.
+  ["no-ua", { Accept: "*/*" }],
+];
 
 /** CPSC's documented Recall API, windowed to the recent past.
  *  saferproducts.gov returns the whole window as one uncompressed document,
