@@ -665,39 +665,6 @@ button:disabled,
   }
 }
 
-/* The high-risk filter.
- *
- * Amber rather than the accent: this is the one facet that is about danger
- * rather than about what you pressed, and green is reserved for the latter.
- * It keeps the muted, count-first shape it had as a statistic so the row
- * does not gain weight by gaining a function. */
-.risk-chip {
-  @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-amber/40
-         bg-amber-soft px-2.5 py-1 text-[11px] font-semibold text-amber;
-  min-height: 30px;
-  transition: box-shadow 0.1s ease, background-color 0.16s ease, border-color 0.16s ease,
-    color 0.16s ease, transform 0.1s ease;
-  box-shadow: var(--rr-bevel), var(--rr-shadow-1);
-}
-.risk-chip:active {
-  transform: translateY(1px);
-  box-shadow: var(--rr-press);
-}
-/* Leading the quick-filter row, it has to be a snap point like the chips
- * beside it. Without one, the row's `scroll-snap-type` found the first
- * `.catchip` instead and snapped *that* to the start — scrolling this chip
- * 120px off the left edge on first paint, present in the DOM and invisible
- * on screen. */
-.catrow .risk-chip {
-  scroll-snap-align: start;
-  flex-shrink: 0;
-}
-.risk-chip-on {
-  @apply border-amber bg-amber text-paper;
-  color: var(--rr-surface);
-  box-shadow: var(--rr-bevel-strong), var(--rr-shadow-1);
-}
-
 /* ─────────────────────── category row (phone) ─────────────────────────── */
 
 /* A scrolling row of product types, above the recall list.
@@ -754,6 +721,35 @@ button:disabled,
 }
 .catchip-count {
   @apply text-[11px] font-bold opacity-60;
+}
+
+/* The high-risk filter, as a variant of the chip beside it rather than a
+ * shape of its own.
+ *
+ * It used to be its own component — shorter, no icon disc, count on the left
+ * — which made a row of equal facets read as a control followed by a list.
+ * It is a `.catchip` now and inherits the geometry; only the colour differs,
+ * because it is the one filter about danger rather than about kind. Amber,
+ * not the accent: green means "you pressed this" everywhere else here.
+ *
+ * Placed after `.catchip` deliberately. Both are single classes, so the
+ * later rule wins — defined above it, every colour here lost to the base
+ * chip and the control rendered grey. */
+.catchip-risk {
+  @apply border-amber/45 bg-amber-soft text-amber;
+}
+.catchip-risk .catchip-icon {
+  background: color-mix(in oklab, var(--rr-amber) 16%, transparent);
+  color: var(--rr-amber);
+}
+.catchip-risk-on {
+  @apply border-amber bg-amber;
+  color: var(--rr-surface);
+  box-shadow: var(--rr-bevel-strong), var(--rr-shadow-1);
+}
+.catchip-risk-on .catchip-icon {
+  background: color-mix(in oklab, var(--rr-surface) 24%, transparent);
+  color: var(--rr-surface);
 }
 
 /* ─────────────────────── controls floating on the map ─────────────────── */

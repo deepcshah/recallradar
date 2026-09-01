@@ -1998,25 +1998,6 @@ export default function App() {
                   of them there would just be two controls for one state. */}
               {categoryOptions.length > 1 && (
                 <div className="catrow lg:hidden" role="group" aria-label="Quick filters">
-                  {/* Severity leads the row it belongs to. It was stranded in
-                      the search row, a facet sitting among a count, a text box
-                      and a sheet button — the one place on screen where its
-                      neighbours were not other facets. Here it is what it is:
-                      the first of the one-tap filters, kept visually apart
-                      because it is the only one about danger. */}
-                  {(highCount > 0 || highOnly) && (
-                    <button
-                      id="stat-high"
-                      type="button"
-                      aria-pressed={highOnly}
-                      onClick={() => { setHighOnly(!highOnly); setLimit(25); }}
-                      className={"risk-chip shrink-0 " + (highOnly ? "risk-chip-on" : "")}
-                    >
-                      <AlertCircle className="size-3.5 shrink-0" />
-                      <span>high-risk</span>
-                      <span className="catchip-count tnum">{highCount}</span>
-                    </button>
-                  )}
                   <button
                     type="button"
                     onClick={() => { setCategoryKeys([]); setLimit(25); }}
@@ -2034,6 +2015,25 @@ export default function App() {
                       {categoryOptions.reduce((a, c) => a + c.count, 0)}
                     </span>
                   </button>
+                  {/* Severity sits after All, and is built as a `catchip` like
+                      everything else in the row — same height, same icon disc,
+                      same count on the right. It was a different shape from
+                      its neighbours, which made a row of equals look like a
+                      control and then a list. Only the colour differs, because
+                      it is the one filter about danger rather than about kind. */}
+                  {(highCount > 0 || highOnly) && (
+                    <button
+                      id="stat-high"
+                      type="button"
+                      aria-pressed={highOnly}
+                      onClick={() => { setHighOnly(!highOnly); setLimit(25); }}
+                      className={"catchip catchip-risk " + (highOnly ? "catchip-risk-on" : "")}
+                    >
+                      <span className="catchip-icon"><AlertCircle className="size-4" /></span>
+                      <span>high-risk</span>
+                      <span className="catchip-count tnum">{highCount}</span>
+                    </button>
+                  )}
                   {categoryOptions.map((c) => {
                     const CatIcon = CATEGORY_ICONS[c.value] || Package;
                     const on = categoryKeys.includes(c.value);
