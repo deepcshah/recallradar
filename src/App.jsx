@@ -1062,6 +1062,19 @@ export default function App() {
     return out;
   }, [filterText, highOnly, categoryKeys, categoryOptions, reasonKeys, reasonOptions, sourceNames, activeSources]);
 
+  /* What the Filters button's badge counts.
+   *
+   * Not every active filter — severity, product type and the search text are
+   * all visible as their own controls now, and a badge that counted them
+   * would be a second, vaguer report of something already on screen. It
+   * counts what is only inside the sheet: reason, source, and a non-default
+   * sort. That is the question the badge is actually answering — is anything
+   * narrowing this list that I cannot see? */
+  const hiddenFilterCount = useMemo(() => {
+    const hiddenSources = sourceNames.filter((n) => !activeSources.has(n)).length;
+    return reasonKeys.length + hiddenSources + (sortBy !== "newest" ? 1 : 0);
+  }, [reasonKeys, sourceNames, activeSources, sortBy]);
+
   const clearFilters = useCallback(() => {
     setFilterText("");
     setHighOnly(false);
@@ -1223,6 +1236,91 @@ export default function App() {
   const recallsHere = isWide
     ? (sideBySide ? "Showing its recalls →" : "Showing its recalls below ↓")
     : "Showing its recalls — Recalls tab";
+
+  /* The search row, defined once and placed twice.
+   *
+   * On a phone it leads the panel, above the scope chips: search is the
+   * most-reached control in here and it was the fourth band down, under
+   * two rows of chips. On a wide screen it stays with the recall list it
+   * filters — up there it would sit above the store list, separated from
+   * its own results by an entire second list. */
+  const filterBar = (
+  <div className="flex shrink-0 items-center gap-2 border-b border-line bg-panel px-3 py-2">
+    {/* The count only when it is news.
+        The active scope chip a row above already reads "At a
+        store near you 47", so repeating 47 here is the same
+        number twice on one screen. It stops being the same
+        number the moment a search or a facet narrows the list —
+        and that is exactly when it is worth saying. */}
+    <span className="microlabel hidden shrink-0 lg:inline">Recalls</span>
+    {(productsBusy || sorted.length !== scopeShown) && (
+      <span id="stat-recalls" className="tnum shrink-0 text-xs font-semibold text-mint">
+        {productsBusy ? "…" : sorted.length}
+      </span>
+    )}
+    <div className="relative min-w-0 flex-1">
+      <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-fog" />
+      <Input
+        id="filter-text"
+        type="search"
+        value={filterText}
+        onChange={(e) => { setFilterText(e.target.value); setLimit(25); }}
+        placeholder="Search recalls…"
+        aria-label="Search recalled products"
+        className="h-9 pl-9 text-[13px]"
+      />
+    </div>
+    <div className="relative shrink-0">
+      <FilterButton
+        id="btn-filters"
+        open={filtersOpen}
+        count={hiddenFilterCount}
+        onClick={() => setFiltersOpen((v) => !v)}
+      />
+      <FilterSheet
+        open={filtersOpen}
+        onClose={() => setFiltersOpen(false)}
+        anchored={isWide}
+        count={activeFilters.length}
+        onClear={clearFilters}
+        resultLabel={`${plural(sorted.length, "recall", "recalls")}`}
+      >
+        <FilterGroup
+          label="Reason for recall"
+          options={reasonOptions}
+          selected={reasonKeys}
+          onChange={(next) => { setReasonKeys(next); setLimit(25); }}
+          allLabel="Any reason"
+        />
+        <FilterGroup
+          label="Product type"
+          options={categoryOptions}
+          selected={categoryKeys}
+          onChange={(next) => { setCategoryKeys(next); setLimit(25); }}
+          allLabel="All types"
+        />
+        <FilterGroup
+          label="Source"
+          options={sourceOptions}
+          /* Empty means "everything", so a full set reads as empty
+           * — otherwise the All chip could never be the on state. */
+          selected={sourceNames.every((n) => activeSources.has(n)) ? [] : sourceNames.filter((n) => activeSources.has(n))}
+          onChange={(next) => {
+            setActiveSources(new Set(next.length ? next : sourceNames));
+            setLimit(25);
+          }}
+          allLabel="All sources"
+        />
+        <FilterChoice
+          label="Sort by"
+          options={SORTS}
+          value={sortBy}
+          onChange={(v) => { setSortBy(v); setLimit(25); }}
+        />
+      </FilterSheet>
+    </div>
+  </div>
+  );
 
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden bg-ink" style={motionStyle}>
@@ -1587,6 +1685,8 @@ export default function App() {
                 with nothing on either saying what was being counted. Naming
                 the unit once is what separates the two rows into a scope
                 control and a set of destinations. */}
+            {!isWide && filterBar}
+
             <div className="scope-row flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-line bg-panel px-3 py-2">
               {/* "Recalls" was a label over a control that scopes recalls,
                   sitting above a list of *stores* — so on the near-me tab it
@@ -1873,124 +1973,18 @@ export default function App() {
 
             {/* ---- products ---- */}
             <section className={showProducts + "min-h-0 flex-1 flex-col overflow-hidden " + (isWide ? "" : "border-t border-line")}>
-              {/* ---- the filter bar ----
-                  Search and one Filters control, in the panel they filter. */}
-              <div className="flex shrink-0 items-center gap-2 border-b border-line bg-panel px-3 py-2">
-                {/* The count and the high-risk tally used to be a band of their
-                    own above this row, which is two rows for one section's
-                    header. They are three words; they fit here. */}
-                {/* The count only when it is news.
-                    The active scope chip a row above already reads "At a
-                    store near you 47", so repeating 47 here is the same
-                    number twice on one screen. It stops being the same
-                    number the moment a search or a facet narrows the list —
-                    and that is exactly when it is worth saying. */}
-                <span className="microlabel hidden shrink-0 lg:inline">Recalls</span>
-                {(productsBusy || sorted.length !== scopeShown) && (
-                  <span id="stat-recalls" className="tnum shrink-0 text-xs font-semibold text-mint">
-                    {productsBusy ? "…" : sorted.length}
-                  </span>
-                )}
-                {(highCount > 0 || highOnly) && (
-                  <Tooltip content="Class I only — the agency believes the product could cause serious harm or death.">
-                    <button
-                      id="stat-high"
-                      type="button"
-                      aria-pressed={highOnly}
-                      onClick={() => { setHighOnly(!highOnly); setLimit(25); }}
-                      className={"risk-chip shrink-0 " + (highOnly ? "risk-chip-on" : "")}
-                    >
-                      <span className="tnum">{highCount}</span>
-                      <span>high-risk</span>
-                    </button>
-                  </Tooltip>
-                )}
-                <div className="relative min-w-0 flex-1">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-fog" />
-                  <Input
-                    id="filter-text"
-                    type="search"
-                    value={filterText}
-                    onChange={(e) => { setFilterText(e.target.value); setLimit(25); }}
-                    placeholder="Search recalls…"
-                    aria-label="Search recalled products"
-                    className="h-9 pl-9 text-[13px]"
-                  />
-                </div>
-                <div className="relative shrink-0">
-                  <FilterButton
-                    id="btn-filters"
-                    open={filtersOpen}
-                    count={activeFilters.length}
-                    onClick={() => setFiltersOpen((v) => !v)}
-                  />
-                  <FilterSheet
-                    open={filtersOpen}
-                    onClose={() => setFiltersOpen(false)}
-                    anchored={isWide}
-                    count={activeFilters.length}
-                    onClear={clearFilters}
-                    resultLabel={`${plural(sorted.length, "recall", "recalls")}`}
-                  >
-                    <FilterGroup
-                      label="Reason for recall"
-                      options={reasonOptions}
-                      selected={reasonKeys}
-                      onChange={(next) => { setReasonKeys(next); setLimit(25); }}
-                      allLabel="Any reason"
-                    />
-                    <FilterGroup
-                      label="Product type"
-                      options={categoryOptions}
-                      selected={categoryKeys}
-                      onChange={(next) => { setCategoryKeys(next); setLimit(25); }}
-                      allLabel="All types"
-                    />
-                    <FilterGroup
-                      label="Source"
-                      options={sourceOptions}
-                      /* Empty means "everything", so a full set reads as empty
-                       * — otherwise the All chip could never be the on state. */
-                      selected={sourceNames.every((n) => activeSources.has(n)) ? [] : sourceNames.filter((n) => activeSources.has(n))}
-                      onChange={(next) => {
-                        setActiveSources(new Set(next.length ? next : sourceNames));
-                        setLimit(25);
-                      }}
-                      allLabel="All sources"
-                    />
-                    <FilterChoice
-                      label="Sort by"
-                      options={SORTS}
-                      value={sortBy}
-                      onChange={(v) => { setSortBy(v); setLimit(25); }}
-                    />
-                  </FilterSheet>
-                </div>
-              </div>
+              {isWide && filterBar}
 
-              {(activeFilters.length > 0 || sortBy !== "newest") && (
-                <div id="active-filters" className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line bg-panel px-3 py-2">
-                  {activeFilters.map((f) => (
-                    <button key={f.key} type="button" onClick={() => { f.clear(); setLimit(25); }}
-                            className="chip-active" title={`Remove filter: ${f.label}`}>
-                      <span className="truncate">{f.label}</span>
-                      <X className="size-3 shrink-0" />
-                    </button>
-                  ))}
-                  {sortBy !== "newest" && (
-                    <button type="button" onClick={() => setSortBy("newest")} className="chip-active" title="Back to newest first">
-                      <span className="truncate">Highest risk first</span>
-                      <X className="size-3 shrink-0" />
-                    </button>
-                  )}
-                  {activeFilters.length > 1 && (
-                    <button type="button" onClick={clearFilters}
-                            className="ml-auto tnum text-[11px] font-semibold uppercase tracking-wider text-fog hover:text-mint">
-                      Clear all
-                    </button>
-                  )}
-                </div>
-              )}
+              {/* The active-filter bar is gone.
+                  It existed because filters were invisible once set — chosen
+                  in a sheet, then only summarised here. They are not: severity
+                  and product type are chips in the row above, showing their own
+                  state; the search text sits in its own box; and the Filters
+                  badge counts what is left, meaning exactly the things still
+                  hidden inside the sheet. A whole band restating four visible
+                  controls is the redundancy this pass keeps finding. Clearing
+                  is where setting is — tap the chip again, or Clear inside the
+                  sheet that holds the rest. */}
 
               {/* Product type, on the surface instead of two taps inside a
                   sheet.
@@ -2003,7 +1997,26 @@ export default function App() {
                   every facet at once on a wide screen, and duplicating one
                   of them there would just be two controls for one state. */}
               {categoryOptions.length > 1 && (
-                <div className="catrow lg:hidden" role="group" aria-label="Filter by product type">
+                <div className="catrow lg:hidden" role="group" aria-label="Quick filters">
+                  {/* Severity leads the row it belongs to. It was stranded in
+                      the search row, a facet sitting among a count, a text box
+                      and a sheet button — the one place on screen where its
+                      neighbours were not other facets. Here it is what it is:
+                      the first of the one-tap filters, kept visually apart
+                      because it is the only one about danger. */}
+                  {(highCount > 0 || highOnly) && (
+                    <button
+                      id="stat-high"
+                      type="button"
+                      aria-pressed={highOnly}
+                      onClick={() => { setHighOnly(!highOnly); setLimit(25); }}
+                      className={"risk-chip shrink-0 " + (highOnly ? "risk-chip-on" : "")}
+                    >
+                      <AlertCircle className="size-3.5 shrink-0" />
+                      <span>high-risk</span>
+                      <span className="catchip-count tnum">{highCount}</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => { setCategoryKeys([]); setLimit(25); }}

@@ -683,6 +683,15 @@ button:disabled,
   transform: translateY(1px);
   box-shadow: var(--rr-press);
 }
+/* Leading the quick-filter row, it has to be a snap point like the chips
+ * beside it. Without one, the row's `scroll-snap-type` found the first
+ * `.catchip` instead and snapped *that* to the start — scrolling this chip
+ * 120px off the left edge on first paint, present in the DOM and invisible
+ * on screen. */
+.catrow .risk-chip {
+  scroll-snap-align: start;
+  flex-shrink: 0;
+}
 .risk-chip-on {
   @apply border-amber bg-amber text-paper;
   color: var(--rr-surface);
