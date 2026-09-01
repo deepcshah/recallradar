@@ -392,7 +392,10 @@ function PanelHeader({ label, countId, count, className = "", children }) {
         <span className="microlabel">{label}</span>
         <span id={countId} className="tnum text-xs font-semibold text-mint">{count}</span>
       </span>
-      <div className="flex items-center gap-1.5 max-lg:mr-auto lg:ml-auto">{children}</div>
+      {/* Only when there is something to hold. The store header's controls
+          moved onto the map, so this would otherwise be an empty flex box
+          holding a `ml-auto` against nothing. */}
+      {children && <div className="flex items-center gap-1.5 max-lg:mr-auto lg:ml-auto">{children}</div>}
     </div>
   );
 }
@@ -1570,7 +1573,7 @@ export default function App() {
       <main ref={mainRef} className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* -------- map -------- */}
         <div
-          className={"relative min-h-0 lg:min-w-0 lg:flex-1 lg:basis-auto " +
+          className={"map-shell relative min-h-0 lg:min-w-0 lg:flex-1 lg:basis-auto " +
             (loc ? "shrink-0 " : "") +
             (mapHidden || tab === "recalls" ? "hidden lg:block " : "") +
             (selectedStore ? "map-has-selection" : "")}
@@ -1594,11 +1597,13 @@ export default function App() {
                   looking" — so it belongs on the thing it changes, where the
                   answer is visible in the same glance. Floating it also gives
                   a phone back the row it used to spend on a label, a chip
-                  group and the word "mi". */}
-              {/* Phone always; a wide screen only when the store list — which
-                  is where the radius chips live up there — is switched off.
-                  Hiding a list must not take the map's own control with it. */}
-              <div className={"map-controls " + (storesShown ? "" : "map-controls-on")}>
+                  group and the word "mi".
+                  At every size, now. A wide screen kept its own copy in the
+                  store list's header, which put the map's control in the
+                  header of a list — three bands from the thing it governs,
+                  and gone entirely the moment you hid that list. The argument
+                  for floating it was never about how wide the window is. */}
+              <div className="map-controls">
                 <div className="map-control-pill" role="group" aria-label="Store search radius">
                   {RADII.map((r) => (
                     <button key={r.value} type="button" onClick={() => setRadius(r.value)}
@@ -1905,26 +1910,13 @@ export default function App() {
                 label="Stores" countId="stat-stores" count={scanning ? "…" : stores.length}
                 className="max-lg:hidden"
               >
-                {/* Desktop only. On a phone this now floats over the map —
-                    see the overlay in the map column. Two of the same control
-                    on one screen is one too many, and the band it lived in
-                    was one of five stacked above a short list. */}
-                <span className="microlabel max-lg:hidden">Within</span>
-                <div className="flex gap-1 max-lg:hidden" role="group" aria-label="Store search radius">
-                  {RADII.map((r) => (
-                    <button key={r.value} type="button" onClick={() => setRadius(r.value)}
-                            aria-pressed={radius === r.value}
-                            className={"chip " + (radius === r.value ? "chip-on" : "chip-off")}>
-                      {r.label}
-                    </button>
-                  ))}
-                  <span className="microlabel self-center">mi</span>
-                </div>
-                {/* The fold that used to live here is gone. It collapsed this
-                    list to its own header — a header for a list you cannot see
-                    — and it did the same job as the Stores switch in the top
-                    bar, which simply takes the list away and gives the room to
-                    whatever is left. One control, one outcome. */}
+                {/* Nothing else. The radius chips that used to sit here are
+                    on the map at every size now — a question about the map,
+                    answered on the map — and the fold that sat beside them is
+                    the Stores switch in the top bar, which takes the list away
+                    rather than collapsing it to a header for a list you
+                    cannot see. What is left is the section's name and how many
+                    things are in it, which is all a section header owes. */}
               </PanelHeader>
 
               <div id="stores-list-scroll"
@@ -2099,11 +2091,16 @@ export default function App() {
                   narrowing happens. */}
               {categoryOptions.length > 1 && (
                 <div className="catrow" role="group" aria-label="Quick filters">
+                  {/* Tinted, not filled — see `.catchip-soft`. "All" is where
+                      you are when you have not filtered, so it must not look
+                      like something you pressed; the full fill is reserved for
+                      a facet you actually chose, and there is only ever one of
+                      those in the row. */}
                   <button
                     type="button"
                     onClick={() => { setCategoryKeys([]); setLimit(25); }}
                     aria-pressed={categoryKeys.length === 0}
-                    className={"catchip " + (categoryKeys.length === 0 ? "catchip-on" : "")}
+                    className={"catchip " + (categoryKeys.length === 0 ? "catchip-soft" : "")}
                   >
                     <span className="catchip-icon"><Rows2 className="size-4" /></span>
                     <span>All</span>

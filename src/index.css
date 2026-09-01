@@ -785,6 +785,26 @@ button:disabled,
   @apply text-[11px] font-bold opacity-60;
 }
 
+/* "All" — the absence of a filter, not a filter.
+ *
+ * It wore the same full mint fill a chosen facet does, which made the row's
+ * resting state the loudest thing on the screen: nothing is filtered, and the
+ * app announces it with a saturated pill and a big white number. Green means
+ * "you pressed this" everywhere else here, and nobody pressed this one. It is
+ * also the only chip whose count is already on screen a row above, in the
+ * scope bar, so the same large number appeared twice forty pixels apart.
+ *
+ * Tinted rather than filled, which is the state `.chip-soft` already exists
+ * for: it says where you are without claiming you did something, and it
+ * leaves the full fill to mean one thing only — the facet you chose. */
+.catchip-soft {
+  @apply border-mint-line bg-mint-soft text-mint;
+}
+.catchip-soft .catchip-icon {
+  background: color-mix(in oklab, var(--rr-accent) 14%, transparent);
+  color: var(--rr-accent);
+}
+
 /* The high-risk filter, as a variant of the chip beside it rather than a
  * shape of its own.
  *
@@ -846,22 +866,27 @@ button:disabled,
   padding: 0 0.625rem;
   pointer-events: none;   /* the gaps stay draggable map */
 }
-/* Phone only, and stated here rather than with `lg:hidden`, for the reason
- * the tab bar learned the hard way: this file sets `display` and is emitted
- * after Tailwind's utilities, so the utility loses. It has to come after the
- * rule it overrides — equal specificity, last one wins. */
-@media (min-width: 1024px) {
-  .map-controls { display: none; }
-  /* …unless the store list is hidden. On a wide screen the radius chips live
-     in the store panel's header, so hiding that panel would take the map's
-     own radius control away with it. The floating pair is where it goes. */
-  .map-controls.map-controls-on { display: flex; }
+/* Every size now. This was phone-only, with the radius living in the store
+ * panel's header on a wide screen — so the control that changes the map sat
+ * in the header of a list, three bands away from the thing it governs, and
+ * hiding that list took the map's own radius away with it. The argument for
+ * floating it was never about screen size: a question about the map belongs
+ * on the map, where the answer is visible in the same glance. */
+/* MapLibre's attribution lives bottom-right, which is where the control pills
+ * reach once the map is narrow. Lift it above them rather than shrinking the
+ * controls: the attribution is a requirement of the tiles and has to stay
+ * legible.
+ *
+ * Asked of the map, not of the window. This was a `max-width: 1023.98px`
+ * media query, which is a statement about the viewport — and the viewport is
+ * not what is running out of room. Dragging the panel divider on a 1440px
+ * window makes the map column narrower than a phone's, so the two collided on
+ * the widest screens and nowhere else. The map column is a size container now
+ * and the question is asked of it directly. */
+.map-shell {
+  container: map / inline-size;
 }
-/* MapLibre's attribution lives bottom-right, which is where a second control
- * pill now reaches on a narrow phone. Lift it above the row rather than
- * shrinking the controls: the attribution is a requirement of the tiles and
- * has to stay legible. */
-@media (max-width: 1023.98px) {
+@container map (max-width: 31rem) {
   .maplibregl-ctrl-bottom-right { bottom: 3rem; }
 }
 
