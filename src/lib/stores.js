@@ -12,7 +12,17 @@ import { distanceMiles } from "./geo.js";
 import { chainForName } from "./retailers.js";
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
-const MAX_STORES = 80;
+/* How many storefronts the list will hold, and the choices offered for it.
+ *
+ * This used to be a fixed 80, which quietly disabled the radius control
+ * wherever a neighbourhood has more than 80 shops inside the smallest one:
+ * results are sorted by distance and then truncated, so 5, 10 and 25 miles
+ * all returned the same nearest 80 and nothing on screen changed. Making it
+ * a choice does not remove the truncation — some cap has to exist — but it
+ * puts the trade in the reader's hands and says out loud that one is being
+ * made. */
+export const STORE_CAPS = [20, 50, 80, 150];
+export const DEFAULT_STORE_CAP = 80;
 
 /** Categories to sweep alongside the chain list. Must match STORE_CATEGORIES
  *  in src/lib/mapbox-server.js — the server ignores anything it doesn't know. */
@@ -59,21 +69,37 @@ async function fetchStores(chains, cats, loc) {
 /* Chain search and category search return the same storefront under slightly
  * different names ("Safeway", "Safeway #1234"), so match on the chain when we
  * know it and on the trimmed name when we don't. */
+/* How many storefronts were in range before the cap took a bite, so the list
+ * can say "80 of 214 within 25 mi" rather than presenting a truncation as the
+ * whole answer. Hung off the array non-enumerably so it survives being passed
+ * around as a plain list — and carried through the session cache by hand,
+ * since JSON would drop it. */
+function withTotal(list, total) {
+  try {
+    Object.defineProperty(list, "inRangeTotal", {
+      value: Number.isFinite(total) ? total : list.length,
+      enumerable: false,
+      configurable: true,
+    });
+  } catch (_) { /* frozen, somehow */ }
+  return list;
+}
+
 function dedupKey(name, chain, lat, lon) {
   const who = chain ? chain.id : name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   return `${who}|${lat.toFixed(3)}|${lon.toFixed(3)}`;
 }
 
-export async function findStores(chains, loc, radiusMeters, cats = STORE_CATEGORY_IDS) {
+export async function findStores(chains, loc, radiusMeters, cats = STORE_CATEGORY_IDS, cap = DEFAULT_STORE_CAP) {
   if (!chains.length && !cats.length) return [];
 
   const cacheKey = "rr-stores:v3:" + [
-    loc.lat.toFixed(3), loc.lon.toFixed(3), Math.round(radiusMeters),
+    loc.lat.toFixed(3), loc.lon.toFixed(3), Math.round(radiusMeters), cap,
     chains.map((c) => c.id).sort().join(","), cats.join(","),
   ].join("|");
   try {
     const hit = JSON.parse(sessionStorage.getItem(cacheKey) || "null");
-    if (hit && Date.now() - hit.t < CACHE_TTL_MS) return hit.v;
+    if (hit && Date.now() - hit.t < CACHE_TTL_MS) return withTotal(hit.v, hit.total);
   } catch (_) { /* cache is best-effort */ }
 
   const data = await fetchStores(chains, cats, loc);
@@ -119,10 +145,12 @@ export async function findStores(chains, loc, radiusMeters, cats = STORE_CATEGOR
   // The cached search covers a wider area than any single radius choice —
   // trim to what the user actually asked for.
   const maxMiles = radiusMeters / 1609.34 + 0.5;
-  const result = [...merged.values()]
+  const inRange = [...merged.values()]
     .filter((s) => s.distanceMiles <= maxMiles)
-    .sort((a, b) => a.distanceMiles - b.distanceMiles)
-    .slice(0, MAX_STORES);
-  try { sessionStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), v: result })); } catch (_) { /* quota */ }
+    .sort((a, b) => a.distanceMiles - b.distanceMiles);
+  const result = withTotal(inRange.slice(0, Math.max(1, cap)), inRange.length);
+  try {
+    sessionStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), v: result, total: inRange.length }));
+  } catch (_) { /* quota */ }
   return result;
 }

@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle, Armchair, Baby, Beef, Bike, Candy, Carrot, Check, ChevronDown, ChevronRight, ChevronUp,
   Crosshair, CupSoda,
-  ExternalLink, Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package, PanelRightClose,
+  ExternalLink, Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package,
   PanelRightOpen, PawPrint, Pill, Plug, Plus, Radar, Rows2, Columns2, Search, SearchX,
   ScanLine, ShieldCheck, Soup, Stethoscope, Sun, Moon, MonitorSmartphone, MoreHorizontal, Store,
-  ListFilter, UtensilsCrossed, Wheat, X, Zap,
+  ClipboardList, UtensilsCrossed, Wheat, X, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,11 +14,14 @@ import { Tooltip, InfoTip } from "@/components/ui/tooltip";
 import { FilterButton, FilterSheet, FilterGroup, FilterChoice } from "@/components/FilterSheet";
 import MapView from "@/components/MapView";
 import ScanSheet from "@/components/ScanSheet";
-import { Sheet } from "@/components/ui/sheet";
+import { Sheet, useSheetPresence } from "@/components/ui/sheet";
+import {
+  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { recallUpcs, lookupProduct } from "@/lib/upc";
 import { browserPosition, reverseGeocode, geocodeInput } from "@/lib/geo";
 import { fetchAll, recoverBlockedSources, sortRecalls } from "@/lib/sources";
-import { findStores } from "@/lib/stores";
+import { findStores, STORE_CAPS, DEFAULT_STORE_CAP } from "@/lib/stores";
 import { byId, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
 import { categoryFor } from "@/lib/category";
 import { classInfo, severityLabel, severityVariant } from "@/lib/classification";
@@ -306,6 +309,7 @@ function SeverityBadge({ recall }) {
       title={`${info.term} — ${info.plain}`}
       body={`${info.body} Assigned by ${info.agency}.`}
       label={`${info.term}: what this means`}
+      variant="badge"
       triggerClassName="text-fog"
       side="bottom"
     >
@@ -330,6 +334,7 @@ function ClosedBadge() {
         "notice closes. If you have it, it is still the recalled product."
       }
       label="Closed: what this means"
+      variant="badge"
       triggerClassName="text-fog"
       side="bottom"
     >
@@ -401,14 +406,23 @@ function EmptyState({ icon: Icon, title, children, compact }) {
  *  "8 named" tally. That tally was the fourth place the same 8 appeared —
  *  after the headline, the scope chip and the map pins — so the slot went with
  *  it. */
-function PanelHeader({ label, countId, count, children }) {
+/* The label and count are already desktop-only, so on a phone this band is
+ * whatever its children are. With the radius moved onto the map there is
+ * nothing left for it to hold there, and an empty 40px band above a short
+ * list is exactly the stacked-chrome problem this pass is undoing — hence
+ * `max-lg:hidden` from the caller. The count it used to carry is on the tab
+ * bar ("Near me 4"), which is where a phone reads it anyway. */
+function PanelHeader({ label, countId, count, className = "", children }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line bg-panel px-4 py-2">
+    <div className={"flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line bg-panel px-4 py-2 " + className}>
       <span className="flex items-center gap-2 max-lg:hidden">
         <span className="microlabel">{label}</span>
         <span id={countId} className="tnum text-xs font-semibold text-mint">{count}</span>
       </span>
-      <div className="flex items-center gap-1.5 max-lg:mr-auto lg:ml-auto">{children}</div>
+      {/* Only when there is something to hold. The store header's controls
+          moved onto the map, so this would otherwise be an empty flex box
+          holding a `ml-auto` against nothing. */}
+      {children && <div className="flex items-center gap-1.5 max-lg:mr-auto lg:ml-auto">{children}</div>}
     </div>
   );
 }
@@ -427,6 +441,7 @@ function PanelHeader({ label, countId, count, children }) {
  * of the two that named the store you had picked. */
 function passesFilters(r, f, except) {
   if (except !== "source" && !f.sources.has(r.source)) return false;
+  if (except !== "high" && f.highOnly && r.severity !== "high") return false;
   if (except !== "cat" && f.cats && !f.cats.has(categoryFor(r).key)) return false;
   if (except !== "why" && f.whys && !f.whys.has(reasonFor(r).key)) return false;
   if (except !== "chainScope" && f.chainScope &&
@@ -541,6 +556,13 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [queryError, setQueryError] = useState("");
   const [radius, setRadius] = useState(16093);
+  /* How many storefronts to keep. See STORE_CAPS in lib/stores.js: some cap
+   * has to exist, and a fixed one silently disabled the radius control in
+   * dense neighbourhoods. Remembered, because it is a preference about how
+   * much list you want to read rather than a per-search decision. */
+  const [storesTrimmed, setStoresTrimmed] = useState(0);
+  const [storeCap, setStoreCap] = useState(() => loadPref("rr-store-cap", DEFAULT_STORE_CAP));
+  useEffect(() => { savePref("rr-store-cap", storeCap); }, [storeCap]);
 
   const [recalls, setRecalls] = useState([]);
   const [sources, setSources] = useState([]);
@@ -550,16 +572,25 @@ export default function App() {
   const [storesStatus, setStoresStatus] = useState(null);
   const [activeStore, setActiveStore] = useState(-1); // drives map focus AND product filtering
   const [scope, setScope] = useState(() => normalizeScope(loadPref("rr-mode", "area")));
-  // Wide screens only: fold the store list down to its header. This is the
-  // capability the old "All recalls" mode provided, moved out of the scope
-  // control and onto the thing it actually acts on.
-  const [storesCollapsed, setStoresCollapsed] = useState(() => loadPref("rr-stores-collapsed", false));
+  /* Wide screens: each list is shown or hidden on its own.
+   *
+   * There used to be one "Hide Lists" button that took both, plus a separate
+   * fold for the store list — two controls with overlapping jobs and no way
+   * to express the case people actually want, which is "I am reading recalls
+   * and do not care which shop they are in". Two switches say all four
+   * states, and hiding both is what the old single button did. */
+  const [storesShown, setStoresShown] = useState(() => loadPref("rr-show-stores", true));
+  const [recallsShown, setRecallsShown] = useState(() => loadPref("rr-show-recalls", true));
   const [view, setView] = useState("split"); // phone only: map | split | list
   const [tab, setTab] = useState("near"); // phone destinations: near | recalls
   const [locOpen, setLocOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  /* "184 high-risk" was a statistic sitting where a control could be: it told
+   * you the number and then left you to go and find Class I inside the filter
+   * sheet. Same pixels, now the thing itself. */
+  const [highOnly, setHighOnly] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
   const [sideBySide, setSideBySide] = useState(() => loadPref("rr-side-by-side", false));
   const [splitPct, setSplitPct] = useState(() => loadPref("rr-split", DEFAULT_SPLIT));
@@ -581,6 +612,9 @@ export default function App() {
   const { theme, setTheme, resolved: resolvedTheme, cycle: cycleTheme } = useTheme();
   const motionStyle = useMotionTuning();
   const stagger = cardStagger(motionStyle);
+  /* About is the app's longest read and it used to vanish mid-sentence — an
+   * entrance animation with no exit. Same presence machinery as the sheets. */
+  const { mounted: aboutMounted, shown: aboutShown } = useSheetPresence(aboutOpen);
 
   const mapRef = useRef(null);
   const storeItemRefs = useRef([]);
@@ -598,6 +632,11 @@ export default function App() {
   const chainKey = useMemo(() => searchChains.map((c) => c.id).sort().join(","), [searchChains]);
   const searchChainsRef = useRef(searchChains);
   searchChainsRef.current = searchChains;
+  /* Read through a ref for the same reason the chain list is: loadStores is
+   * a stable callback with no dependencies, and giving it one would rebuild
+   * the effect that owns store loading. */
+  const capRef = useRef(storeCap);
+  capRef.current = storeCap;
 
   /* Last request wins. A lookup still in flight for the old radius must never
    * overwrite the one the user is actually waiting on. */
@@ -613,7 +652,8 @@ export default function App() {
     }
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const found = await findStores(searchChainsRef.current, locArg, radiusArg);
+        const found = await findStores(searchChainsRef.current, locArg, radiusArg,
+                                      undefined, capRef.current);
         if (stale()) return;
         setStores(found);
         track("stores_loaded", {
@@ -622,6 +662,10 @@ export default function App() {
           attempt: attempt + 1,
           chains_searched: searchChainsRef.current.length,
         });
+        /* A truncated list that does not say so reads as the whole answer.
+           Same rule the scanner follows about an unmatched barcode: the
+           number you did not see is the one that matters. */
+        setStoresTrimmed(found.inRangeTotal > found.length ? found.inRangeTotal : 0);
         setStoresStatus(found.length ? null : {
           empty: true,
           title: "Nothing in range",
@@ -709,7 +753,7 @@ export default function App() {
   const lastScanRef = useRef("");
   useEffect(() => {
     if (!loc || productsBusy) return;
-    const place = `${loc.lat},${loc.lon}|${radius}`;
+    const place = `${loc.lat},${loc.lon}|${radius}|${storeCap}`;
     const key = `${place}|${chainKey}`;
     if (key === lastScanRef.current) return;
     // Only the chain list changed (USDA landed late): refresh in place instead
@@ -717,7 +761,7 @@ export default function App() {
     const quiet = lastScanRef.current.startsWith(`${place}|`);
     lastScanRef.current = key;
     loadStores(loc, radius, { quiet });
-  }, [loc, radius, chainKey, productsBusy, loadStores]);
+  }, [loc, radius, storeCap, chainKey, productsBusy, loadStores]);
 
   /* `method` is carried only so the funnel can separate "tapped locate"
    * from "typed a ZIP" — the coordinates and the resolved label stay in
@@ -800,11 +844,11 @@ export default function App() {
   const applySelection = useCallback((i, { fly }) => {
     setActiveStore((prev) => {
       const next = prev === i && isWide ? -1 : i;
-      /* The popup says the store's name, address and distance — which is
-       * exactly what the selection bar now says, in a place that does not sit
-       * on top of a map only a third of a phone tall. So the map centres on
-       * the pin either way, and only opens the bubble where there is room. */
-      if (next >= 0 && fly && mapRef.current) mapRef.current.focusStore(next, { popup: isWide });
+      /* Only the camera. Whether a bubble opens is `showPopup` on the map,
+       * decided by how much map there is to open it over — it is not this
+       * function's business, and it used to be, which is how the bubble ended
+       * up with a life of its own. */
+      if (next >= 0 && fly && mapRef.current) mapRef.current.focusStore(next);
       setStoreScope(scopeForStore(next));
       return next;
     });
@@ -816,11 +860,27 @@ export default function App() {
 
   const selectStore = useCallback((i) => applySelection(i, { fly: true }), [applySelection]);
 
+  /* A pin is a toggle at every size, and it stays on the map.
+   *
+   * It was neither. Toggling was wide-screen only, so on a phone tapping the
+   * pin you had just picked did nothing you could see — and the tap also ran
+   * the list's navigation, throwing you onto the Recalls tab and taking the
+   * map, the pin and the whole gesture off screen. Picking a store from the
+   * list is a navigation because a list row is a link; tapping a pin is a
+   * selection on the thing you are looking at, and you stay looking at it.
+   * The store list scrolls to the row underneath, and the scope bar names the
+   * selection on both tabs. */
   const onMarkerClick = useCallback((i) => {
-    applySelection(i, { fly: false });
+    setActiveStore((prev) => {
+      const next = prev === i ? -1 : i;
+      setStoreScope(scopeForStore(next));
+      return next;
+    });
+    setLimit(25);
+    if (productsScrollRef.current) productsScrollRef.current.scrollTop = 0;
     const el = storeItemRefs.current[i];
     if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [applySelection]);
+  }, [scopeForStore]);
 
   const clearStore = useCallback(() => {
     setActiveStore(-1);
@@ -828,12 +888,20 @@ export default function App() {
     setLimit(25);
   }, []);
 
-  const listHidden = view === "map";
+  /* Two different mechanisms, one question: is there a panel beside the map.
+   * A phone drags the boundary between them (`view`); a wide screen switches
+   * the lists themselves off, and with nothing left to show the panel has no
+   * reason to hold a column. */
+  const listHidden = isWide ? !(storesShown || recallsShown) : view === "map";
   const mapHidden = view === "list" && !isWide;
 
+  /* MapLibre caches its container size, so every change that resizes the map
+   * column has to say so. The list switches are in here for the same reason
+   * the split percentages are: they change the column's width, and without
+   * this the canvas keeps the old one and the pins land off the edge. */
   useEffect(() => {
     mapRef.current && mapRef.current.resize();
-  }, [view, stores, tab, sideBySide, splitPct, mapPct]);
+  }, [view, stores, tab, sideBySide, splitPct, mapPct, mapWidthPct, storesShown, recallsShown, isWide]);
 
   const stepView = useCallback((dir) => {
     setView((v) => VIEWS[Math.min(VIEWS.length - 1, Math.max(0, VIEWS.indexOf(v) + dir))]);
@@ -845,11 +913,14 @@ export default function App() {
     setLimit(25);
   }, []);
 
-  const toggleStoresCollapsed = useCallback(() => {
-    setStoresCollapsed((prev) => {
-      savePref("rr-stores-collapsed", !prev);
-      return !prev;
-    });
+  /* Turning both off is how you get a full-bleed map, so neither switch
+   * refuses to go off. What it must not do is leave an empty panel standing:
+   * `listHidden` below reads the pair, and the panel goes with them. */
+  const toggleStores = useCallback(() => {
+    setStoresShown((prev) => { savePref("rr-show-stores", !prev); return !prev; });
+  }, []);
+  const toggleRecalls = useCallback(() => {
+    setRecallsShown((prev) => { savePref("rr-show-recalls", !prev); return !prev; });
   }, []);
 
   /* One breakpoint for the whole information architecture, at lg (1024px).
@@ -899,15 +970,34 @@ export default function App() {
   }
 
   // Inline basis drives both axes; the phone divider owns the map's share.
-  const storesStyle = isWide ? { flexBasis: `${splitPct}%`, flexGrow: 0, flexShrink: 0 } : undefined;
+  /* The split only exists while there are two lists to split. With one of them
+   * switched off the survivor takes the panel, so it must not keep a basis
+   * that leaves half the column empty. */
+  const bothLists = storesShown && recallsShown;
+  const storesStyle = isWide && bothLists
+    ? { flexBasis: `${splitPct}%`, flexGrow: 0, flexShrink: 0 }
+    : undefined;
   /* The map only gives up its share when there is a panel to give it to. With
    * no location yet there is no panel, and the old hard-coded 42% left the
    * landing screen's headline and its one button squeezed into the top of the
    * phone with half the viewport blank underneath. */
   const panelShowing = Boolean(loc) && !listHidden;
-  const mapStyle = isWide
-    ? { flexBasis: `${mapWidthPct}%`, flexGrow: 0, flexShrink: 0 }
-    : { flexBasis: panelShowing ? `${mapPct}%` : "100%" };
+  /* Before a location there is no map and no panel, only the landing screen —
+   * so the split must not exist yet. It did: on a wide window this column kept
+   * its ~48% basis with flexGrow 0, which centred the landing copy inside the
+   * left half of an otherwise empty page and read as a layout that had failed
+   * to load. Getting a location is this screen's whole job, so it gets the
+   * whole screen. */
+  /* And when the lists are hidden the map takes the whole width — the same
+   * argument, one level up. It did not: this branch kept handing the map its
+   * `mapWidthPct` basis with `flexGrow: 0`, so hiding the panel left the map
+   * at 48% of the window with an empty column beside it. A basis is only
+   * right while there is something on the other side of it. */
+  const mapStyle = !loc || listHidden
+    ? { flexBasis: "100%", flexGrow: 1, flexShrink: 1 }
+    : isWide
+      ? { flexBasis: `${mapWidthPct}%`, flexGrow: 0, flexShrink: 0 }
+      : { flexBasis: panelShowing ? `${mapPct}%` : "100%" };
 
   const selectedStore = activeStore >= 0 ? stores[activeStore] : null;
 
@@ -926,6 +1016,7 @@ export default function App() {
   const filterState = useMemo(() => ({
     q: filterText.trim().toLowerCase(),
     sources: activeSources,
+    highOnly,
     cats: categoryKeys.length ? new Set(categoryKeys) : null,
     whys: reasonKeys.length ? new Set(reasonKeys) : null,
     /* A selected store is the most specific claim available, so it wins.
@@ -934,7 +1025,7 @@ export default function App() {
     chainScope: selectedStore
       ? (storeScope === "named" ? new Set(selectedStore.chainIds) : null)
       : (scope === "named" ? nearbyChainIds : null),
-  }), [filterText, activeSources, categoryKeys, reasonKeys, selectedStore, storeScope, scope, nearbyChainIds]);
+  }), [filterText, activeSources, highOnly, categoryKeys, reasonKeys, selectedStore, storeScope, scope, nearbyChainIds]);
 
   /* The option LIST comes from every recall, so a chip never disappears
    * mid-session; the COUNT on it comes from the current filters, so it never
@@ -1009,7 +1100,13 @@ export default function App() {
         : t(b.date) - t(a.date) || ((sev[a.severity] ?? 1) - (sev[b.severity] ?? 1)));
   }, [filtered, sortBy]);
 
-  const highCount = filtered.filter((r) => r.severity === "high").length;
+  /* Counted against every filter except its own, the way every facet chip in
+   * this app is counted — otherwise switching it on would make it read
+   * "184 of 184", which says nothing. */
+  const highCount = useMemo(
+    () => recalls.filter((r) => r.severity === "high" && passesFilters(r, filterState, "high")).length,
+    [recalls, filterState]
+  );
   const sourceNames = useMemo(() => [...new Set(recalls.map((r) => r.source))], [recalls]);
   const remaining = sorted.length - limit;
 
@@ -1025,6 +1122,7 @@ export default function App() {
     if (filterText.trim()) {
       out.push({ key: "q", label: `“${truncate(filterText.trim(), 22)}”`, clear: () => setFilterText("") });
     }
+    if (highOnly) out.push({ key: "high", label: "High-risk only", clear: () => setHighOnly(false) });
     for (const k of categoryKeys) {
       const o = categoryOptions.find((x) => x.value === k);
       if (o) out.push({ key: `cat:${k}`, label: o.label, clear: () => setCategoryKeys(categoryKeys.filter((x) => x !== k)) });
@@ -1041,10 +1139,24 @@ export default function App() {
       });
     }
     return out;
-  }, [filterText, categoryKeys, categoryOptions, reasonKeys, reasonOptions, sourceNames, activeSources]);
+  }, [filterText, highOnly, categoryKeys, categoryOptions, reasonKeys, reasonOptions, sourceNames, activeSources]);
+
+  /* What the Filters button's badge counts.
+   *
+   * Not every active filter — severity, product type and the search text are
+   * all visible as their own controls now, and a badge that counted them
+   * would be a second, vaguer report of something already on screen. It
+   * counts what is only inside the sheet: reason, source, and a non-default
+   * sort. That is the question the badge is actually answering — is anything
+   * narrowing this list that I cannot see? */
+  const hiddenFilterCount = useMemo(() => {
+    const hiddenSources = sourceNames.filter((n) => !activeSources.has(n)).length;
+    return reasonKeys.length + hiddenSources + (sortBy !== "newest" ? 1 : 0);
+  }, [reasonKeys, sourceNames, activeSources, sortBy]);
 
   const clearFilters = useCallback(() => {
     setFilterText("");
+    setHighOnly(false);
     setCategoryKeys([]);
     setReasonKeys([]);
     setActiveSources(new Set(sourceNames));
@@ -1114,11 +1226,21 @@ export default function App() {
 
   /* Pin numerals follow the list's display order, and pins the list is
    * currently hiding get no numeral at all. Index-aligned with `stores`. */
-  const { pinLabels, pinNamed } = useMemo(() => {
+  const { pinLabels, pinNamed, pinNotes, pinWeights } = useMemo(() => {
     const labels = stores.map(() => "");
-    const flags = stores.map((st) => namedRecallsFor(st).length > 0);
+    const counts = stores.map((st) => namedRecallsFor(st).length);
+    const flags = counts.map((n) => n > 0);
+    /* The line under a pin's name on the map. It gets one shot at saying
+     * something the name does not, so it carries the count — which is the
+     * only reason that pin is labelled at all — and falls back to what kind
+     * of place it is. Never the chain label: for CVS that renders "CVS"
+     * under "CVS". */
+    const notes = stores.map((st, i) =>
+      counts[i] > 0
+        ? plural(counts[i], "notice", "notices")
+        : st.independent ? "independent" : "");
     rankedStores.forEach(({ i }, pos) => { labels[i] = String(pos + 1); });
-    return { pinLabels: labels, pinNamed: flags };
+    return { pinLabels: labels, pinNamed: flags, pinNotes: notes, pinWeights: counts };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stores, rankedStores, byChain]);
 
@@ -1137,6 +1259,11 @@ export default function App() {
     return { named, area };
   }, [recalls, filterState, nearbyChainIds]);
 
+  /* The count the active scope chip is displaying, so nothing else on screen
+   * has to repeat it. Null while a store is selected: that branch of the row
+   * shows a different pair of chips and no single number stands for the list. */
+  const scopeShown = selectedStore ? null : (scope === "named" ? scopeCounts.named : scopeCounts.area);
+
   /* The one line that answers why anyone opened the app.
    *
    * It states the RELATIONSHIP — which chains, how bad — and deliberately no
@@ -1147,33 +1274,43 @@ export default function App() {
   const headline = useMemo(() => {
     if (storesStatus?.busy || productsBusy) return null;
     if (!recalls.length) return { tone: "calm", text: "No active recalls match your area." };
-    const chains = new Set();
     const named = new Set();
-    let high = 0;
     for (const st of stores) {
-      const mine = namedRecallsFor(st);
-      for (const r of mine) {
-        if (!named.has(r.id)) { named.add(r.id); if (r.severity === "high") high++; }
-      }
-      if (mine.length) for (const id of st.chainIds) chains.add(id);
+      for (const r of namedRecallsFor(st)) named.add(r.id);
     }
     if (!named.size) {
       return { tone: "calm",
         text: `No recall notice names a store near you. Everything below covers ${loc?.stateAbbr || "your area"} without naming a retailer.` };
     }
-    return { tone: "match", high,
-      text: `${plural(chains.size, "chain", "chains")} near you ${chains.size === 1 ? "is" : "are"} named in a recall notice` };
+    /* Deliberately nothing.
+     *
+     * "13 chains near you are named in a recall notice" restated the chip
+     * directly above it — "At a store near you 47" — in different units, and
+     * spent a whole band on a phone doing it. Worse, it read as a statement
+     * where a control already existed: switching to that scope narrows both
+     * lists to exactly those chains (see rankedStores), so the sentence was
+     * describing a thing you could already press.
+     *
+     * The two cases below survive because nothing else says them: an empty
+     * result, and the one that matters most — notices cover your area but
+     * name no shop near you, which is not the same as nothing being wrong.
+     * The Class I count this used to carry is now the high-risk filter beside
+     * the search box, where it is a control rather than a number. */
+    return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stores, recalls, byChain, loc, storesStatus, productsBusy]);
 
   // Both lookups roll up into one "the app is working" flag.
   const scanning = productsBusy || Boolean(storesStatus?.busy);
 
-  const showStores = "flex " + (tab === "near" ? "" : "max-lg:hidden ");
-  // Collapsing is a wide-screen affordance; a phone folds the list by leaving
-  // the tab, so the stored preference must not follow it there.
-  const storesFolded = isWide && storesCollapsed;
-  const showProducts = "flex " + (tab === "recalls" ? "" : "max-lg:hidden ");
+  /* Which list is on screen, by size. A phone shows one at a time and the tab
+   * bar picks; a wide screen shows both unless a switch says otherwise. The
+   * `lg:` half comes last in the string because these are all `display`
+   * utilities of equal specificity — the later one wins at the breakpoint. */
+  const showStores = "flex " + (tab === "near" ? "" : "max-lg:hidden ") +
+    (storesShown ? "" : "lg:hidden ");
+  const showProducts = "flex " + (tab === "recalls" ? "" : "max-lg:hidden ") +
+    (recallsShown ? "" : "lg:hidden ");
 
   /* Where a selected store's recalls actually appear depends on the layout,
    * and getting this wrong is how the card came to say "Showing its recalls
@@ -1181,6 +1318,91 @@ export default function App() {
   const recallsHere = isWide
     ? (sideBySide ? "Showing its recalls →" : "Showing its recalls below ↓")
     : "Showing its recalls — Recalls tab";
+
+  /* The search row, defined once and placed twice.
+   *
+   * On a phone it leads the panel, above the scope chips: search is the
+   * most-reached control in here and it was the fourth band down, under
+   * two rows of chips. On a wide screen it stays with the recall list it
+   * filters — up there it would sit above the store list, separated from
+   * its own results by an entire second list. */
+  const filterBar = (
+  <div className="flex shrink-0 items-center gap-2 border-b border-line bg-panel px-3 py-2">
+    {/* The count only when it is news.
+        The active scope chip a row above already reads "At a
+        store near you 47", so repeating 47 here is the same
+        number twice on one screen. It stops being the same
+        number the moment a search or a facet narrows the list —
+        and that is exactly when it is worth saying. */}
+    <span className="microlabel hidden shrink-0 lg:inline">Recalls</span>
+    {(productsBusy || sorted.length !== scopeShown) && (
+      <span id="stat-recalls" className="tnum shrink-0 text-xs font-semibold text-mint">
+        {productsBusy ? "…" : sorted.length}
+      </span>
+    )}
+    <div className="relative min-w-0 flex-1">
+      <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-fog" />
+      <Input
+        id="filter-text"
+        type="search"
+        value={filterText}
+        onChange={(e) => { setFilterText(e.target.value); setLimit(25); }}
+        placeholder="Search recalls…"
+        aria-label="Search recalled products"
+        className="h-9 pl-9 text-[13px]"
+      />
+    </div>
+    <div className="relative shrink-0">
+      <FilterButton
+        id="btn-filters"
+        open={filtersOpen}
+        count={hiddenFilterCount}
+        onClick={() => setFiltersOpen((v) => !v)}
+      />
+      <FilterSheet
+        open={filtersOpen}
+        onClose={() => setFiltersOpen(false)}
+        anchored={isWide}
+        count={activeFilters.length}
+        onClear={clearFilters}
+        resultLabel={`${plural(sorted.length, "recall", "recalls")}`}
+      >
+        <FilterGroup
+          label="Reason for recall"
+          options={reasonOptions}
+          selected={reasonKeys}
+          onChange={(next) => { setReasonKeys(next); setLimit(25); }}
+          allLabel="Any reason"
+        />
+        <FilterGroup
+          label="Product type"
+          options={categoryOptions}
+          selected={categoryKeys}
+          onChange={(next) => { setCategoryKeys(next); setLimit(25); }}
+          allLabel="All types"
+        />
+        <FilterGroup
+          label="Source"
+          options={sourceOptions}
+          /* Empty means "everything", so a full set reads as empty
+           * — otherwise the All chip could never be the on state. */
+          selected={sourceNames.every((n) => activeSources.has(n)) ? [] : sourceNames.filter((n) => activeSources.has(n))}
+          onChange={(next) => {
+            setActiveSources(new Set(next.length ? next : sourceNames));
+            setLimit(25);
+          }}
+          allLabel="All sources"
+        />
+        <FilterChoice
+          label="Sort by"
+          options={SORTS}
+          value={sortBy}
+          onChange={(v) => { setSortBy(v); setLimit(25); }}
+        />
+      </FilterSheet>
+    </div>
+  </div>
+  );
 
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden bg-ink" style={motionStyle}>
@@ -1299,6 +1521,62 @@ export default function App() {
               {theme === "dark" ? <Moon /> : theme === "light" ? <Sun /> : <MonitorSmartphone />}
             </Button>
           </Tooltip>
+
+          {/* ---- what the window is showing (wide screens) ----
+              These were one "Hide Lists" button floating over the top-left
+              corner of the map, which is where a map control belongs and not
+              where a layout control does: it sat on the map while acting on
+              everything except the map, and it could only take both lists at
+              once. Beside the theme switch they read as what they are — chrome
+              that decides what the window shows — and they take one list each,
+              so "just the recalls, I don't care which shop" is finally a thing
+              you can ask for. Turning both off is the old button. */}
+          {loc && (
+            <>
+              <span aria-hidden="true" className="hidden h-5 w-px shrink-0 bg-line lg:block" />
+              <div className="hidden shrink-0 items-center gap-1.5 lg:flex" role="group" aria-label="Panels to show">
+                {[
+                  ["stores", "Stores", "store list", Store, storesShown, toggleStores, "stores-list-scroll"],
+                  ["recalls", "Recalls", "recall list", ClipboardList, recallsShown, toggleRecalls, "recalls-list-scroll"],
+                ].map(([key, label, spoken, Icon, on, toggle, controls]) => (
+                  <Tooltip key={key}
+                           content={on ? `Hide the ${spoken} and give the room to the map` : `Show the ${spoken}`}>
+                    <Button
+                      id={`btn-show-${key}`}
+                      variant="secondary" size="sm"
+                      aria-pressed={on}
+                      aria-controls={controls}
+                      onClick={toggle}
+                      className={"h-9 shrink-0 px-3 " +
+                        (on ? "border-mint bg-mint-soft text-mint" : "text-fog")}
+                    >
+                      <Icon /><span className="hidden xl:inline">{label}</span>
+                    </Button>
+                  </Tooltip>
+                ))}
+                {/* Disabled when there is only one list, never absent. A
+                    control that vanishes takes its own explanation with it —
+                    you are left wondering where it went, and on the way back
+                    the row changes width under the pointer. Greyed out, it
+                    says the same thing and stays put; the tooltip says why. */}
+                <Tooltip content={!bothLists
+                  ? "Needs both lists — turn the other one back on"
+                  : sideBySide ? "Stack the two lists vertically" : "Put the two lists side by side"}>
+                  <Button
+                    id="btn-toggle-layout"
+                    variant="secondary" size="icon"
+                    aria-pressed={sideBySide}
+                    disabled={!bothLists}
+                    onClick={toggleLayout}
+                    aria-label={sideBySide ? "Stack the lists vertically" : "Put the lists side by side"}
+                    className="h-9 w-9 shrink-0"
+                  >
+                    {sideBySide ? <Rows2 /> : <Columns2 />}
+                  </Button>
+                </Tooltip>
+              </div>
+            </>
+          )}
         </div>
 
         {(productsBusy || storesStatus?.busy) && <div id="progress" className="progress-track" />}
@@ -1322,16 +1600,70 @@ export default function App() {
       <main ref={mainRef} className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* -------- map -------- */}
         <div
-          className={"relative min-h-0 shrink-0 lg:min-w-0 lg:flex-1 lg:basis-auto " +
+          className={"map-shell relative min-h-0 lg:min-w-0 lg:flex-1 lg:basis-auto " +
+            (loc ? "shrink-0 " : "") +
             (mapHidden || tab === "recalls" ? "hidden lg:block " : "") +
             (selectedStore ? "map-has-selection" : "")}
           style={mapStyle}
         >
           {loc ? (
-            <MapView ref={mapRef} loc={loc} stores={stores}
-                     labels={pinLabels} named={pinNamed} activeIndex={activeStore}
-                     theme={resolvedTheme}
-                     onMarkerClick={onMarkerClick} />
+            <>
+              {/* The bubble needs room to sit over. A wide screen always has
+                  it; a phone only when the map has the screen, which is why
+                  the selection also reads out in the scope row — the one place
+                  that is on both tabs at every size. */}
+              <MapView ref={mapRef} loc={loc} stores={stores} radius={radius}
+                       labels={pinLabels} named={pinNamed} notes={pinNotes} weights={pinWeights}
+                       activeIndex={activeStore}
+                       theme={resolvedTheme}
+                       showPopup={isWide || view === "map"}
+                       onMarkerClick={onMarkerClick}
+                       onBackgroundClick={clearStore} />
+              {/* Controls on the map, not in a band above the list.
+                  The radius is a question about the map — "how far out am I
+                  looking" — so it belongs on the thing it changes, where the
+                  answer is visible in the same glance. Floating it also gives
+                  a phone back the row it used to spend on a label, a chip
+                  group and the word "mi".
+                  At every size, now. A wide screen kept its own copy in the
+                  store list's header, which put the map's control in the
+                  header of a list — three bands from the thing it governs,
+                  and gone entirely the moment you hid that list. The argument
+                  for floating it was never about how wide the window is. */}
+              <div className="map-controls">
+                <div className="map-control-pill" role="group" aria-label="Store search radius">
+                  {RADII.map((r) => (
+                    <button key={r.value} type="button" onClick={() => setRadius(r.value)}
+                            aria-pressed={radius === r.value}
+                            className={"map-radius " + (radius === r.value ? "map-radius-on" : "")}>
+                      {r.label}
+                    </button>
+                  ))}
+                  <span className="map-radius-unit">mi</span>
+                </div>
+                {/* How much list you want back. Sits beside the radius
+                    because the two are one question — how far, and how many
+                    — and because a cap chosen out of sight is a cap nobody
+                    knows is trimming their results. */}
+                <Select value={String(storeCap)} onValueChange={(v) => setStoreCap(Number(v))}>
+                  <SelectTrigger className="map-control-pill map-cap" aria-label="Maximum stores to show">
+                    <SelectValue />
+                    <span className="map-radius-unit">max</span>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {/* The heading carries the noun so the rows can stay a
+                        column of numbers — "20 stores / 50 stores" reads as
+                        four different things rather than one scale. */}
+                    <SelectGroup>
+                      <SelectLabel>Show at most</SelectLabel>
+                      {STORE_CAPS.map((n) => (
+                        <SelectItem key={n} value={String(n)}>{n}</SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </div>
+            </>
           ) : (
             <div className="flex h-full items-center justify-center px-6">
               <div className="fade-item max-w-sm text-center">
@@ -1405,33 +1737,22 @@ export default function App() {
             </div>
           )}
 
-          {/* The lists toggle exists at every size now. It was md-and-up only,
-              so on a phone — the one place where a full-screen map is most
-              worth having — there was no way to get one. */}
-          {loc && (
-            <div className="absolute left-3 top-3 z-10 flex items-center gap-1.5">
+          {/* Phone only, and only the way back. Dragging the grabber down is
+              how the map goes full-screen here; once it is, there is no
+              grabber left on screen, so the return trip has to sit on the map
+              itself. A wide screen has the pair of switches in the top bar —
+              the same state offered twice on one screen is one offer too
+              many. */}
+          {loc && view === "map" && (
+            <div className="absolute left-3 top-3 z-10 lg:hidden">
               <Button
                 id="btn-toggle-list" variant="secondary" size="sm"
-                aria-pressed={!listHidden}
                 aria-controls="stores-panel"
-                onClick={() => setView(listHidden ? "split" : "map")}
-                className={"bg-panel/90 backdrop-blur " + (listHidden ? "" : "max-lg:hidden")}
+                onClick={() => setView("split")}
+                className="bg-panel/90 backdrop-blur"
               >
-                {listHidden ? <><PanelRightOpen /> Show Lists</> : <><PanelRightClose /> Hide Lists</>}
+                <PanelRightOpen /> Show Lists
               </Button>
-              {!listHidden && (
-                <Tooltip content={sideBySide ? "Stack the two lists vertically" : "Put the two lists side by side"}>
-                  <Button
-                    id="btn-toggle-layout" variant="secondary" size="sm"
-                    aria-pressed={sideBySide}
-                    onClick={toggleLayout}
-                    className="hidden bg-panel/90 px-3 backdrop-blur lg:inline-flex"
-                  >
-                    {sideBySide ? <Rows2 /> : <Columns2 />}
-                    <span className="hidden lg:inline">{sideBySide ? "Stacked" : "Side by Side"}</span>
-                  </Button>
-                </Tooltip>
-              )}
             </div>
           )}
         </div>
@@ -1508,8 +1829,17 @@ export default function App() {
                 with nothing on either saying what was being counted. Naming
                 the unit once is what separates the two rows into a scope
                 control and a set of destinations. */}
+            {!isWide && filterBar}
+
             <div className="scope-row flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-line bg-panel px-3 py-2">
-              <span className="microlabel shrink-0" id="scope-row-label">Recalls</span>
+              {/* "Recalls" was a label over a control that scopes recalls,
+                  sitting above a list of *stores* — so on the near-me tab it
+                  named the wrong thing, and on the recalls tab it named the
+                  obvious one. The chips are self-describing ("At a store near
+                  you", "Anywhere in NY"); a heading over them is a row of
+                  chrome spent on nothing. Kept for screen readers, which do
+                  need the group named. */}
+              <span className="sr-only" id="scope-row-label">Recall scope</span>
               {/* The chip tooltips are a mouse affordance and nothing else, so
                   the row carries one disclosure a thumb can open. It sits
                   beside the label rather than after the chips: this row scrolls
@@ -1519,7 +1849,12 @@ export default function App() {
                 label="What these scopes mean"
                 title="How wide a net"
                 body={`“${SCOPES[0].label}” shows only notices that name a chain standing near you — the most specific answer this app can give, and the smallest. “Anywhere in ${loc?.stateAbbr || "your area"}” adds every other active notice covering your area, including the many that name no retailer at all. An independent grocer can only ever appear in the second.`}
-                triggerClassName="shrink-0 text-fog"
+                /* With the "Recalls" heading gone this was a bare glyph
+                   floating at the row's left edge, reading as debris rather
+                   than a control. A disc gives it the same shape as every
+                   other round icon button in the app, so it looks like
+                   something to press. */
+                triggerClassName="scope-info shrink-0"
                 side="bottom"
               />
               {selectedStore ? (
@@ -1583,22 +1918,12 @@ export default function App() {
               <p id="headline"
                  className={"flex shrink-0 flex-wrap items-center gap-x-2 border-b border-line px-4 py-2 text-[12px] font-semibold leading-snug lg:py-2.5 lg:text-[13px] " +
                    (selectedStore ? "max-lg:hidden " : "") +
-                   (headline.tone === "match" ? "bg-mint-soft text-paper" : "bg-panel text-fog")}>
+                   "bg-panel text-fog"}>
+                {/* Only the two cases nothing else on screen says. The
+                    Class I count that used to ride here is the high-risk
+                    filter beside the search box now — a control instead of a
+                    number, in the same pixels. */}
                 <span>{headline.text}</span>
-                {/* The severity count is the one number worth carrying up here,
-                    and "Class I" is the one word in it nobody can be expected
-                    to know. It explains itself in place rather than sending
-                    anyone to About. */}
-                {headline.high > 0 && (
-                  <InfoTip
-                    title="Class I — the most serious class"
-                    body="The agency believes eating, taking or using the product could cause serious harm or death. Read those notices first."
-                    triggerClassName="text-alert"
-                    side="bottom"
-                  >
-                    <span className="tnum">{headline.high} Class I</span>
-                  </InfoTip>
-                )}
               </p>
             )}
 
@@ -1606,50 +1931,23 @@ export default function App() {
             <div ref={splitRef}
                  className={"flex min-h-0 flex-1 " + (sideBySide ? "flex-col lg:flex-row" : "flex-col")}>
             {/* ---- stores ---- */}
-            <section className={showStores + "min-h-0 flex-col overflow-hidden " +
-                       (storesFolded ? "flex-none" : "flex-1")}
-                     style={storesFolded ? undefined : storesStyle}>
+            <section className={showStores + "min-h-0 flex-1 flex-col overflow-hidden"}
+                     style={storesStyle}>
               <PanelHeader
                 label="Stores" countId="stat-stores" count={scanning ? "…" : stores.length}
+                className="max-lg:hidden"
               >
-                {!storesFolded && (
-                  <>
-                    <span className="microlabel">Within</span>
-                    <div className="flex gap-1" role="group" aria-label="Store search radius">
-                      {RADII.map((r) => (
-                        <button key={r.value} type="button" onClick={() => setRadius(r.value)}
-                                aria-pressed={radius === r.value}
-                                className={"chip " + (radius === r.value ? "chip-on" : "chip-off")}>
-                          {r.label}
-                        </button>
-                      ))}
-                      <span className="microlabel self-center">mi</span>
-                    </div>
-                  </>
-                )}
-                {/* Wide screens only: get the whole panel back for reading
-                    recalls. On a phone the bottom bar already does this, and a
-                    second way to hide a list you are looking at is one too
-                    many. */}
-                {isWide && (
-                  <Tooltip content={storesCollapsed ? "Show the store list again" : "Fold the store list away and give the whole panel to recalls"}>
-                    <button
-                      id="btn-collapse-stores"
-                      type="button"
-                      onClick={toggleStoresCollapsed}
-                      aria-expanded={!storesCollapsed}
-                      aria-controls="stores-list-scroll"
-                      aria-label={storesCollapsed ? "Show the store list" : "Hide the store list"}
-                      className="ml-1 grid size-7 shrink-0 place-items-center rounded-md text-fog hover:bg-panel-3 hover:text-paper"
-                    >
-                      {storesCollapsed ? <ChevronDown className="size-4" /> : <ChevronUp className="size-4" />}
-                    </button>
-                  </Tooltip>
-                )}
+                {/* Nothing else. The radius chips that used to sit here are
+                    on the map at every size now — a question about the map,
+                    answered on the map — and the fold that sat beside them is
+                    the Stores switch in the top bar, which takes the list away
+                    rather than collapsing it to a header for a list you
+                    cannot see. What is left is the section's name and how many
+                    things are in it, which is all a section header owes. */}
               </PanelHeader>
 
               <div id="stores-list-scroll"
-                   className={(storesFolded ? "hidden " : "") + "sunken min-h-0 flex-1 overflow-y-auto px-3 py-3"}>
+                   className="tabbar-space sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 {storesStatus && !storesStatus.empty && (
                   <div id="stores-status" role="status" aria-live="polite"
                        className={"mb-2 flex items-start gap-2 text-xs " + (storesStatus.error ? "text-alert" : "text-fog")}>
@@ -1680,10 +1978,11 @@ export default function App() {
                       data-index={i}
                       aria-current={isActive ? "true" : undefined}
                       onClick={() => selectStore(i)}
-                      className={"store-item lift fade-item elev-1 cursor-pointer rounded-xl border bg-panel-2 py-3 pl-4 pr-3 " +
-                        (isActive ? "active border-mint bg-mint-soft ring-2 ring-mint"
-                          : isSibling ? "same-chain border-mint-line bg-panel-3"
-                            : n > 0 ? "border-mint-line hover:border-mint" : "border-line hover:border-line-strong")}
+                      className={"store-item lift fade-item cursor-pointer rounded-xl border bg-panel-2 py-3 pl-4 pr-3 " +
+                        (isActive ? "active elev-2 border-mint bg-mint-soft ring-2 ring-mint"
+                          : isSibling ? "same-chain elev-1 border-mint-line bg-panel-3"
+                            : "elev-1 " + (activeStore >= 0 ? "receded " : "") +
+                              (n > 0 ? "border-line-strong" : "border-line hover:border-line-strong"))}
                     >
                       <div className="flex items-baseline gap-2">
                         <span className="store-name truncate text-sm font-semibold">
@@ -1707,6 +2006,7 @@ export default function App() {
                             title="Local — an independent store"
                             body="No recall notice will ever name an independent by name, so it can never show a match here. That is a gap in the data, not a clean bill of health — pick it and switch to “Anywhere in your area” to see what it is actually exposed to."
                             label="Local: what this means"
+                            variant="badge"
                             triggerClassName="text-fog"
                             side="top"
                           >
@@ -1720,8 +2020,17 @@ export default function App() {
                             verdict on the store — and most independents can
                             never match at all, which is a gap in the data
                             rather than a clean bill of health. */}
+                        {/* Green is the interface saying "you did this", so it
+                            cannot also be the data saying "a notice names this
+                            store" — side by side those read as two selected
+                            cards. A named store is carried by weight and by the
+                            count itself at full text contrast, which is the
+                            emphasis it always deserved and never actually had:
+                            it was tinted, not prioritised. */}
                         <p className={"flex min-w-0 items-center gap-1 tnum text-[11px] " +
-                          (isActive || isSibling || n > 0 ? "text-mint" : "text-subtle")}>
+                          (isActive ? "text-mint"
+                            : n > 0 ? "font-semibold text-paper"
+                              : "text-subtle")}>
                           <span className="truncate">
                             {isActive
                               ? recallsHere
@@ -1744,11 +2053,23 @@ export default function App() {
                     );
                   })}
                 </ul>
+                {/* The cap, said out loud. Without this a truncated list is
+                    indistinguishable from a complete one, and widening the
+                    radius looks broken: you ask for 25 miles, the nearest
+                    N are already inside 5, and nothing changes. */}
+                {storesTrimmed > 0 && !scanning && (
+                  <p className="mt-2 px-1 pb-1 text-center text-[11px] text-subtle">
+                    Showing the {stores.length} nearest of {storesTrimmed} within{" "}
+                    {RADII.find((r) => r.value === radius)?.label || "?"} mi.
+                  </p>
+                )}
               </div>
             </section>
 
-            {/* ---- drag divider between the two lists (desktop only) ---- */}
-            {isWide && !storesFolded && (
+            {/* ---- drag divider between the two lists (desktop only) ----
+                Only when there are two. A handle that resizes one list against
+                nothing is furniture. */}
+            {isWide && bothLists && (
               <div
                 id="split-handle"
                 role="separator"
@@ -1766,107 +2087,104 @@ export default function App() {
 
             {/* ---- products ---- */}
             <section className={showProducts + "min-h-0 flex-1 flex-col overflow-hidden " + (isWide ? "" : "border-t border-line")}>
-              {/* ---- the filter bar ----
-                  Search and one Filters control, in the panel they filter. */}
-              <div className="flex shrink-0 items-center gap-2 border-b border-line bg-panel px-3 py-2">
-                {/* The count and the high-risk tally used to be a band of their
-                    own above this row, which is two rows for one section's
-                    header. They are three words; they fit here. */}
-                <span className="microlabel hidden shrink-0 lg:inline">Recalls</span>
-                <span id="stat-recalls" className="tnum shrink-0 text-xs font-semibold text-mint">
-                  {productsBusy ? "…" : sorted.length}
-                </span>
-                {highCount > 0 && (
-                  <span id="stat-high" className="tnum shrink-0 text-[11px] font-semibold text-amber">{highCount} high-risk</span>
-                )}
-                <div className="relative min-w-0 flex-1">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-fog" />
-                  <Input
-                    id="filter-text"
-                    type="search"
-                    value={filterText}
-                    onChange={(e) => { setFilterText(e.target.value); setLimit(25); }}
-                    placeholder="Search recalls…"
-                    aria-label="Search recalled products"
-                    className="h-9 pl-9 text-[13px]"
-                  />
-                </div>
-                <div className="relative shrink-0">
-                  <FilterButton
-                    id="btn-filters"
-                    open={filtersOpen}
-                    count={activeFilters.length}
-                    onClick={() => setFiltersOpen((v) => !v)}
-                  />
-                  <FilterSheet
-                    open={filtersOpen}
-                    onClose={() => setFiltersOpen(false)}
-                    anchored={isWide}
-                    count={activeFilters.length}
-                    onClear={clearFilters}
-                    resultLabel={`${plural(sorted.length, "recall", "recalls")}`}
-                  >
-                    <FilterGroup
-                      label="Reason for recall"
-                      options={reasonOptions}
-                      selected={reasonKeys}
-                      onChange={(next) => { setReasonKeys(next); setLimit(25); }}
-                      allLabel="Any reason"
-                    />
-                    <FilterGroup
-                      label="Product type"
-                      options={categoryOptions}
-                      selected={categoryKeys}
-                      onChange={(next) => { setCategoryKeys(next); setLimit(25); }}
-                      allLabel="All types"
-                    />
-                    <FilterGroup
-                      label="Source"
-                      options={sourceOptions}
-                      /* Empty means "everything", so a full set reads as empty
-                       * — otherwise the All chip could never be the on state. */
-                      selected={sourceNames.every((n) => activeSources.has(n)) ? [] : sourceNames.filter((n) => activeSources.has(n))}
-                      onChange={(next) => {
-                        setActiveSources(new Set(next.length ? next : sourceNames));
-                        setLimit(25);
-                      }}
-                      allLabel="All sources"
-                    />
-                    <FilterChoice
-                      label="Sort by"
-                      options={SORTS}
-                      value={sortBy}
-                      onChange={(v) => { setSortBy(v); setLimit(25); }}
-                    />
-                  </FilterSheet>
-                </div>
-              </div>
+              {isWide && filterBar}
 
-              {(activeFilters.length > 0 || sortBy !== "newest") && (
-                <div id="active-filters" className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-line bg-panel px-3 py-2">
-                  {activeFilters.map((f) => (
-                    <button key={f.key} type="button" onClick={() => { f.clear(); setLimit(25); }}
-                            className="chip-active" title={`Remove filter: ${f.label}`}>
-                      <span className="truncate">{f.label}</span>
-                      <X className="size-3 shrink-0" />
-                    </button>
-                  ))}
-                  {sortBy !== "newest" && (
-                    <button type="button" onClick={() => setSortBy("newest")} className="chip-active" title="Back to newest first">
-                      <span className="truncate">Highest risk first</span>
-                      <X className="size-3 shrink-0" />
+              {/* The active-filter bar is gone.
+                  It existed because filters were invisible once set — chosen
+                  in a sheet, then only summarised here. They are not: severity
+                  and product type are chips in the row above, showing their own
+                  state; the search text sits in its own box; and the Filters
+                  badge counts what is left, meaning exactly the things still
+                  hidden inside the sheet. A whole band restating four visible
+                  controls is the redundancy this pass keeps finding. Clearing
+                  is where setting is — tap the chip again, or Clear inside the
+                  sheet that holds the rest. */}
+
+              {/* Product type, on the surface instead of two taps inside a
+                  sheet.
+                  Categories are the filter people actually reach for — "show
+                  me the food ones" — and they were the one facet you had to
+                  go looking for. A scrolling row of icons says what is in
+                  this list before you read a single card, and the counts
+                  come from the same facet maths the sheet uses, so the two
+                  can never disagree.
+                  It was phone-only, on the argument that the sheet can show
+                  every facet at once on a wide screen. That argument is about
+                  the sheet: this row's job is to say what is in the list
+                  before you read a card, and a control you have to open a
+                  sheet to find cannot do that at any width. Both drive the
+                  same state, so they cannot disagree — and it sits directly
+                  under the search box, which is where the rest of the
+                  narrowing happens. */}
+              {categoryOptions.length > 1 && (
+                <div className="catrow" role="group" aria-label="Quick filters">
+                  {/* Tinted, not filled — see `.catchip-soft`. "All" is where
+                      you are when you have not filtered, so it must not look
+                      like something you pressed; the full fill is reserved for
+                      a facet you actually chose, and there is only ever one of
+                      those in the row. */}
+                  <button
+                    type="button"
+                    onClick={() => { setCategoryKeys([]); setLimit(25); }}
+                    aria-pressed={categoryKeys.length === 0}
+                    className={"catchip " + (categoryKeys.length === 0 ? "catchip-soft" : "")}
+                  >
+                    <span className="catchip-icon"><Rows2 className="size-4" /></span>
+                    <span>All</span>
+                    {/* Every other chip in this row carries a count, so the
+                        one that means "no filter" has to as well — a blank
+                        where a number belongs reads as a missing number
+                        rather than as "all of them". Each recall has exactly
+                        one type, so the sum of the parts is the whole. */}
+                    <span className="catchip-count tnum">
+                      {categoryOptions.reduce((a, c) => a + c.count, 0)}
+                    </span>
+                  </button>
+                  {/* Severity sits after All, and is built as a `catchip` like
+                      everything else in the row — same height, same icon disc,
+                      same count on the right. It was a different shape from
+                      its neighbours, which made a row of equals look like a
+                      control and then a list. Only the colour differs, because
+                      it is the one filter about danger rather than about kind. */}
+                  {(highCount > 0 || highOnly) && (
+                    <button
+                      id="stat-high"
+                      type="button"
+                      aria-pressed={highOnly}
+                      onClick={() => { setHighOnly(!highOnly); setLimit(25); }}
+                      className={"catchip catchip-risk " + (highOnly ? "catchip-risk-on" : "")}
+                    >
+                      <span className="catchip-icon"><AlertCircle className="size-4" /></span>
+                      <span>high-risk</span>
+                      <span className="catchip-count tnum">{highCount}</span>
                     </button>
                   )}
-                  {activeFilters.length > 1 && (
-                    <button type="button" onClick={clearFilters}
-                            className="ml-auto tnum text-[11px] font-semibold uppercase tracking-wider text-fog hover:text-mint">
-                      Clear all
-                    </button>
-                  )}
+                  {categoryOptions.map((c) => {
+                    const CatIcon = CATEGORY_ICONS[c.value] || Package;
+                    const on = categoryKeys.includes(c.value);
+                    return (
+                      <button
+                        key={c.value}
+                        type="button"
+                        onClick={() => {
+                          setCategoryKeys(on ? categoryKeys.filter((k) => k !== c.value) : [...categoryKeys, c.value]);
+                          setLimit(25);
+                        }}
+                        aria-pressed={on}
+                        disabled={!on && !c.count}
+                        className={"catchip " + (on ? "catchip-on" : "")}
+                      >
+                        <span className="catchip-icon"><CatIcon className="size-4" /></span>
+                        <span>{c.label}</span>
+                        <span className="catchip-count tnum">{c.count}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
 
-              <div ref={productsScrollRef} className="sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
+              <div id="recalls-list-scroll" ref={productsScrollRef}
+                   className="tabbar-space sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 {!productsBusy && <SourceNotice sources={sources} />}
                 {productsBusy && (
                   <ul className="flex flex-col gap-2">{[0, 1, 2, 3].map((i) => <RecallSkeleton key={i} delay={i * stagger * 2} />)}</ul>
@@ -2032,12 +2350,30 @@ export default function App() {
       {loc && (
         <nav
           aria-label="Main"
-          className="z-30 flex shrink-0 items-stretch border-t border-line bg-panel lg:hidden"
-          style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+          /* Floating, not welded on.
+           *
+           * It was a flush white strip with a hairline on top, in the flow
+           * below a white scrolling list — so it shared an edge and a fill
+           * with the thing it sits over, and disappeared. It was missed
+           * entirely, which for the app's primary navigation is the whole
+           * ballgame.
+           *
+           * Now it detaches: inset from all three edges, fully rounded,
+           * lifted on the app's deepest shadow, over a blurred translucent
+           * ground so the list visibly passes underneath. Depth is doing the
+           * separating rather than a 1px line — which is the same argument
+           * ui/button.jsx already makes about bevels, applied to a surface.
+           * The blur is a saturated backdrop over a 78%-opaque panel, not a
+           * clear pane: legibility first, glass second. */
+          className="tabbar lg:hidden"
         >
           {[
             { id: "near", label: "Near me", icon: Store, count: stores.length },
-            { id: "recalls", label: "Recalls", icon: ListFilter, count: filtered.length },
+            /* A clipboard, not the sliders glyph. `ListFilter` is what half
+               the platforms on a phone draw for "filter" — so the app's second
+               destination wore the icon of a control, two rows above an actual
+               Filters button wearing very nearly the same one. */
+            { id: "recalls", label: "Recalls", icon: ClipboardList, count: filtered.length },
             { id: "scan", label: "Scan", icon: ScanLine },
           ].map(({ id, label, icon: Icon, count }) => {
             const on = id !== "scan" && tab === id;
@@ -2051,8 +2387,7 @@ export default function App() {
                   setTab(id);
                   if (view === "map") setView("split"); // don't land on a hidden list
                 }}
-                className={"flex flex-1 flex-col items-center justify-center gap-0.5 py-2 transition-colors " +
-                  (on ? "text-mint" : "text-fog active:bg-panel-3")}
+                className={"tabbar-item " + (on ? "tabbar-item-on" : "")}
               >
                 <span className="relative">
                   <Icon className="size-5" strokeWidth={on ? 2.4 : 2} />
@@ -2148,14 +2483,32 @@ export default function App() {
       <ScanSheet open={scanOpen} onClose={() => setScanOpen(false)} recalls={recalls} />
 
       {/* DialKit authoring panel — renders null in production builds. */}
-      <DialRoot position="bottom-left" theme="dark" defaultOpen={false} />
+      {/* Authoring tool, so: on in dev and on preview deploys, off in
+          production. Its default is dev-only, which meant the one place the
+          motion is worth tuning — a real phone, on a real network, holding a
+          preview build — was the one place the panel would not appear. */}
+      <DialRoot position="bottom-left" theme="dark" defaultOpen={false}
+                productionEnabled={import.meta.env.VITE_VERCEL_ENV !== "production"} />
 
-      {/* ================= about modal ================= */}
-      {aboutOpen && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/70 p-4 sm:items-center"
-             onClick={() => setAboutOpen(false)} role="dialog" aria-modal="true" aria-label="About this data">
-          <div className="fade-item max-h-[80dvh] w-full max-w-xl overflow-y-auto overscroll-contain rounded-2xl border border-line bg-panel p-5 text-sm text-fog"
-               onClick={(e) => e.stopPropagation()}>
+      {/* ================= about =================
+          A sheet on a phone and a centred dialog above sm, both arriving the
+          same way the rest of them do now — up from the bottom edge where
+          there is one, growing in place where there isn't. It used to be
+          `fade-item`, an entrance with no matching exit, so the longest
+          surface in the app vanished mid-scroll. */}
+      {aboutMounted && (
+        <div className={"fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4 " +
+               (aboutShown ? "" : "pointer-events-none")}
+             role="dialog" aria-modal="true" aria-label="About this data">
+          {/* The ground is its own element rather than the box that lays the
+              dialog out, so the two can move independently: the dim fades
+              while the surface travels. It is `absolute`, so it is out of the
+              flow and the panel is still the only flex item. */}
+          <div className={"sheet-scrim absolute inset-0 bg-ink/70 " + (aboutShown ? "is-shown" : "")}
+               onClick={() => setAboutOpen(false)} />
+          <div className={"sheet-panel sheet-centered relative max-h-[85dvh] w-full max-w-xl overflow-y-auto overscroll-contain rounded-t-2xl border border-b-0 border-line bg-panel p-5 text-sm text-fog sm:rounded-2xl sm:border-b " +
+                 (aboutShown ? "is-shown" : "")}
+               style={{ paddingBottom: "calc(1.25rem + env(safe-area-inset-bottom, 0px))" }}>
             <div className="flex items-center justify-between">
               <p className="microlabel text-paper">About this data</p>
               <button onClick={() => setAboutOpen(false)} aria-label="Close" className="grid size-8 place-items-center rounded-lg text-fog hover:bg-panel-3 hover:text-paper"><X className="size-4" /></button>

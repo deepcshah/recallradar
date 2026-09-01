@@ -66,11 +66,25 @@
   --rr-shimmer: #ebebeb;
   --rr-shimmer-hi: #d9d9d9;
 
-  /* Map pins are deliberately neutral: grey for every store, green only for
-   * the ones a notice actually names. No red — a store is not a hazard. */
-  --rr-pin-idle: #b5b5b5;
-  --rr-pin-named: var(--rr-accent-hi);
-  --rr-pin-ring: #1a1a1a;
+  /* Pins carry two facts and neither of them is danger — a store is not a
+   * hazard, so there is no red here and never will be.
+   *
+   * "A notice names this chain" is now weight, not hue: light grey for every
+   * store, near-black for the named ones. Green is reserved for the pin you
+   * picked, which is the same thing green means everywhere else in the app.
+   * It used to mean "named", which put the map's most saturated colour on a
+   * fact the list was simultaneously painting green for "selected" — two
+   * meanings, one colour, on one screen. */
+  --rr-pin-idle: #c4c4c4;
+  --rr-pin-named: #4a4a4a;
+  --rr-pin-active: var(--rr-accent);   /* 5.3:1 under white, unlike accent-hi */
+  --rr-pin-ring: #ffffff;
+  /* The number's colour has to follow the pin it sits on. It was hard-coded
+   * white, which was already thin on the old grey and became invisible once
+   * the idle pin lightened — every unnamed pin lost its number outright. */
+  --rr-pin-idle-ink: #2b2b2b;
+  --rr-pin-named-ink: #ffffff;
+  --rr-pin-active-ink: #ffffff;
 }
 
 :root[data-theme="dark"] {
@@ -111,9 +125,14 @@
   --rr-shimmer: #303030;
   --rr-shimmer-hi: #454545;
 
+  /* Inverted for dark: on a dark map the emphasised pin is the light one. */
   --rr-pin-idle: #6b6b6b;
-  --rr-pin-named: var(--rr-accent-hi);
-  --rr-pin-ring: #ffffff;
+  --rr-pin-named: #e8e8e8;
+  --rr-pin-active: var(--rr-accent-hi);
+  --rr-pin-ring: #0b1f14;
+  --rr-pin-idle-ink: #ffffff;
+  --rr-pin-named-ink: #1a1a1a;
+  --rr-pin-active-ink: #0b1f14;
 }
 
 /* No explicit choice: follow the OS. */
@@ -150,8 +169,12 @@
     --rr-shimmer: #303030;
     --rr-shimmer-hi: #454545;
     --rr-pin-idle: #6b6b6b;
-    --rr-pin-named: var(--rr-accent-hi);
-    --rr-pin-ring: #ffffff;
+    --rr-pin-named: #e8e8e8;
+    --rr-pin-active: var(--rr-accent-hi);
+    --rr-pin-ring: #0b1f14;
+    --rr-pin-idle-ink: #ffffff;
+    --rr-pin-named-ink: #1a1a1a;
+    --rr-pin-active-ink: #0b1f14;
   }
 }
 
@@ -243,10 +266,23 @@ button:disabled,
  * a phone you aimed at a radius chip and hit the one beside it. The type
  * stays at 11px — a chip is a label — but the box around it grows to 36px on
  * touch and shrinks back to 24px where a mouse is doing the pointing. */
+/* A chip is a key, like a Button, and was the one control that did not say
+ * so: flat fill, hairline, no bevel, no shadow, nothing under the thumb. Next
+ * to Scan — bevel, drop shadow, sinks on press — it read as a different
+ * toolkit. Same moulded face as ui/button.jsx, at chip scale: light hairline
+ * on the top inner edge, dark on the bottom, one hairline shadow, and on
+ * :active the bevel is swapped for a press shadow so the light flips sides. */
 .chip {
   @apply inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-full border
-         px-3 text-[11px] font-semibold uppercase tracking-wider transition-colors;
+         px-3 text-[11px] font-semibold uppercase tracking-wider;
   min-height: 36px;
+  box-shadow: var(--rr-bevel), var(--rr-shadow-1);
+  transition: box-shadow 0.1s ease, background-color 0.16s ease, border-color 0.16s ease,
+    color 0.16s ease, transform 0.1s ease;
+}
+.chip:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: var(--rr-press);
 }
 /* Keyed to the pointer, not the viewport.
  *
@@ -269,6 +305,7 @@ button:disabled,
 }
 .chip-on {
   @apply border-mint bg-mint text-mint-ink;
+  box-shadow: var(--rr-bevel-strong), var(--rr-shadow-1);
 }
 .chip-off {
   @apply border-line bg-panel-2 text-fog hover:border-mint-line hover:text-paper;
@@ -281,6 +318,28 @@ button:disabled,
 }
 .chip:disabled {
   @apply opacity-40;
+  box-shadow: none;
+}
+
+/* The scope row's one thumb-reachable disclosure. It leads the row, so it has
+ * to look deliberate rather than left over — a disc, like every other round
+ * icon control here. */
+/* Written as `.infotip.scope-info` on purpose: `.infotip` sets its own
+ * padding, negative margin and dotted underline further down this file, and a
+ * single class here would lose to it and render a padded rounded rectangle
+ * instead of a disc. */
+.infotip.scope-info {
+  @apply grid size-7 shrink-0 place-items-center rounded-full border border-line bg-panel-2 text-fog;
+  padding: 0;
+  margin: 0;
+  text-decoration: none;
+  box-shadow: var(--rr-bevel), var(--rr-shadow-1);
+}
+.infotip.scope-info .infotip-mark {
+  @apply size-3.5 opacity-100;
+}
+.infotip.scope-info:active {
+  box-shadow: var(--rr-press);
 }
 
 /* A row of chips that scrolls sideways instead of wrapping, so a variable
@@ -302,6 +361,7 @@ button:disabled,
          bg-mint-soft py-1 pl-2.5 pr-1.5 text-[12px] font-semibold text-mint transition-colors
          hover:border-mint;
   min-height: 32px;
+  box-shadow: var(--rr-bevel), var(--rr-shadow-1);
 }
 
 /* ─────────────────────────────── surfaces ─────────────────────────────── */
@@ -340,35 +400,55 @@ button:disabled,
 
 /* ───────────────────────── selection & drag handles ───────────────────── */
 
-/* The selected store. A tinted background and a hairline were doing all the
- * work, and on the light theme #ddf0e5 against #ffffff is a ~4% luminance
- * step — invisible at arm's length on a phone in daylight, and invisible to
- * anyone with a red-green deficiency. So selection is now carried by shape
- * as well as colour: a 3px rail down the leading edge that no other card has,
- * which survives both themes and any colour vision. */
+/* Selection, by subtraction.
+ *
+ * The tint alone was never enough — on the light theme #ddf0e5 against
+ * #ffffff is a ~4% luminance step, invisible at arm's length and invisible
+ * to anyone with a red-green deficiency — so a 3px accent rail ran down the
+ * leading edge to carry it in shape as well as colour. That worked, and it
+ * was still the wrong instrument. A coloured bar pinned to the left edge of
+ * a card is the house style of every generated callout on the web, and by
+ * the time it arrived the selected card already carried a ring, a mint
+ * border, a tinted fill, a SELECTED pill and a line reading "Showing its
+ * recalls below" — five signals, to which the rail added a sixth.
+ *
+ * The map beside this list had already solved it the other way: pick a pin
+ * and every other pin drops to 45% (see .map-has-selection). Nothing is
+ * added to the chosen one; everything else steps back, and the map acquires
+ * a subject. The list now says it the same way, so the two halves of one
+ * screen speak one language instead of two. Receding is also the stronger
+ * signal of the pair — it changes every row rather than decorating one — and
+ * it is colour-blind safe for the same reason the rail was: it does not
+ * depend on hue at all.
+ *
+ * Other locations of the selected chain stay at full strength. They are
+ * included in what you are looking at without being what you picked, and
+ * that is now said by *not* receding rather than by a fainter rail. */
 .store-item {
   position: relative;
-  overflow: hidden;
+  transition: filter 0.16s ease, transform 0.16s cubic-bezier(0.2, 0.7, 0.3, 1),
+    box-shadow 0.16s ease, background-color 0.16s ease, border-color 0.16s ease;
 }
-.store-item::before {
-  content: "";
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 3px;
-  background: var(--rr-accent-hi);
-  transform: scaleX(0);
-  transform-origin: left;
-  transition: transform 0.16s cubic-bezier(0.2, 0.7, 0.3, 1);
+/* 0.6, not the map's 0.45. A pin is a graphical token and can be dimmed as
+ * far as it stays findable; a store card is text someone may still need to
+ * read, and 0.45 composites near-black on the panel to roughly #8c8c8c —
+ * about 3.5:1, under the 4.5:1 floor for body text. 0.6 lands near #666 and
+ * ~5.7:1, which is a clear step back that is still legible. De-emphasis must
+ * not become an accessibility failure. */
+.store-item.receded {
+  /* `filter`, not `opacity`, and not by preference: every card carries
+   * .fade-item, whose entrance animation is declared `both`, so it holds
+   * `opacity: 1` from its final keyframe for the life of the element — and an
+   * animated value beats a normal declaration no matter how specific. Setting
+   * `opacity` here silently did nothing. `filter` is a different property, so
+   * the animation has no claim on it. */
+  filter: opacity(0.6);
 }
-.store-item.active::before {
-  transform: scaleX(1);
-}
-/* Other locations of the selected chain get a fainter version of the same
- * rail: they are included in what you are looking at, but you did not pick
- * them. Same signal, dialled down — not a different signal. */
-.store-item.same-chain::before {
-  background: var(--rr-accent-line);
-  transform: scaleX(1);
+/* Reaching for a card cancels its recession — otherwise the list would fight
+ * a user who has decided to look somewhere else. */
+.store-item.receded:hover,
+.store-item.receded:focus-visible {
+  filter: none;
 }
 
 /* The bar between the map and the panel. It is a control, so it looks like
@@ -412,6 +492,65 @@ button:disabled,
 .pop-in {
   animation: popIn 0.14s cubic-bezier(0.2, 0.7, 0.3, 1) both;
   transform-origin: top center;
+}
+
+/* ──────────────────────────── sheets: the slide ───────────────────────── */
+
+/* A sheet arrives from the edge it will leave by.
+ *
+ * Every sheet in the app used to appear and vanish: mounted with `pop-in` — a
+ * 0.14s scale out of the top edge — and unmounted outright on close, so a
+ * surface covering four fifths of a phone screen simply blinked out of
+ * existence. That is the one transition on a phone worth paying for, because
+ * it is what says "this came up over the list, and the list is still there
+ * underneath". Without it a dismissal reads as a screen change.
+ *
+ * The curve is the one iOS uses for exactly this move: fast out of the gate,
+ * a long settle, no overshoot. And the exit is the shorter of the two on
+ * purpose — an arrival can take its time, but a dismissal has to feel like it
+ * obeyed you.
+ *
+ * Presence is owned by `useSheetPresence` in ui/sheet.jsx, which keeps the
+ * sheet mounted through the exit; `--rr-sheet-out` and SHEET_EXIT_MS there
+ * are the same number and have to stay that way. */
+:root {
+  --rr-sheet-in: 340ms;
+  --rr-sheet-out: 240ms;  /* == SHEET_EXIT_MS in components/ui/sheet.jsx */
+  --rr-sheet-ease: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.sheet-scrim {
+  opacity: 0;
+  transition: opacity var(--rr-sheet-out) ease;
+}
+.sheet-scrim.is-shown {
+  opacity: 1;
+  transition-duration: var(--rr-sheet-in);
+}
+
+.sheet-panel {
+  transform: translate3d(0, 100%, 0);
+  transition: transform var(--rr-sheet-out) var(--rr-sheet-ease);
+}
+.sheet-panel.is-shown {
+  transform: translate3d(0, 0, 0);
+  transition-duration: var(--rr-sheet-in);
+}
+
+/* A centred dialog is not a sheet — it has no edge to come from, so it grows
+   in place instead of sliding. Same presence machinery, different arrival. */
+@media (min-width: 640px) {
+  .sheet-panel.sheet-centered {
+    opacity: 0;
+    transform: scale(0.96);
+    transition: transform var(--rr-sheet-out) var(--rr-sheet-ease),
+                opacity var(--rr-sheet-out) ease;
+  }
+  .sheet-panel.sheet-centered.is-shown {
+    opacity: 1;
+    transform: scale(1);
+    transition-duration: var(--rr-sheet-in);
+  }
 }
 
 /* Skeletons shimmer rather than pulse: a pulse reads as "broken", a sweep
@@ -494,44 +633,393 @@ button:disabled,
   animation: progressSlide 1.1s ease-in-out infinite;
 }
 
+/* ────────────────────────── bottom tab bar (phone) ────────────────────── */
+
+/* Floating rather than flush. See the note at its markup in App.jsx: welded
+ * to the bottom edge, sharing a fill with the list above it and separated by
+ * one hairline, it was invisible enough to be missed outright.
+ *
+ * `position: fixed` rather than in-flow, so it hovers over the content and
+ * the list scrolls beneath it — which is what makes the blur legible as
+ * depth instead of decoration. The page pays for that with scroll padding
+ * (`--rr-tabbar-space`) on the panes underneath, so the last row of a list
+ * can always clear it. */
+:root {
+  --rr-tabbar-h: 3.75rem;
+  --rr-tabbar-inset: 0.625rem;
+  --rr-tabbar-space: calc(var(--rr-tabbar-h) + var(--rr-tabbar-inset) * 2);
+}
+
+.tabbar {
+  position: fixed;
+  z-index: 40;
+  left: var(--rr-tabbar-inset);
+  right: var(--rr-tabbar-inset);
+  bottom: calc(var(--rr-tabbar-inset) + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  align-items: stretch;
+  height: var(--rr-tabbar-h);
+  border-radius: 1.125rem;
+  border: 1px solid var(--rr-line);
+  /* The blur was working and looked like nothing, because at 78% over a
+   * white list on a light ground there is almost no contrast left to blur —
+   * glass needs something behind it to bend. Two changes make it read:
+   * more of the backdrop comes through, and the bar gets the bright top
+   * inner edge that actually signals a pane of something. That edge is the
+   * app's own --rr-bevel, not an imported glassmorphism look: the same
+   * highlight every button here already has, at surface scale. */
+  background: color-mix(in oklab, var(--rr-surface) 62%, transparent);
+  border-color: color-mix(in oklab, var(--rr-surface) 70%, var(--rr-line));
+  box-shadow: var(--rr-bevel), var(--rr-shadow-3);
+  overflow: hidden;
+}
+/* Only where the browser can actually blur. Without this the fallback is a
+ * 78% wash over live content, which is worse than a solid bar. */
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .tabbar {
+    -webkit-backdrop-filter: blur(20px) saturate(190%);
+    backdrop-filter: blur(20px) saturate(190%);
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .tabbar { background: var(--rr-surface); }
+}
+
+/* Hidden above the breakpoint here rather than with a `lg:hidden` utility,
+ * and placed *after* the rule it overrides.
+ *
+ * `.tabbar` sets `display: flex` from this file, which is emitted after
+ * Tailwind's utilities — so the utility lost and the bar, now `fixed`,
+ * floated across the bottom of the desktop layout on top of the recall
+ * list. Writing the breakpoint here fixes the source of the conflict, but
+ * only below the base rule: both selectors have the same specificity, so
+ * the one that comes last is the one that wins. */
+@media (min-width: 1024px) {
+  .tabbar { display: none; }
+}
+
+.tabbar-item {
+  @apply flex flex-1 flex-col items-center justify-center gap-0.5 text-fog;
+  transition: color 0.16s ease, background-color 0.16s ease;
+}
+.tabbar-item:active {
+  background: var(--rr-card-hover);
+}
+/* The selected tab is the one place a filled accent would fight the floating
+ * shape it sits inside, so it is carried by colour and weight only — the
+ * same green that means "you pressed this" everywhere else. */
+.tabbar-item-on {
+  @apply text-mint;
+}
+.tabbar-item span:last-child {
+  @apply text-[10px] font-semibold tracking-wide;
+}
+
+/* Room for it. The bar is out of the flow, so anything that scrolls to the
+ * bottom of the screen has to leave its own gap or the last row sits under
+ * the glass permanently. */
+@media (max-width: 1023.98px) {
+  .tabbar-space {
+    padding-bottom: var(--rr-tabbar-space);
+  }
+}
+
+/* ─────────────────────── category row (phone) ─────────────────────────── */
+
+/* A scrolling row of product types, above the recall list.
+ *
+ * Scrolls sideways rather than wrapping so a variable number of categories
+ * never changes the row's height — the same rule .scope-row follows, and the
+ * thing that stops stacked filter bands creeping down a phone screen. The
+ * scrollbar is hidden because a phone has none; the overflow is discovered
+ * by dragging, and the fade on the trailing edge says there is more.
+ *
+ * It used to be `lg:hidden`, on the argument that the filter sheet has room
+ * to show every facet at once on a wide screen. That argument was about the
+ * sheet, not about the row: the row's job is to say what is in this list
+ * before you read a card, and a control you have to open a sheet to find
+ * cannot do that at any width. Both surfaces drive the same state, so they
+ * cannot disagree. */
+.catrow {
+  @apply flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-line bg-panel px-3 py-2;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+}
+.catrow::-webkit-scrollbar { display: none; }
+
+.catchip {
+  @apply inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-line
+         bg-panel-2 py-1 pl-1 pr-3 text-[12px] font-semibold text-fog;
+  min-height: 36px;
+  scroll-snap-align: start;
+  box-shadow: var(--rr-bevel), var(--rr-shadow-1);
+  transition: box-shadow 0.1s ease, background-color 0.16s ease, border-color 0.16s ease,
+    color 0.16s ease, transform 0.1s ease;
+}
+.catchip:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: var(--rr-press);
+}
+.catchip:disabled {
+  @apply opacity-40;
+  box-shadow: none;
+}
+/* The icon sits in its own disc, the way every row of this shape does — it
+   gives the glyph a consistent optical size whatever its outline weight. */
+.catchip-icon {
+  @apply grid size-7 shrink-0 place-items-center rounded-full bg-panel-3 text-fog;
+}
+.catchip-on {
+  @apply border-mint bg-mint text-mint-ink;
+  box-shadow: var(--rr-bevel-strong), var(--rr-shadow-1);
+}
+.catchip-on .catchip-icon {
+  background: color-mix(in oklab, var(--rr-accent-ink) 22%, transparent);
+  color: var(--rr-accent-ink);
+}
+.catchip-count {
+  @apply text-[11px] font-bold opacity-60;
+}
+
+/* "All" — the absence of a filter, not a filter.
+ *
+ * It wore the same full mint fill a chosen facet does, which made the row's
+ * resting state the loudest thing on the screen: nothing is filtered, and the
+ * app announces it with a saturated pill and a big white number. Green means
+ * "you pressed this" everywhere else here, and nobody pressed this one. It is
+ * also the only chip whose count is already on screen a row above, in the
+ * scope bar, so the same large number appeared twice forty pixels apart.
+ *
+ * Tinted rather than filled, which is the state `.chip-soft` already exists
+ * for: it says where you are without claiming you did something, and it
+ * leaves the full fill to mean one thing only — the facet you chose. */
+.catchip-soft {
+  @apply border-mint-line bg-mint-soft text-mint;
+}
+.catchip-soft .catchip-icon {
+  background: color-mix(in oklab, var(--rr-accent) 14%, transparent);
+  color: var(--rr-accent);
+}
+
+/* The high-risk filter, as a variant of the chip beside it rather than a
+ * shape of its own.
+ *
+ * It used to be its own component — shorter, no icon disc, count on the left
+ * — which made a row of equal facets read as a control followed by a list.
+ * It is a `.catchip` now and inherits the geometry; only the colour differs,
+ * because it is the one filter about danger rather than about kind. Amber,
+ * not the accent: green means "you pressed this" everywhere else here.
+ *
+ * Off is off, though. This carried an amber fill and an amber border while
+ * switched *off*, so the row's resting state was two filled pills side by
+ * side — "All", genuinely selected, and a warning badge that looked selected
+ * too and was not. That reads as a bug, not a choice: nothing on screen said
+ * which of the two was actually on. The fill is what the filter turns on now;
+ * off, it is a chip like every other one in the row, and the amber label and
+ * glyph are enough to say which kind of filter it is.
+ *
+ * Placed after `.catchip` deliberately. Both are single classes, so the
+ * later rule wins — defined above it, every colour here lost to the base
+ * chip and the control rendered grey. */
+.catchip-risk {
+  @apply text-amber;
+}
+.catchip-risk .catchip-icon {
+  background: color-mix(in oklab, var(--rr-amber) 16%, transparent);
+  color: var(--rr-amber);
+}
+.catchip-risk-on {
+  @apply border-amber bg-amber;
+  color: var(--rr-surface);
+  box-shadow: var(--rr-bevel-strong), var(--rr-shadow-1);
+}
+.catchip-risk-on .catchip-icon {
+  background: color-mix(in oklab, var(--rr-surface) 24%, transparent);
+  color: var(--rr-surface);
+}
+
+/* ─────────────────────── controls floating on the map ─────────────────── */
+
+/* A control that changes the map, sitting on the map.
+ *
+ * The radius used to live in a band above the store list, three rows below
+ * the thing it governs, so changing it meant looking in one place and
+ * reading the result in another. On the map you get both in one glance —
+ * and a phone gets back a row it was spending on a label, a chip group and
+ * the word "mi".
+ *
+ * Same glass as the tab bar, deliberately: these are the two floating
+ * surfaces in the app, and they should read as the same material. */
+.map-controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0.625rem;
+  z-index: 5;
+  display: flex;
+  justify-content: flex-start;   /* MapLibre's attribution owns bottom-right */
+  gap: 0.5rem;
+  padding: 0 0.625rem;
+  pointer-events: none;   /* the gaps stay draggable map */
+}
+/* Every size now. This was phone-only, with the radius living in the store
+ * panel's header on a wide screen — so the control that changes the map sat
+ * in the header of a list, three bands away from the thing it governs, and
+ * hiding that list took the map's own radius away with it. The argument for
+ * floating it was never about screen size: a question about the map belongs
+ * on the map, where the answer is visible in the same glance. */
+/* MapLibre's attribution lives bottom-right, which is where the control pills
+ * reach once the map is narrow. Lift it above them rather than shrinking the
+ * controls: the attribution is a requirement of the tiles and has to stay
+ * legible.
+ *
+ * Asked of the map, not of the window. This was a `max-width: 1023.98px`
+ * media query, which is a statement about the viewport — and the viewport is
+ * not what is running out of room. Dragging the panel divider on a 1440px
+ * window makes the map column narrower than a phone's, so the two collided on
+ * the widest screens and nowhere else. The map column is a size container now
+ * and the question is asked of it directly. */
+.map-shell {
+  container: map / inline-size;
+}
+@container map (max-width: 31rem) {
+  .maplibregl-ctrl-bottom-right { bottom: 3rem; }
+}
+
+.map-control-pill {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--rr-surface) 70%, var(--rr-line));
+  background: color-mix(in oklab, var(--rr-surface) 62%, transparent);
+  box-shadow: var(--rr-bevel), var(--rr-shadow-3);
+}
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .map-control-pill {
+    -webkit-backdrop-filter: blur(20px) saturate(190%);
+    backdrop-filter: blur(20px) saturate(190%);
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .map-control-pill { background: var(--rr-surface); }
+}
+
+/* A segmented control, so the three radii read as one choice rather than
+   three separate buttons. The selected segment is the only filled thing. */
+.map-radius {
+  @apply inline-flex items-center justify-center rounded-full px-3 text-[12px] font-bold text-fog;
+  min-height: 30px;
+  min-width: 34px;
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+.map-radius:active { background: var(--rr-card-hover); }
+.map-radius-on {
+  @apply bg-mint text-mint-ink;
+  box-shadow: var(--rr-bevel-strong), var(--rr-shadow-1);
+}
+.map-radius-unit {
+  @apply pl-1 pr-2 text-[10px] font-bold uppercase tracking-wider text-subtle;
+}
+
+/* The cap. This is a `SelectTrigger` (see ui/select.jsx) wearing the pill,
+   so all that is left here is to make it sit at the same height and weight as
+   the radius segments beside it — the two are one control group and have to
+   read as one. It used to be a bare `<select>` painted to look like the pill,
+   which meant the only menu on the map was the only surface in the app the
+   theme could not reach. */
+.map-cap {
+  @apply pl-3 pr-1 text-[12px] font-bold text-paper;
+  min-height: 30px;
+}
+
 /* ──────────────────────────────── map ─────────────────────────────────── */
 
+/* A drawn teardrop, not a rotated square — see the note in MapView.jsx. The
+ * box is the pin's true bounding box, so `anchor: "bottom"` puts the tip on
+ * the coordinate instead of a corner near it. */
 .map-pin {
-  width: 22px;
-  height: 22px;
-  border-radius: 50% 50% 50% 0;
-  transform: rotate(-45deg);
-  background: var(--rr-pin-idle);
-  border: 2px solid var(--rr-surface);
+  /* MUST be absolute, never relative.
+   *
+   * MapLibre positions a marker with `.maplibregl-marker { position: absolute }`
+   * plus an inline transform. This rule has the same specificity and is
+   * emitted later, so `position: relative` here silently won — and every
+   * marker dropped out of absolute positioning into normal flow, stacking
+   * one under the next down the page in a neat vertical line that had
+   * nothing to do with where the stores were. The transforms were still
+   * correct the whole time; nothing was reading them.
+   *
+   * It was added so the numeral could be absolutely positioned inside the
+   * pin. `absolute` is a containing block for absolutely positioned children
+   * just as `relative` is, so the label still centres on the head and
+   * MapLibre keeps the pin on its coordinate. */
+  position: absolute;
+  width: 24px;
+  height: 28px;
   opacity: 0.85;
   cursor: pointer;
-  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
-  transition: background 0.18s ease, opacity 0.18s ease, box-shadow 0.18s ease,
-    transform 0.18s cubic-bezier(0.2, 0.7, 0.3, 1);
+  transition: opacity 0.18s ease;
+}
+/* The scaling layer. `.map-pin` itself must stay free of `transform` —
+ * MapLibre writes that inline to position the marker, and an inline style
+ * wins, so anything set here would be thrown away. */
+.map-pin-inner {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 100%;   /* grow from the tip: the point stays put */
+  transition: transform 0.18s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.map-pin-shape {
+  display: block;
+  width: 24px;
+  height: 28px;
+  fill: var(--rr-pin-idle);
+  stroke: var(--rr-surface);
+  stroke-width: 1.75;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.35));
+  transition: fill 0.18s ease, filter 0.18s ease;
 }
 .map-pin:hover {
-  transform: rotate(-45deg) scale(1.12);
   opacity: 1;
+}
+.map-pin:hover .map-pin-inner {
+  transform: scale(1.12);
 }
 /* A notice names this store's chain. Green, not red: it is a match to look
  * at, not a hazard — and most independents will never match at all. */
 .map-pin.named {
-  background: var(--rr-pin-named);
   opacity: 1;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+.map-pin.named .map-pin-shape {
+  fill: var(--rr-pin-named);
 }
 /* The selected pin. A 3px ring and a 15% bump were not enough to find in a
  * field of two dozen pins — especially on a phone, where every pin is 15px
  * and unlabelled. It now sits above the others (z-index), grows by half,
  * keeps its ring, and gets a halo in the accent so it reads as "this one"
  * from across the map rather than only when you already know where to look. */
+/* The halo used to be a box-shadow, which on a rotated square drew a rounded
+ * *square* around a teardrop. On a path it has to be a stroke, so the ring
+ * follows the silhouette. */
 .map-pin.active {
   opacity: 1;
   z-index: 3;
-  box-shadow: 0 0 0 3px var(--rr-pin-ring),
-    0 0 0 7px color-mix(in oklab, var(--rr-accent-hi) 45%, transparent),
-    0 4px 12px rgba(0, 0, 0, 0.45);
-  transform: rotate(-45deg) scale(1.5);
+}
+.map-pin.active .map-pin-inner {
+  transform: scale(1.45);
+}
+.map-pin.active .map-pin-shape {
+  fill: var(--rr-pin-active);
+  stroke: var(--rr-pin-ring);
+  stroke-width: 2.5;
+  filter: drop-shadow(0 0 3px color-mix(in oklab, var(--rr-accent-hi) 75%, transparent))
+    drop-shadow(0 3px 6px rgba(0, 0, 0, 0.45));
 }
 /* With something selected, everything else steps back. Without this the
  * selection is only ever brighter than its neighbours; with it, the map has
@@ -542,27 +1030,104 @@ button:disabled,
 .map-has-selection .map-pin.named:not(.active) {
   opacity: 0.7;
 }
+/* You are not a numbered result, so you are not a pin: a dot on the spot,
+ * which is what every map on a phone uses for the same idea. */
 .map-pin.you {
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
-  transform: none;
+  transform-origin: 50% 50%;
   opacity: 1;
   background: var(--rr-amber);
+  border: 2px solid var(--rr-surface);
   box-shadow: 0 0 0 4px color-mix(in oklab, var(--rr-amber) 28%, transparent),
     0 2px 6px rgba(0, 0, 0, 0.35);
 }
-.map-pin.you:hover { transform: scale(1.12); }
-.map-pin-label {
-  transform: rotate(45deg);
+/* The dot has no inner layer, so its hover lives on a child-free element and
+ * would collide with MapLibre's transform. Opacity says it instead. */
+.map-pin.you:hover { opacity: 0.85; }
+/* The store's name, beside its pin.
+ *
+ * Hidden by default and shown only for a named or selected store — see the
+ * note in MapView.jsx. Drawn straight onto the map rather than in a chip: a
+ * white pill per label would tile the map with boxes, and the type is legible
+ * without one as long as it carries its own halo. That halo is the surface
+ * colour, so it works on either theme and over any tile.
+ *
+ * pointer-events stay off. The label can overhang a neighbouring pin, and a
+ * name that swallowed the tap meant for the pin under it would be worse than
+ * no label at all. */
+.map-pin-name {
+  position: absolute;
+  left: 27px;
+  top: 0;
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  height: 24px;
+  max-width: 44vw;
+  pointer-events: none;
+  line-height: 1.15;
+  text-shadow:
+    0 0 3px var(--rr-surface), 0 0 3px var(--rr-surface),
+    0 1px 4px var(--rr-surface), 0 0 8px var(--rr-surface);
+}
+.map-pin.named .map-pin-name,
+.map-pin.active .map-pin-name {
+  display: flex;
+}
+/* Laid out, not merely shown — see layoutLabels in MapView.jsx. Hidden with
+ * `visibility` rather than `display` on purpose: the layout measures each
+ * label's real width, and a display:none element measures zero. */
+.map-pin.label-off .map-pin-name {
+  visibility: hidden;
+}
+.map-pin-name b,
+.map-pin-name i {
   display: block;
-  color: #ffffff;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.map-pin-name b {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--rr-text);
+}
+.map-pin-name i {
+  font-size: 11px;
+  font-style: italic;
+  font-weight: 500;
+  color: var(--rr-muted);
+}
+/* The selected pin grows, so its label steps aside rather than scaling with
+ * it — the name lives outside the scaling layer precisely so it can stay at
+ * its designed size. */
+.map-pin.active .map-pin-name {
+  left: 33px;
+}
+
+/* Sits over the head circle — centre (12,12), so a 24x24 box at the top of
+ * the 24x32 frame — and is not rotated, so the digits rasterise like every
+ * other number in the app. */
+.map-pin-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  color: var(--rr-pin-idle-ink);
   font-size: 11px;
   font-weight: 700;
-  text-align: center;
-  line-height: 18px;
-  pointer-events: none;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
 }
-.map-pin.named .map-pin-label { color: var(--rr-accent-ink); }
+.map-pin.named .map-pin-label { color: var(--rr-pin-named-ink); }
+.map-pin.active .map-pin-label { color: var(--rr-pin-active-ink); }
 
 /* On a phone two dozen pins overlap into one mass. Smaller pins with no
  * numerals stay separable; the named/unnamed split does the rest.
@@ -572,13 +1137,22 @@ button:disabled,
  * and gets its numeral back, which is also the number you are looking at in
  * the list. */
 @media (max-width: 1023px) {
-  .map-pin { width: 15px; height: 15px; border-width: 1.5px; }
+  /* Scaled, not resized. These rules used to set width/height directly and
+     re-apply `rotate(-45deg)`, both of which belonged to the rotated-square
+     pin: against an SVG they forced a 24x32 drawing into a 15x15 box, so
+     every pin overflowed its own element and sat off its coordinate, and the
+     selected one came out rotated 45 degrees. Scaling from the tip
+     (transform-origin is 50% 100%) shrinks the whole pin and leaves the
+     point exactly where the store is.
+
+     The dot marking you is already small and is not one of a crowd, so it
+     keeps its size. */
+  .map-pin:not(.you) .map-pin-inner { transform: scale(0.68); }
+  .map-pin:not(.you):hover .map-pin-inner { transform: scale(0.74); }
   .map-pin-label { display: none; }
-  /* The element itself grew, so the scale on top of it comes back down —
-     otherwise the selected pin is 36px and covers its own neighbours. */
-  .map-pin.active { width: 24px; height: 24px; border-width: 2px; transform: rotate(-45deg) scale(1.1); }
-  .map-pin.active:hover { transform: rotate(-45deg) scale(1.1); }
-  .map-pin.active .map-pin-label { display: block; line-height: 20px; font-size: 11px; }
+  .map-pin.active .map-pin-inner { transform: scale(1.15); }
+  .map-pin.active:hover .map-pin-inner { transform: scale(1.15); }
+  .map-pin.active .map-pin-label { display: grid; }
 }
 
 /* The map's own bubbles are the app's tooltip, not MapLibre's default: same
@@ -594,6 +1168,10 @@ button:disabled,
   color: var(--rr-text);
   border: 1px solid var(--rr-line);
   border-radius: 8px;
+  /* Symmetric. The right side used to carry a 1.65rem gutter for a close
+     button; there is no close button on any bubble here now — the pin, the
+     ground and the panel's ✕ all clear the selection, and clearing the
+     selection is the only thing that closes a bubble. */
   padding: 0.5rem 0.65rem;
   box-shadow: var(--rr-shadow-3);
 }
@@ -652,6 +1230,9 @@ button:disabled,
 @media (prefers-reduced-motion: reduce) {
   .fade-item, .pop-in, .shimmer, .radar-ring, .radar-sweep, .radar-dot,
   .progress-track::after, .lift { animation: none !important; transition: none !important; }
+  /* The sheet still mounts and unmounts on the same schedule — only the
+     travel goes away, so it is simply there and then not there. */
+  .sheet-panel, .sheet-scrim { transition: none !important; }
   .lift:hover { transform: none; }
 }
 
@@ -696,4 +1277,38 @@ button:disabled,
 /* On a phone the mark is the whole affordance, so it never dims. */
 @media (pointer: coarse) {
   .infotip .infotip-mark { @apply opacity-80; }
+}
+
+/* The badge variant. No underline and no negative margin: the trigger is not
+ * a word inside a line of text, it is the pill itself, and it carries the ⓘ
+ * inside its own border. The pill's colours come from the child badge passed
+ * in, so this only owns shape and the mark. */
+.infotip-badge {
+  @apply inline-flex max-w-full items-center gap-1 align-middle;
+}
+.infotip-badge .infotip-mark {
+  @apply size-3 shrink-0 opacity-55;
+  margin-left: -1px;   /* the glyph carries its own optical padding */
+}
+.infotip-badge:hover .infotip-mark,
+.infotip-badge-open .infotip-mark {
+  @apply opacity-100;
+}
+@media (pointer: coarse) {
+  .infotip-badge .infotip-mark { @apply opacity-80; }
+}
+/* The badge keeps its own box and gains a little right padding, so the mark
+ * sits inside the border with the same air the label has on the left.
+ *
+ * The layout is forced to a nowrap flex row because not every badge passed in
+ * is one already: `Badge` is inline-flex, but the plain `<span>` pills are
+ * static, and adding a second child to those made the mark wrap to its own
+ * line inside the pill — a one-line badge silently became two lines tall. */
+.infotip-badge > * {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  gap: 0.25rem;
+  padding-right: 0.375rem;
 }
