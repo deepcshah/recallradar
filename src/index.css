@@ -644,6 +644,134 @@ button:disabled,
   }
 }
 
+/* ─────────────────────── category row (phone) ─────────────────────────── */
+
+/* A scrolling row of product types, above the recall list.
+ *
+ * Scrolls sideways rather than wrapping so a variable number of categories
+ * never changes the row's height — the same rule .scope-row follows, and the
+ * thing that stops stacked filter bands creeping down a phone screen. The
+ * scrollbar is hidden because a phone has none; the overflow is discovered
+ * by dragging, and the fade on the trailing edge says there is more. */
+.catrow {
+  @apply flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-line bg-panel px-3 py-2;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+}
+.catrow::-webkit-scrollbar { display: none; }
+/* Same story: `@apply flex` sets display, so the breakpoint belongs here. */
+@media (min-width: 1024px) {
+  .catrow { display: none; }
+}
+
+.catchip {
+  @apply inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-line
+         bg-panel-2 py-1 pl-1 pr-3 text-[12px] font-semibold text-fog;
+  min-height: 36px;
+  scroll-snap-align: start;
+  box-shadow: var(--rr-bevel), var(--rr-shadow-1);
+  transition: box-shadow 0.1s ease, background-color 0.16s ease, border-color 0.16s ease,
+    color 0.16s ease, transform 0.1s ease;
+}
+.catchip:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: var(--rr-press);
+}
+.catchip:disabled {
+  @apply opacity-40;
+  box-shadow: none;
+}
+/* The icon sits in its own disc, the way every row of this shape does — it
+   gives the glyph a consistent optical size whatever its outline weight. */
+.catchip-icon {
+  @apply grid size-7 shrink-0 place-items-center rounded-full bg-panel-3 text-fog;
+}
+.catchip-on {
+  @apply border-mint bg-mint text-mint-ink;
+  box-shadow: var(--rr-bevel-strong), var(--rr-shadow-1);
+}
+.catchip-on .catchip-icon {
+  background: color-mix(in oklab, var(--rr-accent-ink) 22%, transparent);
+  color: var(--rr-accent-ink);
+}
+.catchip-count {
+  @apply text-[11px] font-bold opacity-60;
+}
+
+/* ─────────────────────── controls floating on the map ─────────────────── */
+
+/* A control that changes the map, sitting on the map.
+ *
+ * The radius used to live in a band above the store list, three rows below
+ * the thing it governs, so changing it meant looking in one place and
+ * reading the result in another. On the map you get both in one glance —
+ * and a phone gets back a row it was spending on a label, a chip group and
+ * the word "mi".
+ *
+ * Same glass as the tab bar, deliberately: these are the two floating
+ * surfaces in the app, and they should read as the same material. */
+.map-controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0.625rem;
+  z-index: 5;
+  display: flex;
+  justify-content: flex-start;   /* MapLibre's attribution owns bottom-right */
+  gap: 0.5rem;
+  padding: 0 0.625rem;
+  pointer-events: none;   /* the gaps stay draggable map */
+}
+/* Phone only, and stated here rather than with `lg:hidden`, for the reason
+ * the tab bar learned the hard way: this file sets `display` and is emitted
+ * after Tailwind's utilities, so the utility loses. It has to come after the
+ * rule it overrides — equal specificity, last one wins. */
+@media (min-width: 1024px) {
+  .map-controls { display: none; }
+}
+
+.map-control-pill {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--rr-surface) 70%, var(--rr-line));
+  background: color-mix(in oklab, var(--rr-surface) 62%, transparent);
+  box-shadow: var(--rr-bevel), var(--rr-shadow-3);
+}
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .map-control-pill {
+    -webkit-backdrop-filter: blur(20px) saturate(190%);
+    backdrop-filter: blur(20px) saturate(190%);
+  }
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .map-control-pill { background: var(--rr-surface); }
+}
+
+/* A segmented control, so the three radii read as one choice rather than
+   three separate buttons. The selected segment is the only filled thing. */
+.map-radius {
+  @apply inline-flex items-center justify-center rounded-full px-3 text-[12px] font-bold text-fog;
+  min-height: 30px;
+  min-width: 34px;
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+.map-radius:active { background: var(--rr-card-hover); }
+.map-radius-on {
+  @apply bg-mint text-mint-ink;
+  box-shadow: var(--rr-bevel-strong), var(--rr-shadow-1);
+}
+.map-radius-unit {
+  @apply pl-1 pr-2 text-[10px] font-bold uppercase tracking-wider text-subtle;
+}
+
 /* ──────────────────────────────── map ─────────────────────────────────── */
 
 /* A drawn teardrop, not a rotated square — see the note in MapView.jsx. The
@@ -669,8 +797,16 @@ button:disabled,
   height: 28px;
   opacity: 0.85;
   cursor: pointer;
+  transition: opacity 0.18s ease;
+}
+/* The scaling layer. `.map-pin` itself must stay free of `transform` —
+ * MapLibre writes that inline to position the marker, and an inline style
+ * wins, so anything set here would be thrown away. */
+.map-pin-inner {
+  position: absolute;
+  inset: 0;
   transform-origin: 50% 100%;   /* grow from the tip: the point stays put */
-  transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.2, 0.7, 0.3, 1);
+  transition: transform 0.18s cubic-bezier(0.2, 0.7, 0.3, 1);
 }
 .map-pin-shape {
   display: block;
@@ -683,8 +819,10 @@ button:disabled,
   transition: fill 0.18s ease, filter 0.18s ease;
 }
 .map-pin:hover {
-  transform: scale(1.12);
   opacity: 1;
+}
+.map-pin:hover .map-pin-inner {
+  transform: scale(1.12);
 }
 /* A notice names this store's chain. Green, not red: it is a match to look
  * at, not a hazard — and most independents will never match at all. */
@@ -705,6 +843,8 @@ button:disabled,
 .map-pin.active {
   opacity: 1;
   z-index: 3;
+}
+.map-pin.active .map-pin-inner {
   transform: scale(1.45);
 }
 .map-pin.active .map-pin-shape {
@@ -736,7 +876,65 @@ button:disabled,
   box-shadow: 0 0 0 4px color-mix(in oklab, var(--rr-amber) 28%, transparent),
     0 2px 6px rgba(0, 0, 0, 0.35);
 }
-.map-pin.you:hover { transform: scale(1.12); }
+/* The dot has no inner layer, so its hover lives on a child-free element and
+ * would collide with MapLibre's transform. Opacity says it instead. */
+.map-pin.you:hover { opacity: 0.85; }
+/* The store's name, beside its pin.
+ *
+ * Hidden by default and shown only for a named or selected store — see the
+ * note in MapView.jsx. Drawn straight onto the map rather than in a chip: a
+ * white pill per label would tile the map with boxes, and the type is legible
+ * without one as long as it carries its own halo. That halo is the surface
+ * colour, so it works on either theme and over any tile.
+ *
+ * pointer-events stay off. The label can overhang a neighbouring pin, and a
+ * name that swallowed the tap meant for the pin under it would be worse than
+ * no label at all. */
+.map-pin-name {
+  position: absolute;
+  left: 27px;
+  top: 0;
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  height: 24px;
+  max-width: 44vw;
+  pointer-events: none;
+  line-height: 1.15;
+  text-shadow:
+    0 0 3px var(--rr-surface), 0 0 3px var(--rr-surface),
+    0 1px 4px var(--rr-surface), 0 0 8px var(--rr-surface);
+}
+.map-pin.named .map-pin-name,
+.map-pin.active .map-pin-name {
+  display: flex;
+}
+.map-pin-name b,
+.map-pin-name i {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.map-pin-name b {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--rr-text);
+}
+.map-pin-name i {
+  font-size: 11px;
+  font-style: italic;
+  font-weight: 500;
+  color: var(--rr-muted);
+}
+/* The selected pin grows, so its label steps aside rather than scaling with
+ * it — the name lives outside the scaling layer precisely so it can stay at
+ * its designed size. */
+.map-pin.active .map-pin-name {
+  left: 33px;
+}
+
 /* Sits over the head circle — centre (12,12), so a 24x24 box at the top of
  * the 24x32 frame — and is not rotated, so the digits rasterise like every
  * other number in the app. */
@@ -776,11 +974,11 @@ button:disabled,
 
      The dot marking you is already small and is not one of a crowd, so it
      keeps its size. */
-  .map-pin:not(.you) { transform: scale(0.68); }
-  .map-pin:not(.you):hover { transform: scale(0.74); }
+  .map-pin:not(.you) .map-pin-inner { transform: scale(0.68); }
+  .map-pin:not(.you):hover .map-pin-inner { transform: scale(0.74); }
   .map-pin-label { display: none; }
-  .map-pin.active { transform: scale(1.15); }
-  .map-pin.active:hover { transform: scale(1.15); }
+  .map-pin.active .map-pin-inner { transform: scale(1.15); }
+  .map-pin.active:hover .map-pin-inner { transform: scale(1.15); }
   .map-pin.active .map-pin-label { display: grid; }
 }
 

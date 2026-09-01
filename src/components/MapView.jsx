@@ -42,7 +42,21 @@ const rasterFallback = (theme) => ({
 const PIN_PATH = "M12 27.4c0-.1 10-9.6 10-15.4a10 10 0 1 0-20 0c0 5.8 10 15.3 10 15.4Z";
 const PIN_BOX = "0 0 24 28";
 
-function pinEl(label, isYou) {
+/* A pin, and — for the ones that matter — its name written beside it.
+ *
+ * A field of numbered pins tells you where things are and nothing about what
+ * they are: to learn that a pin is the CVS named in three notices rather than
+ * a bodega, you had to tap it, and then tap the next one. The number ties the
+ * pin to its row in the list, which only helps if you are already reading the
+ * list.
+ *
+ * So the name rides along. Not on every pin — eighty labels is a wall of text
+ * with the map behind it — only on the ones the map is actually about: the
+ * stores a notice names, and whichever one is selected. CSS decides which
+ * (see .map-pin-name), so a selection change needs no rebuild. Everything
+ * else stays a bare pin, which is also the honest weighting: an unnamed store
+ * is a place you could walk to, not an answer. */
+function pinEl({ label, name, note, isYou }) {
   const div = document.createElement("div");
   // "You are here" is a location, not a numbered result: a dot, not a pin.
   if (isYou) {
@@ -50,6 +64,22 @@ function pinEl(label, isYou) {
     return div;
   }
   div.className = "map-pin";
+  /* Everything that scales lives in here, and the marker element itself
+   * carries no transform of its own.
+   *
+   * MapLibre positions a marker by writing `transform` to its inline style,
+   * and an inline style beats any stylesheet rule. So every `transform` this
+   * app put on `.map-pin` — the selected pin growing by half, the hover
+   * nudge, the smaller pins on a phone — was silently discarded, and had
+   * been for as long as the rules existed. Scaling a child instead leaves
+   * the marker's own transform to MapLibre, which is the only thing allowed
+   * to write it.
+   *
+   * The name label is deliberately NOT in here: it must not scale with the
+   * selected pin, or the one label you are actually reading becomes the
+   * largest and blurriest thing on the map. */
+  const inner = document.createElement("div");
+  inner.className = "map-pin-inner";
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", PIN_BOX);
   svg.setAttribute("aria-hidden", "true");
@@ -57,11 +87,26 @@ function pinEl(label, isYou) {
   const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
   path.setAttribute("d", PIN_PATH);
   svg.appendChild(path);
-  div.appendChild(svg);
+  inner.appendChild(svg);
   const span = document.createElement("span");
   span.className = "map-pin-label";
   span.textContent = label || "";
-  div.appendChild(span);
+  inner.appendChild(span);
+  div.appendChild(inner);
+
+  if (name) {
+    const tag = document.createElement("span");
+    tag.className = "map-pin-name";
+    const b = document.createElement("b");
+    b.textContent = name;
+    tag.appendChild(b);
+    if (note) {
+      const i = document.createElement("i");
+      i.textContent = note;
+      tag.appendChild(i);
+    }
+    div.appendChild(tag);
+  }
   return div;
 }
 
@@ -96,7 +141,7 @@ function radiusBounds(loc, radiusMeters) {
 }
 
 const MapView = forwardRef(function MapView(
-  { loc, stores, labels, named, activeIndex, theme = "dark", radius, onMarkerClick },
+  { loc, stores, labels, named, notes, activeIndex, theme = "dark", radius, onMarkerClick },
   ref
 ) {
   const containerRef = useRef(null);
@@ -160,7 +205,7 @@ const MapView = forwardRef(function MapView(
     const map = mapRef.current;
     if (!map || !loc) return;
     if (youRef.current) youRef.current.remove();
-    youRef.current = new maplibregl.Marker({ element: pinEl("", true) })
+    youRef.current = new maplibregl.Marker({ element: pinEl({ isYou: true }) })
       .setLngLat([loc.lon, loc.lat])
       .setPopup(new maplibregl.Popup({ offset: 14, closeButton: false, className: "popup-bare" })
         .setHTML("You are here"))
@@ -179,7 +224,11 @@ const MapView = forwardRef(function MapView(
     const bounds = radius ? radiusBounds(loc, radius) : new maplibregl.LngLatBounds();
     bounds.extend([loc.lon, loc.lat]);
     stores.forEach((s, i) => {
-      const el = pinEl(String((labels && labels[i]) || i + 1), false);
+      const el = pinEl({
+        label: String((labels && labels[i]) || i + 1),
+        name: s.name,
+        note: (notes && notes[i]) || "",
+      });
       el.setAttribute("role", "button");
       el.setAttribute("tabindex", "0");
       el.setAttribute("aria-label", `${s.name}, ${s.distanceMiles.toFixed(1)} miles away`);
@@ -223,8 +272,10 @@ const MapView = forwardRef(function MapView(
       el.classList.toggle("active", i === activeIndex);
       const span = el.querySelector(".map-pin-label");
       if (span) span.textContent = String((labels && labels[i]) || i + 1);
+      const note = el.querySelector(".map-pin-name i");
+      if (note) note.textContent = (notes && notes[i]) || "";
     });
-  }, [labels, named, activeIndex, stores]);
+  }, [labels, named, notes, activeIndex, stores]);
 
   useImperativeHandle(ref, () => ({
     focusStore(i, { popup = true } = {}) {

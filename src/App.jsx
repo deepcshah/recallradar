@@ -376,9 +376,15 @@ function EmptyState({ icon: Icon, title, children, compact }) {
  *  "8 named" tally. That tally was the fourth place the same 8 appeared —
  *  after the headline, the scope chip and the map pins — so the slot went with
  *  it. */
-function PanelHeader({ label, countId, count, children }) {
+/* The label and count are already desktop-only, so on a phone this band is
+ * whatever its children are. With the radius moved onto the map there is
+ * nothing left for it to hold there, and an empty 40px band above a short
+ * list is exactly the stacked-chrome problem this pass is undoing — hence
+ * `max-lg:hidden` from the caller. The count it used to carry is on the tab
+ * bar ("Near me 4"), which is where a phone reads it anyway. */
+function PanelHeader({ label, countId, count, className = "", children }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line bg-panel px-4 py-2">
+    <div className={"flex flex-wrap items-center gap-x-2 gap-y-1.5 border-b border-line bg-panel px-4 py-2 " + className}>
       <span className="flex items-center gap-2 max-lg:hidden">
         <span className="microlabel">{label}</span>
         <span id={countId} className="tnum text-xs font-semibold text-mint">{count}</span>
@@ -1097,11 +1103,21 @@ export default function App() {
 
   /* Pin numerals follow the list's display order, and pins the list is
    * currently hiding get no numeral at all. Index-aligned with `stores`. */
-  const { pinLabels, pinNamed } = useMemo(() => {
+  const { pinLabels, pinNamed, pinNotes } = useMemo(() => {
     const labels = stores.map(() => "");
-    const flags = stores.map((st) => namedRecallsFor(st).length > 0);
+    const counts = stores.map((st) => namedRecallsFor(st).length);
+    const flags = counts.map((n) => n > 0);
+    /* The line under a pin's name on the map. It gets one shot at saying
+     * something the name does not, so it carries the count — which is the
+     * only reason that pin is labelled at all — and falls back to what kind
+     * of place it is. Never the chain label: for CVS that renders "CVS"
+     * under "CVS". */
+    const notes = stores.map((st, i) =>
+      counts[i] > 0
+        ? plural(counts[i], "notice", "notices")
+        : st.independent ? "independent" : "");
     rankedStores.forEach(({ i }, pos) => { labels[i] = String(pos + 1); });
-    return { pinLabels: labels, pinNamed: flags };
+    return { pinLabels: labels, pinNamed: flags, pinNotes: notes };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stores, rankedStores, byChain]);
 
@@ -1312,10 +1328,30 @@ export default function App() {
           style={mapStyle}
         >
           {loc ? (
-            <MapView ref={mapRef} loc={loc} stores={stores} radius={radius}
-                     labels={pinLabels} named={pinNamed} activeIndex={activeStore}
-                     theme={resolvedTheme}
-                     onMarkerClick={onMarkerClick} />
+            <>
+              <MapView ref={mapRef} loc={loc} stores={stores} radius={radius}
+                       labels={pinLabels} named={pinNamed} notes={pinNotes} activeIndex={activeStore}
+                       theme={resolvedTheme}
+                       onMarkerClick={onMarkerClick} />
+              {/* Controls on the map, not in a band above the list.
+                  The radius is a question about the map — "how far out am I
+                  looking" — so it belongs on the thing it changes, where the
+                  answer is visible in the same glance. Floating it also gives
+                  a phone back the row it used to spend on a label, a chip
+                  group and the word "mi". */}
+              <div className="map-controls lg:hidden">
+                <div className="map-control-pill" role="group" aria-label="Store search radius">
+                  {RADII.map((r) => (
+                    <button key={r.value} type="button" onClick={() => setRadius(r.value)}
+                            aria-pressed={radius === r.value}
+                            className={"map-radius " + (radius === r.value ? "map-radius-on" : "")}>
+                      {r.label}
+                    </button>
+                  ))}
+                  <span className="map-radius-unit">mi</span>
+                </div>
+              </div>
+            </>
           ) : (
             <div className="flex h-full items-center justify-center px-6">
               <div className="fade-item max-w-sm text-center">
@@ -1595,11 +1631,16 @@ export default function App() {
                      style={storesFolded ? undefined : storesStyle}>
               <PanelHeader
                 label="Stores" countId="stat-stores" count={scanning ? "…" : stores.length}
+                className="max-lg:hidden"
               >
+                {/* Desktop only. On a phone this now floats over the map —
+                    see the overlay in the map column. Two of the same control
+                    on one screen is one too many, and the band it lived in
+                    was one of five stacked above a short list. */}
                 {!storesFolded && (
                   <>
-                    <span className="microlabel">Within</span>
-                    <div className="flex gap-1" role="group" aria-label="Store search radius">
+                    <span className="microlabel max-lg:hidden">Within</span>
+                    <div className="flex gap-1 max-lg:hidden" role="group" aria-label="Store search radius">
                       {RADII.map((r) => (
                         <button key={r.value} type="button" onClick={() => setRadius(r.value)}
                                 aria-pressed={radius === r.value}
@@ -1858,6 +1899,51 @@ export default function App() {
                       Clear all
                     </button>
                   )}
+                </div>
+              )}
+
+              {/* Product type, on the surface instead of two taps inside a
+                  sheet.
+                  Categories are the filter people actually reach for — "show
+                  me the food ones" — and they were the one facet you had to
+                  go looking for. A scrolling row of icons says what is in
+                  this list before you read a single card, and the counts
+                  come from the same facet maths the sheet uses, so the two
+                  can never disagree. Phone only: the sheet has room to show
+                  every facet at once on a wide screen, and duplicating one
+                  of them there would just be two controls for one state. */}
+              {categoryOptions.length > 1 && (
+                <div className="catrow lg:hidden" role="group" aria-label="Filter by product type">
+                  <button
+                    type="button"
+                    onClick={() => { setCategoryKeys([]); setLimit(25); }}
+                    aria-pressed={categoryKeys.length === 0}
+                    className={"catchip " + (categoryKeys.length === 0 ? "catchip-on" : "")}
+                  >
+                    <span className="catchip-icon"><Rows2 className="size-4" /></span>
+                    <span>All</span>
+                  </button>
+                  {categoryOptions.map((c) => {
+                    const CatIcon = CATEGORY_ICONS[c.value] || Package;
+                    const on = categoryKeys.includes(c.value);
+                    return (
+                      <button
+                        key={c.value}
+                        type="button"
+                        onClick={() => {
+                          setCategoryKeys(on ? categoryKeys.filter((k) => k !== c.value) : [...categoryKeys, c.value]);
+                          setLimit(25);
+                        }}
+                        aria-pressed={on}
+                        disabled={!on && !c.count}
+                        className={"catchip " + (on ? "catchip-on" : "")}
+                      >
+                        <span className="catchip-icon"><CatIcon className="size-4" /></span>
+                        <span>{c.label}</span>
+                        <span className="catchip-count tnum">{c.count}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
 
