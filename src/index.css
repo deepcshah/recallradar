@@ -794,11 +794,19 @@ button:disabled,
  * because it is the one filter about danger rather than about kind. Amber,
  * not the accent: green means "you pressed this" everywhere else here.
  *
+ * Off is off, though. This carried an amber fill and an amber border while
+ * switched *off*, so the row's resting state was two filled pills side by
+ * side — "All", genuinely selected, and a warning badge that looked selected
+ * too and was not. That reads as a bug, not a choice: nothing on screen said
+ * which of the two was actually on. The fill is what the filter turns on now;
+ * off, it is a chip like every other one in the row, and the amber label and
+ * glyph are enough to say which kind of filter it is.
+ *
  * Placed after `.catchip` deliberately. Both are single classes, so the
  * later rule wins — defined above it, every colour here lost to the base
  * chip and the control rendered grey. */
 .catchip-risk {
-  @apply border-amber/45 bg-amber-soft text-amber;
+  @apply text-amber;
 }
 .catchip-risk .catchip-icon {
   background: color-mix(in oklab, var(--rr-amber) 16%, transparent);
@@ -895,21 +903,15 @@ button:disabled,
   @apply pl-1 pr-2 text-[10px] font-bold uppercase tracking-wider text-subtle;
 }
 
-/* The cap, as a native select. A custom menu here would be a third floating
-   surface over the map to build and keep accessible, for a four-item list a
-   platform picker already renders better on a phone. The pill is the visible
-   control; the select is transparent on top of it. */
+/* The cap. This is a `SelectTrigger` (see ui/select.jsx) wearing the pill,
+   so all that is left here is to make it sit at the same height and weight as
+   the radius segments beside it — the two are one control group and have to
+   read as one. It used to be a bare `<select>` painted to look like the pill,
+   which meant the only menu on the map was the only surface in the app the
+   theme could not reach. */
 .map-cap {
-  @apply relative cursor-pointer pl-3;
-}
-.map-cap select {
-  @apply cursor-pointer appearance-none bg-transparent pr-1 text-[12px] font-bold text-paper;
+  @apply pl-3 pr-1 text-[12px] font-bold text-paper;
   min-height: 30px;
-  border: 0;
-  outline: none;
-}
-.map-cap select:focus-visible {
-  @apply rounded-full ring-2 ring-mint/60;
 }
 
 /* ──────────────────────────────── map ─────────────────────────────────── */

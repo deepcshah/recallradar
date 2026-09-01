@@ -5,7 +5,7 @@ import {
   ExternalLink, Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package,
   PanelRightOpen, PawPrint, Pill, Plug, Plus, Radar, Rows2, Columns2, Search, SearchX,
   ScanLine, ShieldCheck, Soup, Stethoscope, Sun, Moon, MonitorSmartphone, MoreHorizontal, Store,
-  ListFilter, UtensilsCrossed, Wheat, X, Zap,
+  ClipboardList, UtensilsCrossed, Wheat, X, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +15,9 @@ import { FilterButton, FilterSheet, FilterGroup, FilterChoice } from "@/componen
 import MapView from "@/components/MapView";
 import ScanSheet from "@/components/ScanSheet";
 import { Sheet, useSheetPresence } from "@/components/ui/sheet";
+import {
+  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { recallUpcs, lookupProduct } from "@/lib/upc";
 import { browserPosition, reverseGeocode, geocodeInput } from "@/lib/geo";
 import { fetchAll, recoverBlockedSources, sortRecalls } from "@/lib/sources";
@@ -1504,7 +1507,7 @@ export default function App() {
               <div className="hidden shrink-0 items-center gap-1.5 lg:flex" role="group" aria-label="Panels to show">
                 {[
                   ["stores", "Stores", "store list", Store, storesShown, toggleStores, "stores-list-scroll"],
-                  ["recalls", "Recalls", "recall list", ListFilter, recallsShown, toggleRecalls, "recalls-list-scroll"],
+                  ["recalls", "Recalls", "recall list", ClipboardList, recallsShown, toggleRecalls, "recalls-list-scroll"],
                 ].map(([key, label, spoken, Icon, on, toggle, controls]) => (
                   <Tooltip key={key}
                            content={on ? `Hide the ${spoken} and give the room to the map` : `Show the ${spoken}`}>
@@ -1521,20 +1524,26 @@ export default function App() {
                     </Button>
                   </Tooltip>
                 ))}
-                {bothLists && (
-                  <Tooltip content={sideBySide ? "Stack the two lists vertically" : "Put the two lists side by side"}>
-                    <Button
-                      id="btn-toggle-layout"
-                      variant="secondary" size="icon"
-                      aria-pressed={sideBySide}
-                      onClick={toggleLayout}
-                      aria-label={sideBySide ? "Stack the lists vertically" : "Put the lists side by side"}
-                      className="h-9 w-9 shrink-0"
-                    >
-                      {sideBySide ? <Rows2 /> : <Columns2 />}
-                    </Button>
-                  </Tooltip>
-                )}
+                {/* Disabled when there is only one list, never absent. A
+                    control that vanishes takes its own explanation with it —
+                    you are left wondering where it went, and on the way back
+                    the row changes width under the pointer. Greyed out, it
+                    says the same thing and stays put; the tooltip says why. */}
+                <Tooltip content={!bothLists
+                  ? "Needs both lists — turn the other one back on"
+                  : sideBySide ? "Stack the two lists vertically" : "Put the two lists side by side"}>
+                  <Button
+                    id="btn-toggle-layout"
+                    variant="secondary" size="icon"
+                    aria-pressed={sideBySide}
+                    disabled={!bothLists}
+                    onClick={toggleLayout}
+                    aria-label={sideBySide ? "Stack the lists vertically" : "Put the lists side by side"}
+                    className="h-9 w-9 shrink-0"
+                  >
+                    {sideBySide ? <Rows2 /> : <Columns2 />}
+                  </Button>
+                </Tooltip>
               </div>
             </>
           )}
@@ -1604,17 +1613,23 @@ export default function App() {
                     because the two are one question — how far, and how many
                     — and because a cap chosen out of sight is a cap nobody
                     knows is trimming their results. */}
-                <label className="map-control-pill map-cap">
-                  <span className="sr-only">Maximum stores to show</span>
-                  <select
-                    value={storeCap}
-                    onChange={(e) => setStoreCap(Number(e.target.value))}
-                    aria-label="Maximum stores to show"
-                  >
-                    {STORE_CAPS.map((n) => <option key={n} value={n}>{n}</option>)}
-                  </select>
-                  <span className="map-radius-unit">max</span>
-                </label>
+                <Select value={String(storeCap)} onValueChange={(v) => setStoreCap(Number(v))}>
+                  <SelectTrigger className="map-control-pill map-cap" aria-label="Maximum stores to show">
+                    <SelectValue />
+                    <span className="map-radius-unit">max</span>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {/* The heading carries the noun so the rows can stay a
+                        column of numbers — "20 stores / 50 stores" reads as
+                        four different things rather than one scale. */}
+                    <SelectGroup>
+                      <SelectLabel>Show at most</SelectLabel>
+                      {STORE_CAPS.map((n) => (
+                        <SelectItem key={n} value={String(n)}>{n}</SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
               </div>
             </>
           ) : (
@@ -2330,7 +2345,11 @@ export default function App() {
         >
           {[
             { id: "near", label: "Near me", icon: Store, count: stores.length },
-            { id: "recalls", label: "Recalls", icon: ListFilter, count: filtered.length },
+            /* A clipboard, not the sliders glyph. `ListFilter` is what half
+               the platforms on a phone draw for "filter" — so the app's second
+               destination wore the icon of a control, two rows above an actual
+               Filters button wearing very nearly the same one. */
+            { id: "recalls", label: "Recalls", icon: ClipboardList, count: filtered.length },
             { id: "scan", label: "Scan", icon: ScanLine },
           ].map(({ id, label, icon: Icon, count }) => {
             const on = id !== "scan" && tab === id;
