@@ -321,6 +321,27 @@ button:disabled,
   box-shadow: none;
 }
 
+/* The scope row's one thumb-reachable disclosure. It leads the row, so it has
+ * to look deliberate rather than left over — a disc, like every other round
+ * icon control here. */
+/* Written as `.infotip.scope-info` on purpose: `.infotip` sets its own
+ * padding, negative margin and dotted underline further down this file, and a
+ * single class here would lose to it and render a padded rounded rectangle
+ * instead of a disc. */
+.infotip.scope-info {
+  @apply grid size-7 shrink-0 place-items-center rounded-full border border-line bg-panel-2 text-fog;
+  padding: 0;
+  margin: 0;
+  text-decoration: none;
+  box-shadow: var(--rr-bevel), var(--rr-shadow-1);
+}
+.infotip.scope-info .infotip-mark {
+  @apply size-3.5 opacity-100;
+}
+.infotip.scope-info:active {
+  box-shadow: var(--rr-press);
+}
+
 /* A row of chips that scrolls sideways instead of wrapping, so a variable
  * number of them never changes the row's height — the thing that makes stacked
  * filter bands creep down a phone screen. The scrollbar is hidden because on a
@@ -733,6 +754,13 @@ button:disabled,
 @media (min-width: 1024px) {
   .map-controls { display: none; }
 }
+/* MapLibre's attribution lives bottom-right, which is where a second control
+ * pill now reaches on a narrow phone. Lift it above the row rather than
+ * shrinking the controls: the attribution is a requirement of the tiles and
+ * has to stay legible. */
+@media (max-width: 1023.98px) {
+  .maplibregl-ctrl-bottom-right { bottom: 3rem; }
+}
 
 .map-control-pill {
   pointer-events: auto;
@@ -770,6 +798,23 @@ button:disabled,
 }
 .map-radius-unit {
   @apply pl-1 pr-2 text-[10px] font-bold uppercase tracking-wider text-subtle;
+}
+
+/* The cap, as a native select. A custom menu here would be a third floating
+   surface over the map to build and keep accessible, for a four-item list a
+   platform picker already renders better on a phone. The pill is the visible
+   control; the select is transparent on top of it. */
+.map-cap {
+  @apply relative cursor-pointer pl-3;
+}
+.map-cap select {
+  @apply cursor-pointer appearance-none bg-transparent pr-1 text-[12px] font-bold text-paper;
+  min-height: 30px;
+  border: 0;
+  outline: none;
+}
+.map-cap select:focus-visible {
+  @apply rounded-full ring-2 ring-mint/60;
 }
 
 /* ──────────────────────────────── map ─────────────────────────────────── */
@@ -908,6 +953,12 @@ button:disabled,
 .map-pin.named .map-pin-name,
 .map-pin.active .map-pin-name {
   display: flex;
+}
+/* Laid out, not merely shown — see layoutLabels in MapView.jsx. Hidden with
+ * `visibility` rather than `display` on purpose: the layout measures each
+ * label's real width, and a display:none element measures zero. */
+.map-pin.label-off .map-pin-name {
+  visibility: hidden;
 }
 .map-pin-name b,
 .map-pin-name i {

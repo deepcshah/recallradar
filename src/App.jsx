@@ -18,7 +18,7 @@ import { Sheet } from "@/components/ui/sheet";
 import { recallUpcs, lookupProduct } from "@/lib/upc";
 import { browserPosition, reverseGeocode, geocodeInput } from "@/lib/geo";
 import { fetchAll, recoverBlockedSources, sortRecalls } from "@/lib/sources";
-import { findStores } from "@/lib/stores";
+import { findStores, STORE_CAPS, DEFAULT_STORE_CAP } from "@/lib/stores";
 import { byId, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
 import { categoryFor } from "@/lib/category";
 import { classInfo, severityLabel, severityVariant } from "@/lib/classification";
@@ -522,6 +522,13 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [queryError, setQueryError] = useState("");
   const [radius, setRadius] = useState(16093);
+  /* How many storefronts to keep. See STORE_CAPS in lib/stores.js: some cap
+   * has to exist, and a fixed one silently disabled the radius control in
+   * dense neighbourhoods. Remembered, because it is a preference about how
+   * much list you want to read rather than a per-search decision. */
+  const [storesTrimmed, setStoresTrimmed] = useState(0);
+  const [storeCap, setStoreCap] = useState(() => loadPref("rr-store-cap", DEFAULT_STORE_CAP));
+  useEffect(() => { savePref("rr-store-cap", storeCap); }, [storeCap]);
 
   const [recalls, setRecalls] = useState([]);
   const [sources, setSources] = useState([]);
@@ -579,6 +586,11 @@ export default function App() {
   const chainKey = useMemo(() => searchChains.map((c) => c.id).sort().join(","), [searchChains]);
   const searchChainsRef = useRef(searchChains);
   searchChainsRef.current = searchChains;
+  /* Read through a ref for the same reason the chain list is: loadStores is
+   * a stable callback with no dependencies, and giving it one would rebuild
+   * the effect that owns store loading. */
+  const capRef = useRef(storeCap);
+  capRef.current = storeCap;
 
   /* Last request wins. A lookup still in flight for the old radius must never
    * overwrite the one the user is actually waiting on. */
@@ -594,7 +606,8 @@ export default function App() {
     }
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const found = await findStores(searchChainsRef.current, locArg, radiusArg);
+        const found = await findStores(searchChainsRef.current, locArg, radiusArg,
+                                      undefined, capRef.current);
         if (stale()) return;
         setStores(found);
         track("stores_loaded", {
@@ -603,6 +616,10 @@ export default function App() {
           attempt: attempt + 1,
           chains_searched: searchChainsRef.current.length,
         });
+        /* A truncated list that does not say so reads as the whole answer.
+           Same rule the scanner follows about an unmatched barcode: the
+           number you did not see is the one that matters. */
+        setStoresTrimmed(found.inRangeTotal > found.length ? found.inRangeTotal : 0);
         setStoresStatus(found.length ? null : {
           empty: true,
           title: "Nothing in range",
@@ -690,7 +707,7 @@ export default function App() {
   const lastScanRef = useRef("");
   useEffect(() => {
     if (!loc || productsBusy) return;
-    const place = `${loc.lat},${loc.lon}|${radius}`;
+    const place = `${loc.lat},${loc.lon}|${radius}|${storeCap}`;
     const key = `${place}|${chainKey}`;
     if (key === lastScanRef.current) return;
     // Only the chain list changed (USDA landed late): refresh in place instead
@@ -698,7 +715,7 @@ export default function App() {
     const quiet = lastScanRef.current.startsWith(`${place}|`);
     lastScanRef.current = key;
     loadStores(loc, radius, { quiet });
-  }, [loc, radius, chainKey, productsBusy, loadStores]);
+  }, [loc, radius, storeCap, chainKey, productsBusy, loadStores]);
 
   /* `method` is carried only so the funnel can separate "tapped locate"
    * from "typed a ZIP" — the coordinates and the resolved label stay in
@@ -1103,7 +1120,7 @@ export default function App() {
 
   /* Pin numerals follow the list's display order, and pins the list is
    * currently hiding get no numeral at all. Index-aligned with `stores`. */
-  const { pinLabels, pinNamed, pinNotes } = useMemo(() => {
+  const { pinLabels, pinNamed, pinNotes, pinWeights } = useMemo(() => {
     const labels = stores.map(() => "");
     const counts = stores.map((st) => namedRecallsFor(st).length);
     const flags = counts.map((n) => n > 0);
@@ -1117,7 +1134,7 @@ export default function App() {
         ? plural(counts[i], "notice", "notices")
         : st.independent ? "independent" : "");
     rankedStores.forEach(({ i }, pos) => { labels[i] = String(pos + 1); });
-    return { pinLabels: labels, pinNamed: flags, pinNotes: notes };
+    return { pinLabels: labels, pinNamed: flags, pinNotes: notes, pinWeights: counts };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stores, rankedStores, byChain]);
 
@@ -1135,6 +1152,11 @@ export default function App() {
     }
     return { named, area };
   }, [recalls, filterState, nearbyChainIds]);
+
+  /* The count the active scope chip is displaying, so nothing else on screen
+   * has to repeat it. Null while a store is selected: that branch of the row
+   * shows a different pair of chips and no single number stands for the list. */
+  const scopeShown = selectedStore ? null : (scope === "named" ? scopeCounts.named : scopeCounts.area);
 
   /* The one line that answers why anyone opened the app.
    *
@@ -1330,7 +1352,8 @@ export default function App() {
           {loc ? (
             <>
               <MapView ref={mapRef} loc={loc} stores={stores} radius={radius}
-                       labels={pinLabels} named={pinNamed} notes={pinNotes} activeIndex={activeStore}
+                       labels={pinLabels} named={pinNamed} notes={pinNotes} weights={pinWeights}
+                       activeIndex={activeStore}
                        theme={resolvedTheme}
                        onMarkerClick={onMarkerClick} />
               {/* Controls on the map, not in a band above the list.
@@ -1350,6 +1373,21 @@ export default function App() {
                   ))}
                   <span className="map-radius-unit">mi</span>
                 </div>
+                {/* How much list you want back. Sits beside the radius
+                    because the two are one question — how far, and how many
+                    — and because a cap chosen out of sight is a cap nobody
+                    knows is trimming their results. */}
+                <label className="map-control-pill map-cap">
+                  <span className="sr-only">Maximum stores to show</span>
+                  <select
+                    value={storeCap}
+                    onChange={(e) => setStoreCap(Number(e.target.value))}
+                    aria-label="Maximum stores to show"
+                  >
+                    {STORE_CAPS.map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                  <span className="map-radius-unit">max</span>
+                </label>
               </div>
             </>
           ) : (
@@ -1529,7 +1567,14 @@ export default function App() {
                 the unit once is what separates the two rows into a scope
                 control and a set of destinations. */}
             <div className="scope-row flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-line bg-panel px-3 py-2">
-              <span className="microlabel shrink-0" id="scope-row-label">Recalls</span>
+              {/* "Recalls" was a label over a control that scopes recalls,
+                  sitting above a list of *stores* — so on the near-me tab it
+                  named the wrong thing, and on the recalls tab it named the
+                  obvious one. The chips are self-describing ("At a store near
+                  you", "Anywhere in NY"); a heading over them is a row of
+                  chrome spent on nothing. Kept for screen readers, which do
+                  need the group named. */}
+              <span className="sr-only" id="scope-row-label">Recall scope</span>
               {/* The chip tooltips are a mouse affordance and nothing else, so
                   the row carries one disclosure a thumb can open. It sits
                   beside the label rather than after the chips: this row scrolls
@@ -1539,7 +1584,12 @@ export default function App() {
                 label="What these scopes mean"
                 title="How wide a net"
                 body={`“${SCOPES[0].label}” shows only notices that name a chain standing near you — the most specific answer this app can give, and the smallest. “Anywhere in ${loc?.stateAbbr || "your area"}” adds every other active notice covering your area, including the many that name no retailer at all. An independent grocer can only ever appear in the second.`}
-                triggerClassName="shrink-0 text-fog"
+                /* With the "Recalls" heading gone this was a bare glyph
+                   floating at the row's left edge, reading as debris rather
+                   than a control. A disc gives it the same shape as every
+                   other round icon button in the app, so it looks like
+                   something to press. */
+                triggerClassName="scope-info shrink-0"
                 side="bottom"
               />
               {selectedStore ? (
@@ -1780,6 +1830,16 @@ export default function App() {
                     );
                   })}
                 </ul>
+                {/* The cap, said out loud. Without this a truncated list is
+                    indistinguishable from a complete one, and widening the
+                    radius looks broken: you ask for 25 miles, the nearest
+                    N are already inside 5, and nothing changes. */}
+                {storesTrimmed > 0 && !scanning && (
+                  <p className="mt-2 px-1 pb-1 text-center text-[11px] text-subtle">
+                    Showing the {stores.length} nearest of {storesTrimmed} within{" "}
+                    {RADII.find((r) => r.value === radius)?.label || "?"} mi.
+                  </p>
+                )}
               </div>
             </section>
 
@@ -1808,10 +1868,18 @@ export default function App() {
                 {/* The count and the high-risk tally used to be a band of their
                     own above this row, which is two rows for one section's
                     header. They are three words; they fit here. */}
+                {/* The count only when it is news.
+                    The active scope chip a row above already reads "At a
+                    store near you 47", so repeating 47 here is the same
+                    number twice on one screen. It stops being the same
+                    number the moment a search or a facet narrows the list —
+                    and that is exactly when it is worth saying. */}
                 <span className="microlabel hidden shrink-0 lg:inline">Recalls</span>
-                <span id="stat-recalls" className="tnum shrink-0 text-xs font-semibold text-mint">
-                  {productsBusy ? "…" : sorted.length}
-                </span>
+                {(productsBusy || sorted.length !== scopeShown) && (
+                  <span id="stat-recalls" className="tnum shrink-0 text-xs font-semibold text-mint">
+                    {productsBusy ? "…" : sorted.length}
+                  </span>
+                )}
                 {highCount > 0 && (
                   <span id="stat-high" className="tnum shrink-0 text-[11px] font-semibold text-amber">{highCount} high-risk</span>
                 )}
@@ -1922,6 +1990,14 @@ export default function App() {
                   >
                     <span className="catchip-icon"><Rows2 className="size-4" /></span>
                     <span>All</span>
+                    {/* Every other chip in this row carries a count, so the
+                        one that means "no filter" has to as well — a blank
+                        where a number belongs reads as a missing number
+                        rather than as "all of them". Each recall has exactly
+                        one type, so the sum of the parts is the whole. */}
+                    <span className="catchip-count tnum">
+                      {categoryOptions.reduce((a, c) => a + c.count, 0)}
+                    </span>
                   </button>
                   {categoryOptions.map((c) => {
                     const CatIcon = CATEGORY_ICONS[c.value] || Package;
@@ -2242,7 +2318,12 @@ export default function App() {
       <ScanSheet open={scanOpen} onClose={() => setScanOpen(false)} recalls={recalls} />
 
       {/* DialKit authoring panel — renders null in production builds. */}
-      <DialRoot position="bottom-left" theme="dark" defaultOpen={false} />
+      {/* Authoring tool, so: on in dev and on preview deploys, off in
+          production. Its default is dev-only, which meant the one place the
+          motion is worth tuning — a real phone, on a real network, holding a
+          preview build — was the one place the panel would not appear. */}
+      <DialRoot position="bottom-left" theme="dark" defaultOpen={false}
+                productionEnabled={import.meta.env.VITE_VERCEL_ENV !== "production"} />
 
       {/* ================= about modal ================= */}
       {aboutOpen && (

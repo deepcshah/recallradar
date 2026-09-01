@@ -2,7 +2,7 @@
  * dark-matter vector style to match the dark theme; falls back to CARTO
  * dark raster tiles if the vector style fails to load.
  */
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef } from "react";
 import maplibregl from "maplibre-gl";
 
 /* The basemap follows the app theme — a dark slab under a light UI was the
@@ -110,6 +110,81 @@ function pinEl({ label, name, note, isYou }) {
   return div;
 }
 
+/* ── which labels actually get drawn ────────────────────────────────────
+ *
+ * A name beside every named pin is fine until two of them are on the same
+ * block, and then it is two names on top of each other with a map somewhere
+ * underneath. Thirteen chains on Flatbush Ave is the normal case here, not
+ * the pathological one.
+ *
+ * So the labels are laid out rather than merely shown. Candidates are taken
+ * in priority order — the selected store first, then the ones a notice names
+ * most often — and each is kept only if its box clears every box already
+ * kept. A label that would run off the right edge, or whose pin has scrolled
+ * out of view, is dropped before it is considered at all.
+ *
+ * The budget scales with the map, because "how many names fit" is a question
+ * about the space, not the data: a phone showing the map at 40% of a small
+ * screen gets a handful, a desktop half-window gets more. Everything is
+ * recomputed on move, so panning and zooming reveal names as room appears
+ * rather than leaving a fixed set that was right once.
+ */
+const LABEL_GAP = 6;        // px of clear space required between two labels
+const LABEL_OFFSET_X = 27;  // label's left edge, relative to the pin's point
+const LABEL_TOP = -28;      // the head sits this far above the anchored point
+
+function labelBudget(height) {
+  if (height < 260) return 2;
+  if (height < 420) return 4;
+  if (height < 700) return 7;
+  return 11;
+}
+
+function overlaps(a, b) {
+  return !(a.x + a.w + LABEL_GAP < b.x || b.x + b.w + LABEL_GAP < a.x ||
+           a.y + a.h + LABEL_GAP < b.y || b.y + b.h + LABEL_GAP < a.y);
+}
+
+function layoutLabels(map, markers, { activeIndex, named, weights }) {
+  if (!map || !markers.length) return;
+  const box = map.getContainer();
+  const W = box.clientWidth;
+  const H = box.clientHeight;
+  if (!W || !H) return;
+  const budget = labelBudget(H);
+
+  const candidates = markers
+    .map((m, i) => i)
+    .filter((i) => i === activeIndex || (named && named[i]))
+    .sort((a, b) => {
+      if (a === activeIndex) return -1;
+      if (b === activeIndex) return 1;
+      const wa = (weights && weights[a]) || 0;
+      const wb = (weights && weights[b]) || 0;
+      return wb - wa;
+    });
+
+  const placed = [];
+  for (const i of candidates) {
+    const el = markers[i].getElement();
+    const tag = el.querySelector(".map-pin-name");
+    if (!tag) continue;
+    const p = map.project(markers[i].getLngLat());
+    // Measured, not guessed: a name's width is whatever the type came out at.
+    const w = tag.offsetWidth || 120;
+    const h = tag.offsetHeight || 24;
+    const rect = { x: p.x + LABEL_OFFSET_X, y: p.y + LABEL_TOP, w, h };
+
+    const offscreen = p.x < 0 || p.x > W || p.y < 0 || p.y > H;
+    const runsOff = rect.x + rect.w > W - 4;
+    const collides = placed.some((q) => overlaps(rect, q));
+    const show = !offscreen && !runsOff && !collides && placed.length < budget;
+
+    el.classList.toggle("label-off", !show);
+    if (show) placed.push(rect);
+  }
+}
+
 function popupHtml(s) {
   const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -141,13 +216,17 @@ function radiusBounds(loc, radiusMeters) {
 }
 
 const MapView = forwardRef(function MapView(
-  { loc, stores, labels, named, notes, activeIndex, theme = "dark", radius, onMarkerClick },
+  { loc, stores, labels, named, notes, weights, activeIndex, theme = "dark", radius, onMarkerClick },
   ref
 ) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const youRef = useRef(null);
   const markersRef = useRef([]);
+  /* Label layout reads the live values, so it is called from a map event
+   * handler bound once rather than re-bound on every render. */
+  const labelStateRef = useRef({ activeIndex: -1, named: [], weights: [] });
+  const labelFrameRef = useRef(0);
   const clickRef = useRef(onMarkerClick);
   clickRef.current = onMarkerClick;
   const themeRef = useRef(theme);
@@ -186,6 +265,27 @@ const MapView = forwardRef(function MapView(
     if (map.getStyle()?.name === "rr-raster-fallback") map.setStyle(rasterFallback(theme));
     else map.setStyle(MAP_STYLE[theme] || MAP_STYLE.dark);
   }, [theme]);
+
+  /* One frame per move at most. `move` fires many times a second while a
+   * camera animation runs, and the layout is cheap but not free. */
+  const relayoutLabels = useCallback(() => {
+    cancelAnimationFrame(labelFrameRef.current);
+    labelFrameRef.current = requestAnimationFrame(() => {
+      layoutLabels(mapRef.current, markersRef.current, labelStateRef.current);
+    });
+  }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.on("move", relayoutLabels);
+    map.on("resize", relayoutLabels);
+    return () => {
+      cancelAnimationFrame(labelFrameRef.current);
+      map.off("move", relayoutLabels);
+      map.off("resize", relayoutLabels);
+    };
+  }, [relayoutLabels, loc]);
 
   /* MapLibre caches the container size at construction and never re-reads it.
    * The panel beside the map appears in the same commit the map mounts in, and
@@ -260,6 +360,7 @@ const MapView = forwardRef(function MapView(
      * is the question actually being asked: is this map ready to be moved. */
     if (map.isStyleLoaded() || map.loaded()) fit();
     else map.once("load", fit);
+    relayoutLabels();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stores, loc, radius]);
 
@@ -275,7 +376,9 @@ const MapView = forwardRef(function MapView(
       const note = el.querySelector(".map-pin-name i");
       if (note) note.textContent = (notes && notes[i]) || "";
     });
-  }, [labels, named, notes, activeIndex, stores]);
+    labelStateRef.current = { activeIndex, named: named || [], weights: weights || [] };
+    relayoutLabels();
+  }, [labels, named, notes, weights, activeIndex, stores, relayoutLabels]);
 
   useImperativeHandle(ref, () => ({
     focusStore(i, { popup = true } = {}) {
