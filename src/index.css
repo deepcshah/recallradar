@@ -665,6 +665,30 @@ button:disabled,
   }
 }
 
+/* The high-risk filter.
+ *
+ * Amber rather than the accent: this is the one facet that is about danger
+ * rather than about what you pressed, and green is reserved for the latter.
+ * It keeps the muted, count-first shape it had as a statistic so the row
+ * does not gain weight by gaining a function. */
+.risk-chip {
+  @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-amber/40
+         bg-amber-soft px-2.5 py-1 text-[11px] font-semibold text-amber;
+  min-height: 30px;
+  transition: box-shadow 0.1s ease, background-color 0.16s ease, border-color 0.16s ease,
+    color 0.16s ease, transform 0.1s ease;
+  box-shadow: var(--rr-bevel), var(--rr-shadow-1);
+}
+.risk-chip:active {
+  transform: translateY(1px);
+  box-shadow: var(--rr-press);
+}
+.risk-chip-on {
+  @apply border-amber bg-amber text-paper;
+  color: var(--rr-surface);
+  box-shadow: var(--rr-bevel-strong), var(--rr-shadow-1);
+}
+
 /* ─────────────────────── category row (phone) ─────────────────────────── */
 
 /* A scrolling row of product types, above the recall list.

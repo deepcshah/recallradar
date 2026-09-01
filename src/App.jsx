@@ -408,6 +408,7 @@ function PanelHeader({ label, countId, count, className = "", children }) {
  * of the two that named the store you had picked. */
 function passesFilters(r, f, except) {
   if (except !== "source" && !f.sources.has(r.source)) return false;
+  if (except !== "high" && f.highOnly && r.severity !== "high") return false;
   if (except !== "cat" && f.cats && !f.cats.has(categoryFor(r).key)) return false;
   if (except !== "why" && f.whys && !f.whys.has(reasonFor(r).key)) return false;
   if (except !== "chainScope" && f.chainScope &&
@@ -548,6 +549,10 @@ export default function App() {
   const [moreOpen, setMoreOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  /* "184 high-risk" was a statistic sitting where a control could be: it told
+   * you the number and then left you to go and find Class I inside the filter
+   * sheet. Same pixels, now the thing itself. */
+  const [highOnly, setHighOnly] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
   const [sideBySide, setSideBySide] = useState(() => loadPref("rr-side-by-side", false));
   const [splitPct, setSplitPct] = useState(() => loadPref("rr-split", DEFAULT_SPLIT));
@@ -932,6 +937,7 @@ export default function App() {
   const filterState = useMemo(() => ({
     q: filterText.trim().toLowerCase(),
     sources: activeSources,
+    highOnly,
     cats: categoryKeys.length ? new Set(categoryKeys) : null,
     whys: reasonKeys.length ? new Set(reasonKeys) : null,
     /* A selected store is the most specific claim available, so it wins.
@@ -940,7 +946,7 @@ export default function App() {
     chainScope: selectedStore
       ? (storeScope === "named" ? new Set(selectedStore.chainIds) : null)
       : (scope === "named" ? nearbyChainIds : null),
-  }), [filterText, activeSources, categoryKeys, reasonKeys, selectedStore, storeScope, scope, nearbyChainIds]);
+  }), [filterText, activeSources, highOnly, categoryKeys, reasonKeys, selectedStore, storeScope, scope, nearbyChainIds]);
 
   /* The option LIST comes from every recall, so a chip never disappears
    * mid-session; the COUNT on it comes from the current filters, so it never
@@ -1015,7 +1021,13 @@ export default function App() {
         : t(b.date) - t(a.date) || ((sev[a.severity] ?? 1) - (sev[b.severity] ?? 1)));
   }, [filtered, sortBy]);
 
-  const highCount = filtered.filter((r) => r.severity === "high").length;
+  /* Counted against every filter except its own, the way every facet chip in
+   * this app is counted — otherwise switching it on would make it read
+   * "184 of 184", which says nothing. */
+  const highCount = useMemo(
+    () => recalls.filter((r) => r.severity === "high" && passesFilters(r, filterState, "high")).length,
+    [recalls, filterState]
+  );
   const sourceNames = useMemo(() => [...new Set(recalls.map((r) => r.source))], [recalls]);
   const remaining = sorted.length - limit;
 
@@ -1031,6 +1043,7 @@ export default function App() {
     if (filterText.trim()) {
       out.push({ key: "q", label: `“${truncate(filterText.trim(), 22)}”`, clear: () => setFilterText("") });
     }
+    if (highOnly) out.push({ key: "high", label: "High-risk only", clear: () => setHighOnly(false) });
     for (const k of categoryKeys) {
       const o = categoryOptions.find((x) => x.value === k);
       if (o) out.push({ key: `cat:${k}`, label: o.label, clear: () => setCategoryKeys(categoryKeys.filter((x) => x !== k)) });
@@ -1047,10 +1060,11 @@ export default function App() {
       });
     }
     return out;
-  }, [filterText, categoryKeys, categoryOptions, reasonKeys, reasonOptions, sourceNames, activeSources]);
+  }, [filterText, highOnly, categoryKeys, categoryOptions, reasonKeys, reasonOptions, sourceNames, activeSources]);
 
   const clearFilters = useCallback(() => {
     setFilterText("");
+    setHighOnly(false);
     setCategoryKeys([]);
     setReasonKeys([]);
     setActiveSources(new Set(sourceNames));
@@ -1168,22 +1182,29 @@ export default function App() {
   const headline = useMemo(() => {
     if (storesStatus?.busy || productsBusy) return null;
     if (!recalls.length) return { tone: "calm", text: "No active recalls match your area." };
-    const chains = new Set();
     const named = new Set();
-    let high = 0;
     for (const st of stores) {
-      const mine = namedRecallsFor(st);
-      for (const r of mine) {
-        if (!named.has(r.id)) { named.add(r.id); if (r.severity === "high") high++; }
-      }
-      if (mine.length) for (const id of st.chainIds) chains.add(id);
+      for (const r of namedRecallsFor(st)) named.add(r.id);
     }
     if (!named.size) {
       return { tone: "calm",
         text: `No recall notice names a store near you. Everything below covers ${loc?.stateAbbr || "your area"} without naming a retailer.` };
     }
-    return { tone: "match", high,
-      text: `${plural(chains.size, "chain", "chains")} near you ${chains.size === 1 ? "is" : "are"} named in a recall notice` };
+    /* Deliberately nothing.
+     *
+     * "13 chains near you are named in a recall notice" restated the chip
+     * directly above it — "At a store near you 47" — in different units, and
+     * spent a whole band on a phone doing it. Worse, it read as a statement
+     * where a control already existed: switching to that scope narrows both
+     * lists to exactly those chains (see rankedStores), so the sentence was
+     * describing a thing you could already press.
+     *
+     * The two cases below survive because nothing else says them: an empty
+     * result, and the one that matters most — notices cover your area but
+     * name no shop near you, which is not the same as nothing being wrong.
+     * The Class I count this used to carry is now the high-risk filter beside
+     * the search box, where it is a control rather than a number. */
+    return null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stores, recalls, byChain, loc, storesStatus, productsBusy]);
 
@@ -1653,22 +1674,12 @@ export default function App() {
               <p id="headline"
                  className={"flex shrink-0 flex-wrap items-center gap-x-2 border-b border-line px-4 py-2 text-[12px] font-semibold leading-snug lg:py-2.5 lg:text-[13px] " +
                    (selectedStore ? "max-lg:hidden " : "") +
-                   (headline.tone === "match" ? "bg-panel-3 text-paper" : "bg-panel text-fog")}>
+                   "bg-panel text-fog"}>
+                {/* Only the two cases nothing else on screen says. The
+                    Class I count that used to ride here is the high-risk
+                    filter beside the search box now — a control instead of a
+                    number, in the same pixels. */}
                 <span>{headline.text}</span>
-                {/* The severity count is the one number worth carrying up here,
-                    and "Class I" is the one word in it nobody can be expected
-                    to know. It explains itself in place rather than sending
-                    anyone to About. */}
-                {headline.high > 0 && (
-                  <InfoTip
-                    title="Class I — the most serious class"
-                    body="The agency believes eating, taking or using the product could cause serious harm or death. Read those notices first."
-                    triggerClassName="text-alert"
-                    side="bottom"
-                  >
-                    <span className="tnum">{headline.high} Class I</span>
-                  </InfoTip>
-                )}
               </p>
             )}
 
@@ -1880,8 +1891,19 @@ export default function App() {
                     {productsBusy ? "…" : sorted.length}
                   </span>
                 )}
-                {highCount > 0 && (
-                  <span id="stat-high" className="tnum shrink-0 text-[11px] font-semibold text-amber">{highCount} high-risk</span>
+                {(highCount > 0 || highOnly) && (
+                  <Tooltip content="Class I only — the agency believes the product could cause serious harm or death.">
+                    <button
+                      id="stat-high"
+                      type="button"
+                      aria-pressed={highOnly}
+                      onClick={() => { setHighOnly(!highOnly); setLimit(25); }}
+                      className={"risk-chip shrink-0 " + (highOnly ? "risk-chip-on" : "")}
+                    >
+                      <span className="tnum">{highCount}</span>
+                      <span>high-risk</span>
+                    </button>
+                  </Tooltip>
                 )}
                 <div className="relative min-w-0 flex-1">
                   <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-fog" />
