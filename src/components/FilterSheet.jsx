@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Check, SlidersHorizontal, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/tooltip";
+import { useSheetPresence } from "@/components/ui/sheet";
 
 /* ─────────────────────────────────────────────────────────────────────────
  * FILTERS
@@ -136,6 +137,10 @@ export function FilterChoice({ label, options, value, onChange }) {
 export function FilterSheet({ open, onClose, anchored, triggerId = "btn-filters", count, onClear, resultLabel, children }) {
   const boxRef = useRef(null);
   const [pos, setPos] = useState(null);
+  /* Only the phone surface slides. The desktop popover is a small thing that
+   * appears next to the button that summoned it — travel there would be
+   * animation for its own sake, and `pop-in` already says "this opened". */
+  const { mounted, shown } = useSheetPresence(open && !anchored);
 
   /* The desktop popover is measured against the viewport rather than hung off
    * the trigger with `absolute`. The trigger lives partway down a resizable
@@ -215,7 +220,7 @@ export function FilterSheet({ open, onClose, anchored, triggerId = "btn-filters"
     };
   }, [open, onClose, triggerId]);
 
-  if (!open) return null;
+  if (anchored ? !open : !mounted) return null;
 
   const head = (
     <div className="relative flex shrink-0 items-center gap-2 border-b border-line px-4 py-3">
@@ -264,18 +269,20 @@ export function FilterSheet({ open, onClose, anchored, triggerId = "btn-filters"
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-[60]">
+    <div className={"fixed inset-0 z-[60] " + (shown ? "" : "pointer-events-none")}>
       {/* The sheet gets a dimmed ground so it reads as a layer, and the ground
           is the dismissal target — bigger and far more obvious than
           "somewhere else on the page". */}
-      <div className="absolute inset-0 bg-ink/60 backdrop-blur-[1px]" onClick={onClose} />
+      <div className={"sheet-scrim absolute inset-0 bg-ink/60 backdrop-blur-[1px] " + (shown ? "is-shown" : "")}
+           onClick={onClose} />
       <div
         ref={boxRef}
         role="dialog"
         aria-modal="true"
         aria-label="Filters and sort"
         tabIndex={-1}
-        className="absolute inset-x-0 bottom-0 flex max-h-[80dvh] flex-col overflow-hidden rounded-t-2xl border border-b-0 border-line bg-panel shadow-[var(--rr-shadow-3)]"
+        className={"sheet-panel absolute inset-x-0 bottom-0 flex max-h-[80dvh] flex-col overflow-hidden rounded-t-2xl border border-b-0 border-line bg-panel shadow-[var(--rr-shadow-3)] " +
+          (shown ? "is-shown" : "")}
       >
         {head}
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">{children}</div>

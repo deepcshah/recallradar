@@ -1,6 +1,41 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+
+/* How long the exit takes. The same number lives in index.css as
+ * `--rr-sheet-out`; it is duplicated because the CSS owns the travel and this
+ * file owns the unmount, and the unmount must not land first. */
+export const SHEET_EXIT_MS = 240;
+
+/* Mount, slide in, slide out, unmount.
+ *
+ * A sheet cannot animate away while React is deleting it, so closing has two
+ * phases: `shown` flips false and the CSS transition runs, and only then does
+ * `mounted` follow and the tree go. The double rAF on the way in is not
+ * superstition — a single frame runs before the browser has painted the
+ * element in its start position, so the transition has nothing to interpolate
+ * from and the sheet is simply there.
+ */
+export function useSheetPresence(open) {
+  const [mounted, setMounted] = useState(open);
+  const [shown, setShown] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      let inner = 0;
+      const outer = requestAnimationFrame(() => {
+        inner = requestAnimationFrame(() => setShown(true));
+      });
+      return () => { cancelAnimationFrame(outer); cancelAnimationFrame(inner); };
+    }
+    setShown(false);
+    const t = setTimeout(() => setMounted(false), SHEET_EXIT_MS);
+    return () => clearTimeout(t);
+  }, [open]);
+
+  return { mounted, shown };
+}
 
 /* A bottom sheet: dimmed ground, rounded top, grabber, safe-area padding.
  *
@@ -14,6 +49,7 @@ import { X } from "lucide-react";
  */
 export function Sheet({ open, onClose, title, children, footer }) {
   const boxRef = useRef(null);
+  const { mounted, shown } = useSheetPresence(open);
 
   useEffect(() => {
     if (!open) return;
@@ -42,18 +78,24 @@ export function Sheet({ open, onClose, title, children, footer }) {
     };
   }, [open, onClose]);
 
-  if (!open) return null;
+  if (!mounted) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-[75]">
-      <div className="absolute inset-0 bg-ink/60 backdrop-blur-[1px]" onClick={onClose} />
+    /* Inert on the way out. The sheet is still on screen for the length of the
+       slide, and a tap that lands on a surface already leaving would fire a
+       control the user has just dismissed. */
+    <div className={"fixed inset-0 z-[75] " + (shown ? "" : "pointer-events-none")}>
+      <div className={"sheet-scrim absolute inset-0 bg-ink/60 backdrop-blur-[1px] " + (shown ? "is-shown" : "")}
+           onClick={onClose} />
       <div
         ref={boxRef}
         role="dialog"
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
-        className="pop-in absolute inset-x-0 bottom-0 flex max-h-[85dvh] flex-col overflow-hidden rounded-t-2xl border border-b-0 border-line bg-panel shadow-[var(--rr-shadow-3)]"
+        className={"sheet-panel absolute inset-x-0 bottom-0 flex max-h-[85dvh] flex-col overflow-hidden " +
+          "rounded-t-2xl border border-b-0 border-line bg-panel shadow-[var(--rr-shadow-3)] " +
+          (shown ? "is-shown" : "")}
       >
         <div className="relative flex shrink-0 items-center gap-2 border-b border-line px-4 pb-3 pt-4">
           <span aria-hidden="true" className="absolute inset-x-0 top-1.5 mx-auto h-1 w-9 rounded-full bg-line-strong" />

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle, Armchair, Baby, Beef, Bike, Candy, Carrot, Check, ChevronDown, ChevronRight, ChevronUp,
   Crosshair, CupSoda,
-  ExternalLink, Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package, PanelRightClose,
+  ExternalLink, Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package,
   PanelRightOpen, PawPrint, Pill, Plug, Plus, Radar, Rows2, Columns2, Search, SearchX,
   ScanLine, ShieldCheck, Soup, Stethoscope, Sun, Moon, MonitorSmartphone, MoreHorizontal, Store,
   ListFilter, UtensilsCrossed, Wheat, X, Zap,
@@ -14,7 +14,7 @@ import { Tooltip, InfoTip } from "@/components/ui/tooltip";
 import { FilterButton, FilterSheet, FilterGroup, FilterChoice } from "@/components/FilterSheet";
 import MapView from "@/components/MapView";
 import ScanSheet from "@/components/ScanSheet";
-import { Sheet } from "@/components/ui/sheet";
+import { Sheet, useSheetPresence } from "@/components/ui/sheet";
 import { recallUpcs, lookupProduct } from "@/lib/upc";
 import { browserPosition, reverseGeocode, geocodeInput } from "@/lib/geo";
 import { fetchAll, recoverBlockedSources, sortRecalls } from "@/lib/sources";
@@ -539,10 +539,15 @@ export default function App() {
   const [storesStatus, setStoresStatus] = useState(null);
   const [activeStore, setActiveStore] = useState(-1); // drives map focus AND product filtering
   const [scope, setScope] = useState(() => normalizeScope(loadPref("rr-mode", "area")));
-  // Wide screens only: fold the store list down to its header. This is the
-  // capability the old "All recalls" mode provided, moved out of the scope
-  // control and onto the thing it actually acts on.
-  const [storesCollapsed, setStoresCollapsed] = useState(() => loadPref("rr-stores-collapsed", false));
+  /* Wide screens: each list is shown or hidden on its own.
+   *
+   * There used to be one "Hide Lists" button that took both, plus a separate
+   * fold for the store list — two controls with overlapping jobs and no way
+   * to express the case people actually want, which is "I am reading recalls
+   * and do not care which shop they are in". Two switches say all four
+   * states, and hiding both is what the old single button did. */
+  const [storesShown, setStoresShown] = useState(() => loadPref("rr-show-stores", true));
+  const [recallsShown, setRecallsShown] = useState(() => loadPref("rr-show-recalls", true));
   const [view, setView] = useState("split"); // phone only: map | split | list
   const [tab, setTab] = useState("near"); // phone destinations: near | recalls
   const [locOpen, setLocOpen] = useState(false);
@@ -574,6 +579,9 @@ export default function App() {
   const { theme, setTheme, resolved: resolvedTheme, cycle: cycleTheme } = useTheme();
   const motionStyle = useMotionTuning();
   const stagger = cardStagger(motionStyle);
+  /* About is the app's longest read and it used to vanish mid-sentence — an
+   * entrance animation with no exit. Same presence machinery as the sheets. */
+  const { mounted: aboutMounted, shown: aboutShown } = useSheetPresence(aboutOpen);
 
   const mapRef = useRef(null);
   const storeItemRefs = useRef([]);
@@ -803,11 +811,11 @@ export default function App() {
   const applySelection = useCallback((i, { fly }) => {
     setActiveStore((prev) => {
       const next = prev === i && isWide ? -1 : i;
-      /* The popup says the store's name, address and distance — which is
-       * exactly what the selection bar now says, in a place that does not sit
-       * on top of a map only a third of a phone tall. So the map centres on
-       * the pin either way, and only opens the bubble where there is room. */
-      if (next >= 0 && fly && mapRef.current) mapRef.current.focusStore(next, { popup: isWide });
+      /* Only the camera. Whether a bubble opens is `showPopup` on the map,
+       * decided by how much map there is to open it over — it is not this
+       * function's business, and it used to be, which is how the bubble ended
+       * up with a life of its own. */
+      if (next >= 0 && fly && mapRef.current) mapRef.current.focusStore(next);
       setStoreScope(scopeForStore(next));
       return next;
     });
@@ -819,11 +827,27 @@ export default function App() {
 
   const selectStore = useCallback((i) => applySelection(i, { fly: true }), [applySelection]);
 
+  /* A pin is a toggle at every size, and it stays on the map.
+   *
+   * It was neither. Toggling was wide-screen only, so on a phone tapping the
+   * pin you had just picked did nothing you could see — and the tap also ran
+   * the list's navigation, throwing you onto the Recalls tab and taking the
+   * map, the pin and the whole gesture off screen. Picking a store from the
+   * list is a navigation because a list row is a link; tapping a pin is a
+   * selection on the thing you are looking at, and you stay looking at it.
+   * The store list scrolls to the row underneath, and the scope bar names the
+   * selection on both tabs. */
   const onMarkerClick = useCallback((i) => {
-    applySelection(i, { fly: false });
+    setActiveStore((prev) => {
+      const next = prev === i ? -1 : i;
+      setStoreScope(scopeForStore(next));
+      return next;
+    });
+    setLimit(25);
+    if (productsScrollRef.current) productsScrollRef.current.scrollTop = 0;
     const el = storeItemRefs.current[i];
     if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [applySelection]);
+  }, [scopeForStore]);
 
   const clearStore = useCallback(() => {
     setActiveStore(-1);
@@ -831,12 +855,20 @@ export default function App() {
     setLimit(25);
   }, []);
 
-  const listHidden = view === "map";
+  /* Two different mechanisms, one question: is there a panel beside the map.
+   * A phone drags the boundary between them (`view`); a wide screen switches
+   * the lists themselves off, and with nothing left to show the panel has no
+   * reason to hold a column. */
+  const listHidden = isWide ? !(storesShown || recallsShown) : view === "map";
   const mapHidden = view === "list" && !isWide;
 
+  /* MapLibre caches its container size, so every change that resizes the map
+   * column has to say so. The list switches are in here for the same reason
+   * the split percentages are: they change the column's width, and without
+   * this the canvas keeps the old one and the pins land off the edge. */
   useEffect(() => {
     mapRef.current && mapRef.current.resize();
-  }, [view, stores, tab, sideBySide, splitPct, mapPct]);
+  }, [view, stores, tab, sideBySide, splitPct, mapPct, mapWidthPct, storesShown, recallsShown, isWide]);
 
   const stepView = useCallback((dir) => {
     setView((v) => VIEWS[Math.min(VIEWS.length - 1, Math.max(0, VIEWS.indexOf(v) + dir))]);
@@ -848,11 +880,14 @@ export default function App() {
     setLimit(25);
   }, []);
 
-  const toggleStoresCollapsed = useCallback(() => {
-    setStoresCollapsed((prev) => {
-      savePref("rr-stores-collapsed", !prev);
-      return !prev;
-    });
+  /* Turning both off is how you get a full-bleed map, so neither switch
+   * refuses to go off. What it must not do is leave an empty panel standing:
+   * `listHidden` below reads the pair, and the panel goes with them. */
+  const toggleStores = useCallback(() => {
+    setStoresShown((prev) => { savePref("rr-show-stores", !prev); return !prev; });
+  }, []);
+  const toggleRecalls = useCallback(() => {
+    setRecallsShown((prev) => { savePref("rr-show-recalls", !prev); return !prev; });
   }, []);
 
   /* One breakpoint for the whole information architecture, at lg (1024px).
@@ -902,7 +937,13 @@ export default function App() {
   }
 
   // Inline basis drives both axes; the phone divider owns the map's share.
-  const storesStyle = isWide ? { flexBasis: `${splitPct}%`, flexGrow: 0, flexShrink: 0 } : undefined;
+  /* The split only exists while there are two lists to split. With one of them
+   * switched off the survivor takes the panel, so it must not keep a basis
+   * that leaves half the column empty. */
+  const bothLists = storesShown && recallsShown;
+  const storesStyle = isWide && bothLists
+    ? { flexBasis: `${splitPct}%`, flexGrow: 0, flexShrink: 0 }
+    : undefined;
   /* The map only gives up its share when there is a panel to give it to. With
    * no location yet there is no panel, and the old hard-coded 42% left the
    * landing screen's headline and its one button squeezed into the top of the
@@ -914,7 +955,12 @@ export default function App() {
    * left half of an otherwise empty page and read as a layout that had failed
    * to load. Getting a location is this screen's whole job, so it gets the
    * whole screen. */
-  const mapStyle = !loc
+  /* And when the lists are hidden the map takes the whole width — the same
+   * argument, one level up. It did not: this branch kept handing the map its
+   * `mapWidthPct` basis with `flexGrow: 0`, so hiding the panel left the map
+   * at 48% of the window with an empty column beside it. A basis is only
+   * right while there is something on the other side of it. */
+  const mapStyle = !loc || listHidden
     ? { flexBasis: "100%", flexGrow: 1, flexShrink: 1 }
     : isWide
       ? { flexBasis: `${mapWidthPct}%`, flexGrow: 0, flexShrink: 0 }
@@ -1224,11 +1270,14 @@ export default function App() {
   // Both lookups roll up into one "the app is working" flag.
   const scanning = productsBusy || Boolean(storesStatus?.busy);
 
-  const showStores = "flex " + (tab === "near" ? "" : "max-lg:hidden ");
-  // Collapsing is a wide-screen affordance; a phone folds the list by leaving
-  // the tab, so the stored preference must not follow it there.
-  const storesFolded = isWide && storesCollapsed;
-  const showProducts = "flex " + (tab === "recalls" ? "" : "max-lg:hidden ");
+  /* Which list is on screen, by size. A phone shows one at a time and the tab
+   * bar picks; a wide screen shows both unless a switch says otherwise. The
+   * `lg:` half comes last in the string because these are all `display`
+   * utilities of equal specificity — the later one wins at the breakpoint. */
+  const showStores = "flex " + (tab === "near" ? "" : "max-lg:hidden ") +
+    (storesShown ? "" : "lg:hidden ");
+  const showProducts = "flex " + (tab === "recalls" ? "" : "max-lg:hidden ") +
+    (recallsShown ? "" : "lg:hidden ");
 
   /* Where a selected store's recalls actually appear depends on the layout,
    * and getting this wrong is how the card came to say "Showing its recalls
@@ -1439,6 +1488,56 @@ export default function App() {
               {theme === "dark" ? <Moon /> : theme === "light" ? <Sun /> : <MonitorSmartphone />}
             </Button>
           </Tooltip>
+
+          {/* ---- what the window is showing (wide screens) ----
+              These were one "Hide Lists" button floating over the top-left
+              corner of the map, which is where a map control belongs and not
+              where a layout control does: it sat on the map while acting on
+              everything except the map, and it could only take both lists at
+              once. Beside the theme switch they read as what they are — chrome
+              that decides what the window shows — and they take one list each,
+              so "just the recalls, I don't care which shop" is finally a thing
+              you can ask for. Turning both off is the old button. */}
+          {loc && (
+            <>
+              <span aria-hidden="true" className="hidden h-5 w-px shrink-0 bg-line lg:block" />
+              <div className="hidden shrink-0 items-center gap-1.5 lg:flex" role="group" aria-label="Panels to show">
+                {[
+                  ["stores", "Stores", "store list", Store, storesShown, toggleStores, "stores-list-scroll"],
+                  ["recalls", "Recalls", "recall list", ListFilter, recallsShown, toggleRecalls, "recalls-list-scroll"],
+                ].map(([key, label, spoken, Icon, on, toggle, controls]) => (
+                  <Tooltip key={key}
+                           content={on ? `Hide the ${spoken} and give the room to the map` : `Show the ${spoken}`}>
+                    <Button
+                      id={`btn-show-${key}`}
+                      variant="secondary" size="sm"
+                      aria-pressed={on}
+                      aria-controls={controls}
+                      onClick={toggle}
+                      className={"h-9 shrink-0 px-3 " +
+                        (on ? "border-mint bg-mint-soft text-mint" : "text-fog")}
+                    >
+                      <Icon /><span className="hidden xl:inline">{label}</span>
+                    </Button>
+                  </Tooltip>
+                ))}
+                {bothLists && (
+                  <Tooltip content={sideBySide ? "Stack the two lists vertically" : "Put the two lists side by side"}>
+                    <Button
+                      id="btn-toggle-layout"
+                      variant="secondary" size="icon"
+                      aria-pressed={sideBySide}
+                      onClick={toggleLayout}
+                      aria-label={sideBySide ? "Stack the lists vertically" : "Put the lists side by side"}
+                      className="h-9 w-9 shrink-0"
+                    >
+                      {sideBySide ? <Rows2 /> : <Columns2 />}
+                    </Button>
+                  </Tooltip>
+                )}
+              </div>
+            </>
+          )}
         </div>
 
         {(productsBusy || storesStatus?.busy) && <div id="progress" className="progress-track" />}
@@ -1470,18 +1569,27 @@ export default function App() {
         >
           {loc ? (
             <>
+              {/* The bubble needs room to sit over. A wide screen always has
+                  it; a phone only when the map has the screen, which is why
+                  the selection also reads out in the scope row — the one place
+                  that is on both tabs at every size. */}
               <MapView ref={mapRef} loc={loc} stores={stores} radius={radius}
                        labels={pinLabels} named={pinNamed} notes={pinNotes} weights={pinWeights}
                        activeIndex={activeStore}
                        theme={resolvedTheme}
-                       onMarkerClick={onMarkerClick} />
+                       showPopup={isWide || view === "map"}
+                       onMarkerClick={onMarkerClick}
+                       onBackgroundClick={clearStore} />
               {/* Controls on the map, not in a band above the list.
                   The radius is a question about the map — "how far out am I
                   looking" — so it belongs on the thing it changes, where the
                   answer is visible in the same glance. Floating it also gives
                   a phone back the row it used to spend on a label, a chip
                   group and the word "mi". */}
-              <div className="map-controls lg:hidden">
+              {/* Phone always; a wide screen only when the store list — which
+                  is where the radius chips live up there — is switched off.
+                  Hiding a list must not take the map's own control with it. */}
+              <div className={"map-controls " + (storesShown ? "" : "map-controls-on")}>
                 <div className="map-control-pill" role="group" aria-label="Store search radius">
                   {RADII.map((r) => (
                     <button key={r.value} type="button" onClick={() => setRadius(r.value)}
@@ -1582,33 +1690,22 @@ export default function App() {
             </div>
           )}
 
-          {/* The lists toggle exists at every size now. It was md-and-up only,
-              so on a phone — the one place where a full-screen map is most
-              worth having — there was no way to get one. */}
-          {loc && (
-            <div className="absolute left-3 top-3 z-10 flex items-center gap-1.5">
+          {/* Phone only, and only the way back. Dragging the grabber down is
+              how the map goes full-screen here; once it is, there is no
+              grabber left on screen, so the return trip has to sit on the map
+              itself. A wide screen has the pair of switches in the top bar —
+              the same state offered twice on one screen is one offer too
+              many. */}
+          {loc && view === "map" && (
+            <div className="absolute left-3 top-3 z-10 lg:hidden">
               <Button
                 id="btn-toggle-list" variant="secondary" size="sm"
-                aria-pressed={!listHidden}
                 aria-controls="stores-panel"
-                onClick={() => setView(listHidden ? "split" : "map")}
-                className={"bg-panel/90 backdrop-blur " + (listHidden ? "" : "max-lg:hidden")}
+                onClick={() => setView("split")}
+                className="bg-panel/90 backdrop-blur"
               >
-                {listHidden ? <><PanelRightOpen /> Show Lists</> : <><PanelRightClose /> Hide Lists</>}
+                <PanelRightOpen /> Show Lists
               </Button>
-              {!listHidden && (
-                <Tooltip content={sideBySide ? "Stack the two lists vertically" : "Put the two lists side by side"}>
-                  <Button
-                    id="btn-toggle-layout" variant="secondary" size="sm"
-                    aria-pressed={sideBySide}
-                    onClick={toggleLayout}
-                    className="hidden bg-panel/90 px-3 backdrop-blur lg:inline-flex"
-                  >
-                    {sideBySide ? <Rows2 /> : <Columns2 />}
-                    <span className="hidden lg:inline">{sideBySide ? "Stacked" : "Side by Side"}</span>
-                  </Button>
-                </Tooltip>
-              )}
             </div>
           )}
         </div>
@@ -1787,9 +1884,8 @@ export default function App() {
             <div ref={splitRef}
                  className={"flex min-h-0 flex-1 " + (sideBySide ? "flex-col lg:flex-row" : "flex-col")}>
             {/* ---- stores ---- */}
-            <section className={showStores + "min-h-0 flex-col overflow-hidden " +
-                       (storesFolded ? "flex-none" : "flex-1")}
-                     style={storesFolded ? undefined : storesStyle}>
+            <section className={showStores + "min-h-0 flex-1 flex-col overflow-hidden"}
+                     style={storesStyle}>
               <PanelHeader
                 label="Stores" countId="stat-stores" count={scanning ? "…" : stores.length}
                 className="max-lg:hidden"
@@ -1798,44 +1894,26 @@ export default function App() {
                     see the overlay in the map column. Two of the same control
                     on one screen is one too many, and the band it lived in
                     was one of five stacked above a short list. */}
-                {!storesFolded && (
-                  <>
-                    <span className="microlabel max-lg:hidden">Within</span>
-                    <div className="flex gap-1 max-lg:hidden" role="group" aria-label="Store search radius">
-                      {RADII.map((r) => (
-                        <button key={r.value} type="button" onClick={() => setRadius(r.value)}
-                                aria-pressed={radius === r.value}
-                                className={"chip " + (radius === r.value ? "chip-on" : "chip-off")}>
-                          {r.label}
-                        </button>
-                      ))}
-                      <span className="microlabel self-center">mi</span>
-                    </div>
-                  </>
-                )}
-                {/* Wide screens only: get the whole panel back for reading
-                    recalls. On a phone the bottom bar already does this, and a
-                    second way to hide a list you are looking at is one too
-                    many. */}
-                {isWide && (
-                  <Tooltip content={storesCollapsed ? "Show the store list again" : "Fold the store list away and give the whole panel to recalls"}>
-                    <button
-                      id="btn-collapse-stores"
-                      type="button"
-                      onClick={toggleStoresCollapsed}
-                      aria-expanded={!storesCollapsed}
-                      aria-controls="stores-list-scroll"
-                      aria-label={storesCollapsed ? "Show the store list" : "Hide the store list"}
-                      className="ml-1 grid size-7 shrink-0 place-items-center rounded-md text-fog hover:bg-panel-3 hover:text-paper"
-                    >
-                      {storesCollapsed ? <ChevronDown className="size-4" /> : <ChevronUp className="size-4" />}
+                <span className="microlabel max-lg:hidden">Within</span>
+                <div className="flex gap-1 max-lg:hidden" role="group" aria-label="Store search radius">
+                  {RADII.map((r) => (
+                    <button key={r.value} type="button" onClick={() => setRadius(r.value)}
+                            aria-pressed={radius === r.value}
+                            className={"chip " + (radius === r.value ? "chip-on" : "chip-off")}>
+                      {r.label}
                     </button>
-                  </Tooltip>
-                )}
+                  ))}
+                  <span className="microlabel self-center">mi</span>
+                </div>
+                {/* The fold that used to live here is gone. It collapsed this
+                    list to its own header — a header for a list you cannot see
+                    — and it did the same job as the Stores switch in the top
+                    bar, which simply takes the list away and gives the room to
+                    whatever is left. One control, one outcome. */}
               </PanelHeader>
 
               <div id="stores-list-scroll"
-                   className={(storesFolded ? "hidden " : "") + "tabbar-space sunken min-h-0 flex-1 overflow-y-auto px-3 py-3"}>
+                   className="tabbar-space sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 {storesStatus && !storesStatus.empty && (
                   <div id="stores-status" role="status" aria-live="polite"
                        className={"mb-2 flex items-start gap-2 text-xs " + (storesStatus.error ? "text-alert" : "text-fog")}>
@@ -1954,8 +2032,10 @@ export default function App() {
               </div>
             </section>
 
-            {/* ---- drag divider between the two lists (desktop only) ---- */}
-            {isWide && !storesFolded && (
+            {/* ---- drag divider between the two lists (desktop only) ----
+                Only when there are two. A handle that resizes one list against
+                nothing is furniture. */}
+            {isWide && bothLists && (
               <div
                 id="split-handle"
                 role="separator"
@@ -1993,11 +2073,17 @@ export default function App() {
                   go looking for. A scrolling row of icons says what is in
                   this list before you read a single card, and the counts
                   come from the same facet maths the sheet uses, so the two
-                  can never disagree. Phone only: the sheet has room to show
-                  every facet at once on a wide screen, and duplicating one
-                  of them there would just be two controls for one state. */}
+                  can never disagree.
+                  It was phone-only, on the argument that the sheet can show
+                  every facet at once on a wide screen. That argument is about
+                  the sheet: this row's job is to say what is in the list
+                  before you read a card, and a control you have to open a
+                  sheet to find cannot do that at any width. Both drive the
+                  same state, so they cannot disagree — and it sits directly
+                  under the search box, which is where the rest of the
+                  narrowing happens. */}
               {categoryOptions.length > 1 && (
-                <div className="catrow lg:hidden" role="group" aria-label="Quick filters">
+                <div className="catrow" role="group" aria-label="Quick filters">
                   <button
                     type="button"
                     onClick={() => { setCategoryKeys([]); setLimit(25); }}
@@ -2058,7 +2144,8 @@ export default function App() {
                 </div>
               )}
 
-              <div ref={productsScrollRef} className="tabbar-space sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
+              <div id="recalls-list-scroll" ref={productsScrollRef}
+                   className="tabbar-space sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 {!productsBusy && <SourceNotice sources={sources} />}
                 {productsBusy && (
                   <ul className="flex flex-col gap-2">{[0, 1, 2, 3].map((i) => <RecallSkeleton key={i} delay={i * stagger * 2} />)}</ul>
@@ -2360,12 +2447,25 @@ export default function App() {
       <DialRoot position="bottom-left" theme="dark" defaultOpen={false}
                 productionEnabled={import.meta.env.VITE_VERCEL_ENV !== "production"} />
 
-      {/* ================= about modal ================= */}
-      {aboutOpen && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-ink/70 p-4 sm:items-center"
-             onClick={() => setAboutOpen(false)} role="dialog" aria-modal="true" aria-label="About this data">
-          <div className="fade-item max-h-[80dvh] w-full max-w-xl overflow-y-auto overscroll-contain rounded-2xl border border-line bg-panel p-5 text-sm text-fog"
-               onClick={(e) => e.stopPropagation()}>
+      {/* ================= about =================
+          A sheet on a phone and a centred dialog above sm, both arriving the
+          same way the rest of them do now — up from the bottom edge where
+          there is one, growing in place where there isn't. It used to be
+          `fade-item`, an entrance with no matching exit, so the longest
+          surface in the app vanished mid-scroll. */}
+      {aboutMounted && (
+        <div className={"fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4 " +
+               (aboutShown ? "" : "pointer-events-none")}
+             role="dialog" aria-modal="true" aria-label="About this data">
+          {/* The ground is its own element rather than the box that lays the
+              dialog out, so the two can move independently: the dim fades
+              while the surface travels. It is `absolute`, so it is out of the
+              flow and the panel is still the only flex item. */}
+          <div className={"sheet-scrim absolute inset-0 bg-ink/70 " + (aboutShown ? "is-shown" : "")}
+               onClick={() => setAboutOpen(false)} />
+          <div className={"sheet-panel sheet-centered relative max-h-[85dvh] w-full max-w-xl overflow-y-auto overscroll-contain rounded-t-2xl border border-b-0 border-line bg-panel p-5 text-sm text-fog sm:rounded-2xl sm:border-b " +
+                 (aboutShown ? "is-shown" : "")}
+               style={{ paddingBottom: "calc(1.25rem + env(safe-area-inset-bottom, 0px))" }}>
             <div className="flex items-center justify-between">
               <p className="microlabel text-paper">About this data</p>
               <button onClick={() => setAboutOpen(false)} aria-label="Close" className="grid size-8 place-items-center rounded-lg text-fog hover:bg-panel-3 hover:text-paper"><X className="size-4" /></button>

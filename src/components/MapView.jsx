@@ -216,19 +216,23 @@ function radiusBounds(loc, radiusMeters) {
 }
 
 const MapView = forwardRef(function MapView(
-  { loc, stores, labels, named, notes, weights, activeIndex, theme = "dark", radius, onMarkerClick },
+  { loc, stores, labels, named, notes, weights, activeIndex, theme = "dark", radius,
+    showPopup = true, onMarkerClick, onBackgroundClick },
   ref
 ) {
   const containerRef = useRef(null);
   const mapRef = useRef(null);
   const youRef = useRef(null);
   const markersRef = useRef([]);
+  const popupRef = useRef(null);
   /* Label layout reads the live values, so it is called from a map event
    * handler bound once rather than re-bound on every render. */
   const labelStateRef = useRef({ activeIndex: -1, named: [], weights: [] });
   const labelFrameRef = useRef(0);
   const clickRef = useRef(onMarkerClick);
   clickRef.current = onMarkerClick;
+  const groundRef = useRef(onBackgroundClick);
+  groundRef.current = onBackgroundClick;
   const themeRef = useRef(theme);
   themeRef.current = theme;
 
@@ -275,17 +279,41 @@ const MapView = forwardRef(function MapView(
     });
   }, []);
 
+  /* Clicking the ground clears the selection.
+   *
+   * Nothing did before, so a pin stayed lit after you had plainly moved on —
+   * and because MapLibre closes its own popups on a map click, the bubble
+   * went while the pin stayed, which is the state that made re-clicking the
+   * pin look like it was doing two contradictory things at once.
+   *
+   * The ground is the canvas and nothing else. Markers, popups and the zoom
+   * control all live inside the map's own containers, so their clicks arrive
+   * here too — and testing for "not a pin" was not enough: a popup overlaps
+   * the pins around it, so clicking one to read it cleared the very selection
+   * it was describing. Asking whether the click landed on the canvas answers
+   * the question directly, and keeps answering it for anything MapLibre
+   * chooses to overlay next. */
+  const onGroundClick = useCallback((e) => {
+    const map = mapRef.current;
+    if (!map) return;
+    const target = e.originalEvent && e.originalEvent.target;
+    if (target !== map.getCanvas()) return;
+    groundRef.current && groundRef.current();
+  }, []);
+
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     map.on("move", relayoutLabels);
     map.on("resize", relayoutLabels);
+    map.on("click", onGroundClick);
     return () => {
       cancelAnimationFrame(labelFrameRef.current);
       map.off("move", relayoutLabels);
       map.off("resize", relayoutLabels);
+      map.off("click", onGroundClick);
     };
-  }, [relayoutLabels, loc]);
+  }, [relayoutLabels, onGroundClick, loc]);
 
   /* MapLibre caches the container size at construction and never re-reads it.
    * The panel beside the map appears in the same commit the map mounts in, and
@@ -305,11 +333,19 @@ const MapView = forwardRef(function MapView(
     const map = mapRef.current;
     if (!map || !loc) return;
     if (youRef.current) youRef.current.remove();
+    /* No popup on this one either, and for the same reason as the store pins:
+     * a marker with a popup toggles it on click by itself, so "You are here"
+     * was a second bubble that could sit open beside the selected store's,
+     * outside the one piece of state that is supposed to decide whether a
+     * bubble exists. The pin is its own label — it is the only one that
+     * colour, and it says so to a screen reader. */
     youRef.current = new maplibregl.Marker({ element: pinEl({ isYou: true }) })
       .setLngLat([loc.lon, loc.lat])
-      .setPopup(new maplibregl.Popup({ offset: 14, closeButton: false, className: "popup-bare" })
-        .setHTML("You are here"))
       .addTo(map);
+    /* After `addTo`, not before: MapLibre overwrites aria-label with its own
+     * "Map marker" on the way in. */
+    youRef.current.getElement().setAttribute("aria-label", "You are here");
+    youRef.current.getElement().setAttribute("title", "You are here");
     map.jumpTo({ center: [loc.lon, loc.lat], zoom: 11 });
   }, [loc]);
 
@@ -331,17 +367,23 @@ const MapView = forwardRef(function MapView(
       });
       el.setAttribute("role", "button");
       el.setAttribute("tabindex", "0");
-      el.setAttribute("aria-label", `${s.name}, ${s.distanceMiles.toFixed(1)} miles away`);
       el.addEventListener("click", () => clickRef.current && clickRef.current(i));
       el.addEventListener("keydown", (e) => {
         if (e.key !== "Enter" && e.key !== " ") return;
         e.preventDefault();
         clickRef.current && clickRef.current(i);
       });
+      /* Deliberately no `setPopup`. A marker with a popup attached toggles it
+       * on click by itself — see the single-popup effect below for why that
+       * had to stop. */
       const m = new maplibregl.Marker({ element: el, anchor: "bottom" })
         .setLngLat([s.lon, s.lat])
-        .setPopup(new maplibregl.Popup({ offset: 18 }).setHTML(popupHtml(s)))
         .addTo(map);
+      /* `addTo` sets `aria-label` to MapLibre's own "Map marker", overwriting
+       * anything already there — so every pin on this map read as "Map
+       * marker" to a screen reader, whichever shop it was. It has to be said
+       * after the marker is on the map, not before. */
+      el.setAttribute("aria-label", `${s.name}, ${s.distanceMiles.toFixed(1)} miles away`);
       markersRef.current.push(m);
       bounds.extend([s.lon, s.lat]);
     });
@@ -380,18 +422,42 @@ const MapView = forwardRef(function MapView(
     relayoutLabels();
   }, [labels, named, notes, weights, activeIndex, stores, relayoutLabels]);
 
+  /* One popup, and `activeIndex` alone decides where it is.
+   *
+   * Every marker used to carry its own, and a marker with a popup attached
+   * toggles it on click without telling anyone — a second copy of "which
+   * store is selected", living in MapLibre, changed by clicks React never
+   * saw. The two drifted exactly as you would expect. Clicking the map closed
+   * the bubble (MapLibre closes popups on map click) but left the pin lit, so
+   * clicking that pin again deselected it in React and re-opened the bubble
+   * in MapLibre — one gesture, two opposite answers. Selecting from the list
+   * meanwhile reached in and toggled bubbles by hand to keep them in line.
+   *
+   * Now there is one bubble, it is derived, and the only way to dismiss it is
+   * to stop having a selection: click the pin again, click the ground, or
+   * clear it from the panel. No close button, because a close button would be
+   * a fourth way to change a state it cannot actually change. */
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const store = stores && stores[activeIndex];
+    const marker = markersRef.current[activeIndex];
+    if (!showPopup || !store || !marker) {
+      popupRef.current && popupRef.current.remove();
+      return;
+    }
+    if (!popupRef.current) {
+      popupRef.current = new maplibregl.Popup({ offset: 18, closeButton: false, closeOnClick: false });
+    }
+    popupRef.current.setLngLat(marker.getLngLat()).setHTML(popupHtml(store)).addTo(map);
+  }, [activeIndex, stores, showPopup]);
+
   useImperativeHandle(ref, () => ({
-    focusStore(i, { popup = true } = {}) {
+    focusStore(i) {
       const map = mapRef.current;
       const marker = markersRef.current[i];
       if (!map || !marker) return;
       map.flyTo({ center: marker.getLngLat(), zoom: Math.max(map.getZoom(), 13.5), duration: 700 });
-      // Only one bubble at a time, and none at all when the caller says the
-      // map is too small to spare the room.
-      markersRef.current.forEach((m, j) => {
-        if ((j !== i || !popup) && m.getPopup().isOpen()) m.togglePopup();
-      });
-      if (popup && !marker.getPopup().isOpen()) marker.togglePopup();
     },
     resize() {
       setTimeout(() => mapRef.current && mapRef.current.resize(), 60);

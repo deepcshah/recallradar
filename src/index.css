@@ -494,6 +494,65 @@ button:disabled,
   transform-origin: top center;
 }
 
+/* ──────────────────────────── sheets: the slide ───────────────────────── */
+
+/* A sheet arrives from the edge it will leave by.
+ *
+ * Every sheet in the app used to appear and vanish: mounted with `pop-in` — a
+ * 0.14s scale out of the top edge — and unmounted outright on close, so a
+ * surface covering four fifths of a phone screen simply blinked out of
+ * existence. That is the one transition on a phone worth paying for, because
+ * it is what says "this came up over the list, and the list is still there
+ * underneath". Without it a dismissal reads as a screen change.
+ *
+ * The curve is the one iOS uses for exactly this move: fast out of the gate,
+ * a long settle, no overshoot. And the exit is the shorter of the two on
+ * purpose — an arrival can take its time, but a dismissal has to feel like it
+ * obeyed you.
+ *
+ * Presence is owned by `useSheetPresence` in ui/sheet.jsx, which keeps the
+ * sheet mounted through the exit; `--rr-sheet-out` and SHEET_EXIT_MS there
+ * are the same number and have to stay that way. */
+:root {
+  --rr-sheet-in: 340ms;
+  --rr-sheet-out: 240ms;  /* == SHEET_EXIT_MS in components/ui/sheet.jsx */
+  --rr-sheet-ease: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.sheet-scrim {
+  opacity: 0;
+  transition: opacity var(--rr-sheet-out) ease;
+}
+.sheet-scrim.is-shown {
+  opacity: 1;
+  transition-duration: var(--rr-sheet-in);
+}
+
+.sheet-panel {
+  transform: translate3d(0, 100%, 0);
+  transition: transform var(--rr-sheet-out) var(--rr-sheet-ease);
+}
+.sheet-panel.is-shown {
+  transform: translate3d(0, 0, 0);
+  transition-duration: var(--rr-sheet-in);
+}
+
+/* A centred dialog is not a sheet — it has no edge to come from, so it grows
+   in place instead of sliding. Same presence machinery, different arrival. */
+@media (min-width: 640px) {
+  .sheet-panel.sheet-centered {
+    opacity: 0;
+    transform: scale(0.96);
+    transition: transform var(--rr-sheet-out) var(--rr-sheet-ease),
+                opacity var(--rr-sheet-out) ease;
+  }
+  .sheet-panel.sheet-centered.is-shown {
+    opacity: 1;
+    transform: scale(1);
+    transition-duration: var(--rr-sheet-in);
+  }
+}
+
 /* Skeletons shimmer rather than pulse: a pulse reads as "broken", a sweep
  * reads as "working". */
 @keyframes shimmer {
@@ -673,7 +732,14 @@ button:disabled,
  * never changes the row's height — the same rule .scope-row follows, and the
  * thing that stops stacked filter bands creeping down a phone screen. The
  * scrollbar is hidden because a phone has none; the overflow is discovered
- * by dragging, and the fade on the trailing edge says there is more. */
+ * by dragging, and the fade on the trailing edge says there is more.
+ *
+ * It used to be `lg:hidden`, on the argument that the filter sheet has room
+ * to show every facet at once on a wide screen. That argument was about the
+ * sheet, not about the row: the row's job is to say what is in this list
+ * before you read a card, and a control you have to open a sheet to find
+ * cannot do that at any width. Both surfaces drive the same state, so they
+ * cannot disagree. */
 .catrow {
   @apply flex shrink-0 items-center gap-1.5 overflow-x-auto border-b border-line bg-panel px-3 py-2;
   scrollbar-width: none;
@@ -684,10 +750,6 @@ button:disabled,
   mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
 }
 .catrow::-webkit-scrollbar { display: none; }
-/* Same story: `@apply flex` sets display, so the breakpoint belongs here. */
-@media (min-width: 1024px) {
-  .catrow { display: none; }
-}
 
 .catchip {
   @apply inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-line
@@ -782,6 +844,10 @@ button:disabled,
  * rule it overrides — equal specificity, last one wins. */
 @media (min-width: 1024px) {
   .map-controls { display: none; }
+  /* …unless the store list is hidden. On a wide screen the radius chips live
+     in the store panel's header, so hiding that panel would take the map's
+     own radius control away with it. The floating pair is where it goes. */
+  .map-controls.map-controls-on { display: flex; }
 }
 /* MapLibre's attribution lives bottom-right, which is where a second control
  * pill now reaches on a narrow phone. Lift it above the row rather than
@@ -1075,13 +1141,12 @@ button:disabled,
   color: var(--rr-text);
   border: 1px solid var(--rr-line);
   border-radius: 8px;
-  padding: 0.5rem 1.65rem 0.5rem 0.65rem;
+  /* Symmetric. The right side used to carry a 1.65rem gutter for a close
+     button; there is no close button on any bubble here now — the pin, the
+     ground and the panel's ✕ all clear the selection, and clearing the
+     selection is the only thing that closes a bubble. */
+  padding: 0.5rem 0.65rem;
   box-shadow: var(--rr-shadow-3);
-}
-/* A bubble with no close button needs no gutter for one. */
-.popup-bare .maplibregl-popup-content {
-  padding: 0.4rem 0.6rem;
-  font-weight: 600;
 }
 .maplibregl-popup-content strong {
   display: block;
@@ -1138,6 +1203,9 @@ button:disabled,
 @media (prefers-reduced-motion: reduce) {
   .fade-item, .pop-in, .shimmer, .radar-ring, .radar-sweep, .radar-dot,
   .progress-track::after, .lift { animation: none !important; transition: none !important; }
+  /* The sheet still mounts and unmounts on the same schedule — only the
+     travel goes away, so it is simply there and then not there. */
+  .sheet-panel, .sheet-scrim { transition: none !important; }
   .lift:hover { transform: none; }
 }
 
