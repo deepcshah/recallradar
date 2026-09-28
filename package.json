@@ -12,6 +12,7 @@
     "@radix-ui/react-select": "^2.3.7",
     "@vercel/analytics": "^2.0.1",
     "@vercel/blob": "^2.8.0",
+    "@vercel/og": "^1.0.3",
     "@vercel/speed-insights": "^2.0.0",
     "@zxing/browser": "^0.1.5",
     "@zxing/library": "^0.21.3",
@@ -20,11 +21,13 @@
     "dialkit": "1.4.3",
     "lucide-react": "^0.451.0",
     "maplibre-gl": "^4.7.1",
+    "minisearch": "^7.2.0",
     "motion": "13.1.1",
     "posthog-js": "^1.422.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "tailwind-merge": "^2.5.2"
+    "tailwind-merge": "^2.5.2",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",
