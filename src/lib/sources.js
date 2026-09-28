@@ -10,13 +10,24 @@
  * Normalized recall shape:
  * {
  *   id, source, product, firm, reason, classification, severity: 'high'|'med'|'low',
- *   date: Date|null, scope: 'nationwide'|'state', distribution, states: [abbr],
- *   url,
+ *   date: Date|null, scope: 'nationwide'|'state'|'unstated'|'elsewhere',
+ *   distribution (verbatim), states: [abbr, sorted], url,
+ *   status?: 'active'|'ended', endDate?: ISO string,
  *   retailerIds: [chainId], quantity, codeInfo
  * }
+ *
+ * The normalizers describe a notice; they no longer decide whether it belongs
+ * on screen. A notice shipped to AZ, NM and TX comes back with scope
+ * 'elsewhere' rather than being dropped, because "is this recall in my state?"
+ * is a question the verdict sheet has to be able to answer with a no — and it
+ * cannot answer about a record that was thrown away before it got there. The
+ * area list's rule (nationwide, your state, or unstated-but-names-a-chain)
+ * lives in one place, `isInArea` in ./verdict.js, and every consumer of these
+ * lists — fetchAll's fallbacks, api/recalls.js, App.jsx — filters through it.
  */
 import { chainsInText } from "./retailers.js";
-import { ABBR_TO_NAME } from "./states.js";
+import { ABBR_TO_NAME, abbrForName } from "./states.js";
+import { NATIONWIDE_RE, statesIn, isInArea } from "./verdict.js";
 import { FSIS_ENDPOINTS, cpscUrl } from "./feeds.js";
 
 const DAY_MS = 86400000;
@@ -24,8 +35,9 @@ export const LOOKBACK_DAYS = 365;
 export const CPSC_LOOKBACK_DAYS = 180;
 const CACHE_TTL_MS = 30 * 60 * 1000;
 
-const NATIONWIDE_RE =
-  /nation\s?wide|national distribution|throughout the (?:u\.?s|united states)|all (?:50 )?(?:u\.?s\.? )?states|across the (?:u\.?s|united states)|(?:^|\W)usa?(?:\W|$)|worldwide|international/i;
+// Defined in ./verdict.js (so coverage and scope read text with one regex);
+// re-exported here because callers already import it from this module.
+export { NATIONWIDE_RE, statesIn };
 
 export function fmtFdaDate(d) {
   return d.toISOString().slice(0, 10).replace(/-/g, "");
@@ -62,46 +74,51 @@ async function cachedFetchJSON(url, { timeoutMs = 20000, transform } = {}) {
   }
 }
 
-/** Does this distribution text cover the user's state?
+/** Where does this distribution text put the notice, relative to the reader?
  *
- * Four answers, not two — and the fourth is the point. A notice reading
- * "Distributed in AZ, NM, TX" names states, none of them yours, so it is
- * genuinely not yours: null, dropped. But "Sold at Trader Joe's stores" names
- * no state at all. That is not "somewhere else", it is unsaid — and it was
- * being dropped exactly like the first case, which meant a notice naming a
- * chain and nothing else could never reach the map, even though matching
- * chains to storefronts is the whole premise of the app.
+ * Four answers, and none of them is "drop it":
  *
- * `unstated` is the caller's problem to earn: normalizeFda keeps one only
- * when the text names a retailer we can actually put on a map.
+ *   nationwide  the text says so
+ *   state       the text names the reader's state
+ *   elsewhere   the text names states, none of them the reader's
+ *   unstated    the text names no geography at all
+ *
+ * `elsewhere` used to be null, and the notice was thrown away on the spot.
+ * That was right for a list headed "your area" and wrong for everything else:
+ * a reader who arrives holding a product from a headline needs to hear "sent
+ * to AZ, NM, TX — California isn't listed", which is an answer, not silence.
+ * So the notice is kept and labelled; `isInArea` (./verdict.js) is what keeps
+ * it out of the area list.
+ *
+ * `unstated` is not `elsewhere`. "Sold at Trader Joe's stores" names a chain
+ * and no state; that is unsaid, not somewhere else. Whether such a notice
+ * earns a place in the area list (it does when the chain is one we can put on
+ * a map) is also `isInArea`'s call now, not the normalizer's.
+ *
+ * With no location at all (the national index builds without one) a notice
+ * naming states is `elsewhere` in the vacuous sense; such callers should read
+ * `coverageOf` from ./verdict.js instead, which never looks at a reader.
  */
-function scopeFor(text, stateName, stateAbbr) {
+function scopeFor(text, loc) {
   const t = String(text || "");
   if (NATIONWIDE_RE.test(t)) return "nationwide";
-  if (stateAbbr && new RegExp(`(^|[^A-Za-z])${stateAbbr}([^A-Za-z]|$)`).test(t)) return "state";
-  if (stateName && new RegExp(`(^|[^A-Za-z])${stateName}([^A-Za-z]|$)`, "i").test(t)) return "state";
-  if (!statesIn(t).length) return "unstated";
-  return null;
+  const named = statesIn(t);
+  if (!named.length) return "unstated";
+  const abbr = locAbbr(loc);
+  return abbr && named.includes(abbr) ? "state" : "elsewhere";
 }
 
-/* Which states a notice actually covers. Recalls are usually regional — one
- * supplier ships to one of a chain's distribution centers — so "Kroger" in a
- * notice does not mean every Kroger in the country. An empty array means the
- * text named no state (nationwide, or simply unstated). */
-const STATE_ABBRS = Object.keys(ABBR_TO_NAME);
-
-export function statesIn(text) {
-  const t = String(text || "");
-  const found = new Set();
-  for (const abbr of STATE_ABBRS) {
-    // Case-sensitive: "OR", "IN" and "DE" are states; "or", "in", "de" are not.
-    if (new RegExp(`(^|[^A-Za-z])${abbr}([^A-Za-z]|$)`).test(t)) found.add(abbr);
-  }
-  for (const [abbr, name] of Object.entries(ABBR_TO_NAME)) {
-    if (new RegExp(`(^|[^A-Za-z])${name}([^A-Za-z]|$)`, "i").test(t)) found.add(abbr);
-  }
-  return [...found].sort();
+function locAbbr(loc) {
+  if (!loc) return null;
+  if (loc.stateAbbr && ABBR_TO_NAME[String(loc.stateAbbr).toUpperCase()]) return String(loc.stateAbbr).toUpperCase();
+  return abbrForName(loc.state);
 }
+
+/* Which states a notice actually covers — `statesIn`, now in ./verdict.js.
+ * Recalls are usually regional — one supplier ships to one of a chain's
+ * distribution centers — so "Kroger" in a notice does not mean every Kroger
+ * in the country. An empty array means the text named no state (nationwide,
+ * or simply unstated). */
 
 function severityFromFdaClass(cls) {
   if (/class i{3}/i.test(cls)) return "low";
@@ -114,21 +131,39 @@ function retailerIdsFor(...texts) {
   return chainsInText(texts.filter(Boolean).join(" \n ")).map((c) => c.id);
 }
 
+/* openFDA's own lifecycle field. The area query asks for "Ongoing" only, so
+ * this is mostly 'active' there; it matters for the national index and for
+ * /api/lookup, which deliberately include finished recalls. "Pending" is a
+ * recall not yet classified, which is still very much live. Absent stays
+ * absent — no status is not the same claim as either answer. */
+function fdaStatus(r) {
+  const s = String(r.status || "").trim();
+  if (/^(completed|terminated)$/i.test(s)) return "ended";
+  if (/^(ongoing|pending)$/i.test(s)) return "active";
+  return undefined;
+}
+
+function isoDay(d) {
+  return d && !isNaN(d) ? d.toISOString().slice(0, 10) : undefined;
+}
+
 // ------------------------------------------------------------- normalizers
 // Pure data -> recalls transforms, shared verbatim by api/recalls.js.
+// `loc` may be null (the national index builds without a reader).
 
 export function normalizeFda(kind, results, loc) {
   const label = { food: "FDA Food", drug: "FDA Drug", device: "FDA Device" }[kind];
   return (results || [])
     .map((r) => {
-      const scope = scopeFor(r.distribution_pattern, loc.state, loc.stateAbbr);
-      if (!scope) return null; // names other states, none of them yours
+      const scope = scopeFor(r.distribution_pattern, loc);
+      /* Every notice survives, including one naming only other states and one
+       * naming no state and no chain. The area list's rule — an unstated
+       * notice must name a chain we can map — is applied by isInArea against
+       * `retailerIds` below, which is empty for exactly the notices it drops. */
       const retailerIds = retailerIdsFor(
         r.distribution_pattern, r.product_description, r.reason_for_recall, r.recalling_firm);
-      /* A notice that names no state earns its place only by naming a chain.
-       * Without that it is a recall we cannot tie to anywhere at all, and
-       * showing it under a heading about your area would be a lie. */
-      if (scope === "unstated" && !retailerIds.length) return null;
+      const status = fdaStatus(r);
+      const endDate = status === "ended" ? isoDay(parseFdaDate(r.termination_date)) : undefined;
       return {
         id: `fda-${kind}-${r.recall_number || r.event_id || Math.random().toString(36).slice(2)}`,
         source: label,
@@ -140,26 +175,79 @@ export function normalizeFda(kind, results, loc) {
         date: parseFdaDate(r.recall_initiation_date) || parseFdaDate(r.report_date),
         scope,
         distribution: r.distribution_pattern || "",
-        states: scope === "state" ? statesIn(r.distribution_pattern) : [],
+        // Named states for `state` AND `elsewhere` — the verdict's "sent to
+        // AZ, NM, TX" is read from here. Nationwide/unstated name none.
+        states: scope === "state" || scope === "elsewhere" ? statesIn(r.distribution_pattern) : [],
+        ...(status ? { status } : null),
+        ...(endDate ? { endDate } : null),
         url: "https://www.accessdata.fda.gov/scripts/ires/index.cfm", // FDA IRES recall search
         searchHint: r.recall_number || "",
         retailerIds,
         quantity: r.product_quantity || "",
         codeInfo: r.code_info || "",
       };
-    })
+    });
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * FSIS GEOGRAPHY — an empty list is not "nationwide"
+ *
+ * `field_states` arrives as an array of full state names in the committed
+ * snapshot (["California", "Nevada"], ["Nationwide"]) and may arrive as one
+ * comma-separated string from older caches; both are read.
+ *
+ * It used to be that an empty or missing field meant nationwide. That is the
+ * same flattening the README forbids for FDA's "Sold at Trader Joe's": USDA
+ * said nothing, and we reported the widest possible claim on its behalf. An
+ * empty field is now `unstated`, with the distribution text "Region not
+ * stated"; only an explicit "Nationwide" is nationwide.
+ *
+ * USDA also writes regions — "Midwest" turns up in the live feed. Those are
+ * expanded with the Census Bureau's definitions, which is an interpretation,
+ * so the verbatim entry stays in `distribution` for the verdict's evidence
+ * line. A token matching nothing at all is left in the text and contributes
+ * no state; a notice made only of those reads as unstated.
+ * ───────────────────────────────────────────────────────────────────────── */
+const CENSUS_REGIONS = {
+  "midwest": ["IL", "IN", "IA", "KS", "MI", "MN", "MO", "NE", "ND", "OH", "SD", "WI"],
+  "northeast": ["CT", "ME", "MA", "NH", "RI", "VT", "NJ", "NY", "PA"],
+  "new england": ["CT", "ME", "MA", "NH", "RI", "VT"],
+  "south": ["DE", "DC", "FL", "GA", "MD", "NC", "SC", "VA", "WV", "AL", "KY", "MS", "TN", "AR", "LA", "OK", "TX"],
+  "west": ["AZ", "CO", "ID", "MT", "NV", "NM", "UT", "WY", "AK", "CA", "HI", "OR", "WA"],
+  "pacific northwest": ["ID", "OR", "WA"],
+};
+
+/** Exported for scripts/build-index.mjs, so the index reads USDA's states
+ *  field exactly as the area list does (regions expanded, empty = unstated). */
+export function fsisGeography(field) {
+  const tokens = (Array.isArray(field) ? field : String(field || "").split(/[,;]/))
+    .map((x) => String(x == null ? "" : x).trim())
     .filter(Boolean);
+  if (!tokens.length) return { kind: "unstated", states: [], text: "Region not stated" };
+  const text = tokens.join(", ");
+  if (tokens.some((x) => /nation\s?wide/i.test(x))) return { kind: "nationwide", states: [], text };
+  const found = new Set();
+  for (const x of tokens) {
+    const up = x.toUpperCase();
+    const abbr = abbrForName(x) || (/^[A-Z]{2}$/.test(up) && ABBR_TO_NAME[up] ? up : null);
+    if (abbr) { found.add(abbr); continue; }
+    const region = CENSUS_REGIONS[x.toLowerCase()];
+    if (region) { region.forEach((a) => found.add(a)); continue; }
+    statesIn(x).forEach((a) => found.add(a));
+  }
+  const states = [...found].sort();
+  return states.length ? { kind: "states", states, text } : { kind: "unstated", states: [], text };
 }
 
 export function normalizeFsis(list, loc) {
   const cutoff = Date.now() - FSIS_LOOKBACK_DAYS * DAY_MS; // active notices can be older
+  const abbr = locAbbr(loc);
   return (list || [])
     .map((r) => {
-      const states = String(r.field_states || "");
-      let scope = null;
-      if (/nationwide/i.test(states) || states.trim() === "") scope = "nationwide";
-      else if (loc.state && new RegExp(`(^|,\\s*)${loc.state}(\\s*,|$)`, "i").test(states)) scope = "state";
-      if (!scope) return null;
+      const geo = fsisGeography(r.field_states);
+      const scope = geo.kind === "nationwide" ? "nationwide"
+        : geo.kind === "unstated" ? "unstated"
+        : abbr && geo.states.includes(abbr) ? "state" : "elsewhere";
 
       const date = r.field_recall_date ? new Date(r.field_recall_date) : null;
       if (date && !isNaN(date) && date.getTime() < cutoff) return null;
@@ -167,13 +255,18 @@ export function normalizeFsis(list, loc) {
       const risk = String(r.field_risk_level || "");
       const severity = /high/i.test(risk) ? "high" : /low|marginal/i.test(risk) ? "low" : "med";
       // true / false / null — see fsisActiveFlag. Only an explicit false is
-      // ever shown to the reader as "Closed".
+      // ever shown to the reader as "Closed". It becomes status 'ended' only
+      // past FSIS_TRUST_CLOSED_DAYS (see fsisStatus), the same rule as the
+      // national index. USDA publishes no closing date in the slim feed, so
+      // no endDate.
       const active = fsisActiveFlag(r);
+      const status = fsisStatus(r.field_active_notice, r.field_recall_date);
       const urlPath = String(r.field_recall_url || "");
       return {
         id: `fsis-${r.field_recall_number || urlPath || Math.random().toString(36).slice(2)}`,
         source: "USDA FSIS",
         active,
+        ...(status == null ? null : { status }),
         product: r.field_title || r.field_product_items || "(untitled FSIS recall)",
         firm: r.field_establishment || "",
         reason: [r.field_recall_reason, r.field_recall_classification].filter(Boolean).join(" — "),
@@ -181,8 +274,8 @@ export function normalizeFsis(list, loc) {
         severity,
         date: date && !isNaN(date) ? date : null,
         scope,
-        distribution: states || "Nationwide",
-        states: scope === "nationwide" ? [] : statesIn(states),
+        distribution: geo.text,
+        states: geo.states,
         url: urlPath
           ? (urlPath.startsWith("http") ? urlPath : "https://www.fsis.usda.gov" + urlPath)
           : "https://www.fsis.usda.gov/recalls",
@@ -272,6 +365,36 @@ export function fsisIsActive(v) {
 /** null when the record does not say, so "unknown" stays distinct from "closed". */
 function fsisActiveFlag(r) {
   return r.field_active_notice == null ? null : fsisIsActive(r.field_active_notice);
+}
+
+/* When a USDA notice's "not active" flag is believed as the recall having
+ * ENDED — the status that becomes the verdict headline "This recall has
+ * ended".
+ *
+ * The first national index built from a real snapshot had 51 of 54 USDA
+ * notices flagged "False", including a Class I pork recall issued three days
+ * earlier. Whatever `field_active_notice` tracks on a fresh notice, it is not
+ * the recall's lifecycle. So an explicit "False" only becomes status 'ended'
+ * once the notice is older than this; before that it stays 'active'. Wrong in
+ * that direction costs a reader a look in the freezer; wrong in the other
+ * tells them to eat the sausage.
+ *
+ * This lives here, and scripts/build-index.mjs imports it, because the area
+ * list (normalizeFsis), the national index, search, share cards and push must
+ * give one recall one answer. They used to disagree: the digest said a
+ * three-day-old notice "has ended" while search said "Not reported in Texas".
+ * The raw flag still rides along as `active`, so the area list's "Closed"
+ * chip — which says only that USDA stopped tracking it — is unchanged.
+ * (slimFsis keeps no closed-date field; if it ever does, that should replace
+ * this age test.) */
+export const FSIS_TRUST_CLOSED_DAYS = 90;
+
+/** 'ended' | 'active' | null (the notice carries no flag at all). */
+export function fsisStatus(flagValue, recallDate, now = Date.now()) {
+  if (flagValue == null) return null;
+  if (fsisIsActive(flagValue)) return "active";
+  const age = (now - Date.parse(recallDate)) / DAY_MS;
+  return Number.isFinite(age) && age > FSIS_TRUST_CLOSED_DAYS ? "ended" : "active";
 }
 
 // Shared with api/fsis.js and api/cpsc.js — keep the shapes in sync.
@@ -455,7 +578,12 @@ export async function recoverBlockedSources(loc, sources) {
     .filter(({ i }) => i !== -1 && !list[i].ok);
   if (!jobs.length) return null;
 
-  const settled = await Promise.all(jobs.map(({ t }) => t.recover().catch(() => null)));
+  // Recovered lists feed the area list and its counts, so they go through the
+  // same isInArea gate as /api/recalls — an 'elsewhere' FSIS notice must not
+  // arrive late through the back door.
+  const settled = await Promise.all(jobs.map(({ t }) => t.recover()
+    .then((got) => got && { ...got, recalls: got.recalls.filter((r) => isInArea(r, loc)) })
+    .catch(() => null)));
 
   const next = list.slice();
   const recalls = [];
@@ -492,7 +620,10 @@ async function clientFetchAll(loc) {
     { name: "CPSC consumer products", fn: () => fetchCpscDirect() },
   ];
 
-  const settled = await Promise.allSettled(jobs.map((j) => j.fn()));
+  // Filtered before counting, so a source's count means what it always
+  // meant: notices covering your area. See isInArea in ./verdict.js.
+  const settled = await Promise.allSettled(
+    jobs.map((j) => j.fn().then((list) => list.filter((r) => isInArea(r, loc)))));
   const recalls = [];
   const sources = settled.map((s, i) => {
     if (s.status === "fulfilled") {

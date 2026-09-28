@@ -9,6 +9,7 @@ import {
   slimFsis, slimCpsc, fdaSearchQuery, unscopedSearchQuery, CPSC_LOOKBACK_DAYS,
 } from "../src/lib/sources.js";
 import { FEED_HEADERS, fsisFetch, cpscUrl } from "../src/lib/feeds.js";
+import { isInArea } from "../src/lib/verdict.js";
 import { FEED_BLOBS, feedWithFallback } from "../src/lib/feed-cache.js";
 
 async function jfetch(url, timeoutMs = 25000) {
@@ -65,9 +66,10 @@ async function fetchFda(kind, loc) {
    * nationwide, so a notice whose distribution reads "Sold at Trader Joe's
    * stores" — a chain and no geography — is invisible to it. That is exactly
    * the class this app exists to surface. openFDA has no way to ask for
-   * "names no state", so the filtering happens in normalizeFda: everything
-   * here that names a state other than yours is dropped, and what is left
-   * has to name a retailer to survive.
+   * "names no state", so the filtering happens in the handler below, through
+   * isInArea: everything here that names a state other than yours comes back
+   * from normalizeFda as scope 'elsewhere' and is dropped there, and what is
+   * left with no geography has to name a retailer to survive.
    *
    * Deliberately one page, and deliberately best-effort: it is a widening,
    * not a correctness requirement, and it must never fail the whole fetch. */
@@ -124,7 +126,12 @@ export default async function handler(req, res) {
     if (s.status === "fulfilled") {
       // A job may return a plain array, or {recalls, note} when it served a
       // cached copy because the upstream feed was unreachable.
-      const list = Array.isArray(s.value) ? s.value : s.value.recalls;
+      /* The normalizers now keep every notice and label it — 'elsewhere' for
+       * one naming only other states — so this response, which is the area
+       * list, filters through isInArea before anything is counted. A source's
+       * count keeps meaning "notices covering your area". */
+      const all = Array.isArray(s.value) ? s.value : s.value.recalls;
+      const list = all.filter((r) => isInArea(r, loc));
       const note = Array.isArray(s.value) ? undefined : s.value.note;
       recalls.push(...list);
       return { name: jobs[i].name, ok: true, count: list.length, note };

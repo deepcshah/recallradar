@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertCircle, Armchair, Baby, Beef, Bike, Candy, Carrot, Check, ChevronDown, ChevronRight, ChevronUp,
-  Crosshair, CupSoda,
+  AlertCircle, Armchair, Baby, Beef, Bell, BellOff, Bike, Candy, Carrot, Check, ChevronDown, ChevronRight, ChevronUp,
+  Crosshair, CupSoda, House, Map as MapIcon,
   ExternalLink, Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package,
   PanelRightOpen, PawPrint, Pill, Plug, Plus, Radar, Rows2, Columns2, Search, SearchX,
   ScanLine, ShieldCheck, Soup, Stethoscope, Sun, Moon, MonitorSmartphone, MoreHorizontal, Store,
@@ -12,8 +12,10 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Tooltip, InfoTip } from "@/components/ui/tooltip";
 import { FilterButton, FilterSheet, FilterGroup, FilterChoice } from "@/components/FilterSheet";
-import MapView from "@/components/MapView";
 import ScanSheet from "@/components/ScanSheet";
+import RecallSearch from "@/components/RecallSearch";
+import HomeDigest from "@/components/HomeDigest";
+import VerdictCard from "@/components/VerdictCard";
 import { Sheet, useSheetPresence } from "@/components/ui/sheet";
 import {
   Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
@@ -21,6 +23,14 @@ import {
 import { recallUpcs, lookupProduct } from "@/lib/upc";
 import { browserPosition, reverseGeocode, geocodeInput } from "@/lib/geo";
 import { fetchAll, recoverBlockedSources, sortRecalls } from "@/lib/sources";
+import { isInArea, verdictFor } from "@/lib/verdict";
+import { loadIndex } from "@/lib/search-index";
+import { cleanState } from "@/lib/share";
+import { ABBR_TO_NAME } from "@/lib/states";
+import { FOLLOWS_EVENT, getFollows, getLastVisit, markVisit } from "@/lib/follows";
+import {
+  getPushState, needsInstallForPush, pushAvailable, pushSupported, subscribePush, syncPush, unsubscribePush,
+} from "@/lib/push";
 import { findStores, STORE_CAPS, DEFAULT_STORE_CAP } from "@/lib/stores";
 import { byId, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
 import { categoryFor } from "@/lib/category";
@@ -30,7 +40,15 @@ import { DialRoot } from "dialkit";
 import "dialkit/styles.css";
 import { useMotionTuning, cardStagger } from "@/lib/tuning";
 import { useTheme } from "@/lib/theme";
-import { track, miles, geoFailureReason } from "@/lib/analytics";
+import { track, miles, geoFailureReason, searchQueryProp } from "@/lib/analytics";
+
+/* The map is no longer the first thing anyone sees — Home is — and MapLibre
+ * is most of the bundle (about 800kB of the 1.4MB it used to add to the
+ * critical path). So it is its own chunk, fetched the first time the Stores
+ * view is opened. React.lazy passes the ref straight through to MapView's
+ * forwardRef, and every `mapRef.current` use below was already guarded,
+ * because the map has always been allowed to be absent. */
+const MapView = lazy(() => import("@/components/MapView"));
 
 const CATEGORY_ICONS = {
   pet: PawPrint, kids: Baby, supplement: Pill, drug: Pill, device: Stethoscope,
@@ -48,6 +66,79 @@ function loadPref(key, fallback) {
 }
 function savePref(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* private mode */ }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * THE REMEMBERED PLACE
+ *
+ * A return visit used to start from nothing: the same ZIP typed again, or the
+ * same geolocation prompt answered again, before the app could say anything.
+ * Home now answers straight away for a place it already knows, so the place
+ * is kept — in this browser's localStorage and nowhere else, exactly the
+ * fields a location already had in memory. It is never sent anywhere it was
+ * not already going (the feeds' own query parameters; analytics gets only the
+ * state, as before), and "Forget this location" in the location sheet clears
+ * it.
+ *
+ * Read defensively: a hand-edited or half-written value must degrade to "no
+ * location yet", never to a map centred on NaN.
+ * ───────────────────────────────────────────────────────────────────────── */
+const LOC_KEY = "rr-loc";
+
+function loadSavedLoc() {
+  const v = loadPref(LOC_KEY, null);
+  if (!v || typeof v !== "object") return null;
+  const lat = Number(v.lat);
+  const lon = Number(v.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return {
+    lat, lon,
+    label: typeof v.label === "string" && v.label ? v.label.slice(0, 120) : "Saved location",
+    state: typeof v.state === "string" ? v.state : null,
+    stateAbbr: typeof v.stateAbbr === "string" && /^[A-Z]{2}$/.test(v.stateAbbr) ? v.stateAbbr : null,
+  };
+}
+
+function saveLoc(l) {
+  if (!l) {
+    try { localStorage.removeItem(LOC_KEY); } catch (_) { /* private mode */ }
+    return;
+  }
+  savePref(LOC_KEY, { lat: l.lat, lon: l.lon, label: l.label, state: l.state || null, stateAbbr: l.stateAbbr || null });
+}
+
+/* A shared link lands as /?r=<id>&st=<ST> (api/share.js forwards /r/:id
+ * here). `st` is the SENDER's state: it is what the link was about, so it is
+ * the right state to answer in for someone the app knows nothing about yet —
+ * and the wrong one for someone it does, whose own saved state wins. Read
+ * once, at module load, because it describes how this page was opened and not
+ * anything that changes while it is open. */
+function readDeepLink() {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    const id = (p.get("r") || "").trim().slice(0, 80);
+    return { recallId: id || null, st: cleanState(p.get("st")) };
+  } catch (_) {
+    return { recallId: null, st: null };
+  }
+}
+const DEEP_LINK = readDeepLink();
+
+/* "Since your last visit" needs the PREVIOUS visit, fixed for the whole of
+ * this one. It is read once per tab (sessionStorage, so a reload does not
+ * turn it into "since 4 seconds ago"), and the marker itself only moves when
+ * the page is hidden or closed — see the visibility effect in App. Stamping it
+ * on arrival instead would move it before the reader has seen anything, and a
+ * visit that crashed on load would still count as caught up. */
+const VISIT_BASELINE_KEY = "rr-visit-baseline";
+function sessionVisitBaseline() {
+  try {
+    const s = sessionStorage.getItem(VISIT_BASELINE_KEY);
+    if (s !== null) return s || null;
+  } catch (_) { /* fall through */ }
+  const prev = getLastVisit();
+  try { sessionStorage.setItem(VISIT_BASELINE_KEY, prev || ""); } catch (_) { /* memory only */ }
+  return prev;
 }
 
 const DEFAULT_SPLIT = 48; // % of the panel given to the stores list
@@ -582,7 +673,47 @@ export default function App() {
   const [storesShown, setStoresShown] = useState(() => loadPref("rr-show-stores", true));
   const [recallsShown, setRecallsShown] = useState(() => loadPref("rr-show-recalls", true));
   const [view, setView] = useState("split"); // phone only: map | split | list
-  const [tab, setTab] = useState("near"); // phone destinations: near | recalls
+  /* Where the reader is: home | near | recalls.
+   *
+   * Home is the landing now — search, then the digest — because the question
+   * people most often arrive with is "is the thing I heard about mine?", and
+   * that needs neither a map nor a location. The map with its store list
+   * ("near", the old landing) and the full area list ("recalls") are still
+   * here, one tap away, for the reader who wants to go through everything.
+   * On a phone these are the bottom bar's destinations. On a wide screen
+   * "near" and "recalls" are one view, the side-by-side map and panel, and
+   * Home is a centred column. */
+  const [tab, setTab] = useState("home");
+  /* The map and the store lookup cost a MapLibre chunk and a Mapbox request
+   * per chain, and Home needs neither. So nothing store-shaped happens until
+   * the first time the Stores or Recalls view is opened; after that it stays
+   * mounted, so going Home and back keeps the selection, the scroll and the
+   * camera. */
+  const [storesWanted, setStoresWanted] = useState(false);
+  useEffect(() => { if (tab !== "home") setStoresWanted(true); }, [tab]);
+  /* The national index (public/feeds/index.json). RecallSearch loads it for
+   * itself; this is the same memoized promise, held here for the digest.
+   * Started after first paint, never awaited by it. */
+  const [index, setIndex] = useState(null);
+  /* A recall opened from the digest (its headline, a follow match, a story),
+   * answered in a sheet over wherever the reader is. */
+  const [sheetRecall, setSheetRecall] = useState(null);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const [push, setPush] = useState({ state: "unknown", busy: false, msg: null, dropped: [] });
+  const [lastVisit] = useState(sessionVisitBaseline);
+  /* Offered where it can work, or where one step would make it work (an
+   * iPhone in a Safari tab: add to Home Screen first). Nowhere else — a
+   * button that can only ever answer "not supported" is not an offer. */
+  const [pushOffered, setPushOffered] = useState(() => pushSupported() || needsInstallForPush());
+  /* …and only where this deployment can send them. Without VAPID keys the
+   * server says { enabled: false }, and an offer that ends in "not switched
+   * on for this site" is the same non-offer from the other side. */
+  useEffect(() => {
+    if (!pushOffered) return undefined;
+    let alive = true;
+    pushAvailable().then((v) => { if (alive && !(v && v.enabled)) setPushOffered(false); });
+    return () => { alive = false; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [locOpen, setLocOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -700,7 +831,12 @@ export default function App() {
     setSources([]);
     setLimit(25);
     try {
-      const { recalls: fetched, sources: srcs } = await fetchAll(locArg);
+      /* The normalizers keep notices naming only other states ('elsewhere')
+       * so a verdict can say "not reported in your state". This list is the
+       * area list, so it filters through the one area rule. fetchAll already
+       * applies it on every path; this is the guard at the point of use. */
+      const { recalls: all, sources: srcs } = await fetchAll(locArg);
+      const fetched = all.filter((r) => isInArea(r, locArg));
       setRecalls(fetched);
       setSources(srcs);
       setActiveSources(new Set(fetched.map((r) => r.source)));
@@ -730,7 +866,7 @@ export default function App() {
         // Whether the browser can reach what the server could not is the
         // whole premise of the fallback; without this it is unmeasurable.
         track("sources_recovered", { count: late.recalls.length });
-        setRecalls((prev) => sortRecalls([...prev, ...late.recalls]));
+        setRecalls((prev) => sortRecalls([...prev, ...late.recalls.filter((r) => isInArea(r, locArg))]));
         setSources(late.sources);
         // Source chips are seeded from the first payload, so a source that
         // arrives late has to opt itself in or its notices stay filtered out.
@@ -752,7 +888,7 @@ export default function App() {
    * stores appear that had never loaded on their own. */
   const lastScanRef = useRef("");
   useEffect(() => {
-    if (!loc || productsBusy) return;
+    if (!loc || productsBusy || !storesWanted) return;
     const place = `${loc.lat},${loc.lon}|${radius}|${storeCap}`;
     const key = `${place}|${chainKey}`;
     if (key === lastScanRef.current) return;
@@ -761,13 +897,14 @@ export default function App() {
     const quiet = lastScanRef.current.startsWith(`${place}|`);
     lastScanRef.current = key;
     loadStores(loc, radius, { quiet });
-  }, [loc, radius, storeCap, chainKey, productsBusy, loadStores]);
+  }, [loc, radius, storeCap, chainKey, productsBusy, storesWanted, loadStores]);
 
   /* `method` is carried only so the funnel can separate "tapped locate"
    * from "typed a ZIP" — the coordinates and the resolved label stay in
    * the browser either way. */
   const setLocation = useCallback(async (newLoc, method = "unknown") => {
     setLoc(newLoc);
+    saveLoc(newLoc);
     setLocStatus(newLoc.state ? null : { msg: "Couldn't determine your state — showing nationwide recalls only." });
     /* Scoping works off either spelling of the state (see scopeFor and
      * fdaSearchQuery in lib/sources.js), so "did we get one" is an OR —
@@ -806,11 +943,18 @@ export default function App() {
       locInputRef.current && locInputRef.current.focus();
       return;
     }
+    await locateText(query);
+  }
+
+  /* Typed place → location. Shared by the header form, the location sheet,
+   * and the ZIP prompt Home shows when it has no location yet — which is the
+   * same request arriving from a different box, so it reports as "search". */
+  async function locateText(text) {
     setQueryError("");
     setLocEditing(false);
     setLocStatus({ msg: "Finding that place…", busy: true });
     try {
-      const resolved = await geocodeInput(query);
+      const resolved = await geocodeInput(text);
       await setLocation(resolved, "search");
     } catch (err) {
       /* The typed text is the user's ZIP or street address and is never
@@ -822,6 +966,228 @@ export default function App() {
       setLocStatus({ msg: err.message, error: true });
     }
   }
+
+  /* A remembered place is set exactly as a new one is — same fetch, same
+   * event — so a return visit is the first visit minus the typing. Once, on
+   * mount; StrictMode's second run finds the ref already set. */
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    const saved = loadSavedLoc();
+    if (saved) setLocation(saved, "saved");
+  }, [setLocation]);
+
+  const forgetLocation = useCallback(() => {
+    saveLoc(null);
+    setLoc(null);
+    setRecalls([]);
+    setSources([]);
+    setStores([]);
+    setStoresStatus(null);
+    setActiveStore(-1);
+    setLocStatus(null);
+    lastScanRef.current = "";
+    storeRunRef.current += 1; // a lookup still in flight must not land afterwards
+    track("location_forgotten");
+  }, []);
+
+  /* The state every verdict is answered in. The reader's own place when the
+   * app has one with a state; otherwise the state a shared link was sent from
+   * (?st=), so "Not reported in California" still means something to someone
+   * who opened a friend's link before telling the app anything. */
+  const verdictLoc = useMemo(() => {
+    if (loc && (loc.stateAbbr || loc.state)) return loc;
+    if (DEEP_LINK.st) return { state: ABBR_TO_NAME[DEEP_LINK.st] || null, stateAbbr: DEEP_LINK.st };
+    return loc;
+  }, [loc]);
+  const verdictState = verdictLoc && verdictLoc.stateAbbr ? verdictLoc.stateAbbr : null;
+
+  // ── the national index, after first paint ─────────────────────────────
+  useEffect(() => {
+    let alive = true;
+    loadIndex().then((ix) => { if (alive) setIndex(ix); }).catch(() => { /* RecallSearch shows the retry */ });
+    return () => { alive = false; };
+  }, []);
+
+  /* A shared link's verdict counts as viewed once the record is known —
+   * RecallSearch opens it itself, without a click to hang the event on. */
+  const deepTrackedRef = useRef(false);
+  useEffect(() => {
+    if (!index || !DEEP_LINK.recallId || deepTrackedRef.current) return;
+    deepTrackedRef.current = true;
+    const r = (index.recalls || []).find((x) => x.id === DEEP_LINK.recallId);
+    track("verdict_viewed", {
+      verdict: r ? verdictFor(r, verdictLoc).verdict : "not_found",
+      source: r ? r.source : null,
+      via: "share_link",
+      state: verdictState,
+    });
+  }, [index, verdictLoc, verdictState]);
+
+  // ── analytics hooks for the Home components ───────────────────────────
+  const onVerdictOpened = useCallback((r, via = "search") => {
+    track("verdict_viewed", {
+      verdict: verdictFor(r, verdictLoc).verdict,
+      source: r.source || null,
+      via,
+      state: verdictState,
+    });
+  }, [verdictLoc, verdictState]);
+
+  const onSearchSettled = useCallback(({ query: q, results, live }) => {
+    track("search_submitted", {
+      query: searchQueryProp(q),
+      query_length: q.length,
+      results,
+      fda_live: live,
+      has_location: Boolean(verdictState),
+    });
+  }, [verdictState]);
+
+  const openRecallSheet = useCallback((r) => {
+    if (!r) return;
+    /* One recall, one answer. normalizeFsis and the index now share one
+     * rule for when USDA's "not active" flag means ended (fsisStatus and
+     * FSIS_TRUST_CLOSED_DAYS in lib/sources.js), so the two should agree; the
+     * index's status still wins here as a guard against a live record cached
+     * before that rule, which called a days-old notice "ended". Everything
+     * else — lot codes, photo — stays the live record's, which has more of
+     * it. `active` (USDA's raw flag, for the Closed chip) is left alone. */
+    const ix = index && Array.isArray(index.recalls) ? index.recalls.find((x) => x.id === r.id) : null;
+    const rec = ix ? { ...r, status: ix.status, endDate: ix.endDate } : r;
+    setSheetRecall(rec);
+    onVerdictOpened(rec, "digest");
+  }, [onVerdictOpened, index]);
+
+  /* "Add your location", from wherever it was asked. A wide screen has the
+   * form standing in its header; a phone keeps it in a sheet. */
+  const requestLocation = useCallback(() => {
+    setSheetRecall(null);
+    if (isWide) {
+      setLocEditing(true);
+      setTimeout(() => { locInputRef.current?.focus(); locInputRef.current?.select(); }, 0);
+    } else {
+      setLocOpen(true);
+    }
+  }, [isWide]);
+
+  const goStores = useCallback(() => {
+    setTab("near");
+    setStoresShown((prev) => { if (!prev) savePref("rr-show-stores", true); return true; });
+    if (view === "list") setView("split");
+  }, [view]);
+  const goRecalls = useCallback(() => {
+    setTab("recalls");
+    setRecallsShown((prev) => { if (!prev) savePref("rr-show-recalls", true); return true; });
+    if (view === "map") setView("split");
+  }, [view]);
+
+  /* ── since your last visit ──
+   * The marker moves when the page is put away, not when it arrives: the
+   * baseline for this visit was read once (sessionVisitBaseline) and the
+   * digest counts from it; hiding or closing the tab is what says "seen".
+   * `visibilitychange` is the one that fires reliably on a phone, where tabs
+   * are discarded rather than closed; `pagehide` covers the desktop close. */
+  useEffect(() => {
+    const onHide = () => { if (document.visibilityState === "hidden") markVisit(); };
+    const onPageHide = () => markVisit();
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", onPageHide);
+    };
+  }, []);
+
+  /* ── follows ──
+   * Two jobs on one event. Analytics sees a follow when the list grows (the
+   * term goes through the same guard as search text). And an existing push
+   * subscription is kept in step, so alerts watch what the reader follows now
+   * — syncPush never prompts, and does nothing for someone not subscribed. */
+  const followCountRef = useRef(null);
+  const ownState = (loc && loc.stateAbbr) || null;
+  useEffect(() => {
+    followCountRef.current = getFollows();
+    const onChange = (e) => {
+      const next = Array.isArray(e && e.detail) ? e.detail : getFollows();
+      const prev = followCountRef.current || [];
+      if (next.length > prev.length) {
+        const added = next.find((t) => !prev.includes(t));
+        track("follow_added", { term: searchQueryProp(added), follows: next.length });
+      }
+      followCountRef.current = next;
+      /* The reader's OWN state, never verdictState: that can be the sender's
+       * state from a shared link (?st=), and a subscription must not be moved
+       * to Texas because a friend in Texas sent a link. */
+      if (ownState && pushSupported()) syncPush({ stateAbbr: ownState, follows: next }).catch(() => {});
+    };
+    window.addEventListener(FOLLOWS_EVENT, onChange);
+    return () => window.removeEventListener(FOLLOWS_EVENT, onChange);
+  }, [ownState]);
+
+  /* A new state is a different weekly digest: tell an existing subscription.
+   * Only on a CHANGE of state — the restore on every page load is the same
+   * state the subscription was saved with, and re-posting it each visit
+   * would be a write per page view for nothing. */
+  const syncedStateRef = useRef(null);
+  useEffect(() => {
+    const st = loc && loc.stateAbbr;
+    if (!st) return;
+    const prev = syncedStateRef.current;
+    syncedStateRef.current = st;
+    if (!prev || prev === st || !pushSupported()) return;
+    syncPush({ stateAbbr: st, follows: getFollows() }).catch(() => {});
+  }, [loc]);
+
+  /* ── alerts ──
+   * `enablePush` must run inside the click that asked for it: it is the one
+   * call that can show the browser's permission prompt, and browsers only
+   * allow that from a user gesture. So the stories' "Get a weekly heads-up"
+   * calls it directly when it can succeed, and opens the alerts sheet either
+   * way — the sheet is where the outcome, the iPhone Home Screen step, and the
+   * way back out are said. */
+  const refreshPushState = useCallback(async () => {
+    let state = "unsupported";
+    try { state = await getPushState(); } catch (_) { /* unsupported */ }
+    setPush((p) => ({ ...p, state }));
+    return state;
+  }, []);
+
+  const enablePush = useCallback(async () => {
+    const stateAbbr = loc && loc.stateAbbr;
+    setPush((p) => ({ ...p, busy: true, msg: null, dropped: [] }));
+    const out = await subscribePush({ stateAbbr, follows: getFollows() });
+    if (out.ok) {
+      track("push_enabled", { state: out.stateAbbr || stateAbbr || null, follows: (out.follows || []).length });
+      setPush({ state: "subscribed", busy: false, msg: null, dropped: out.dropped || [] });
+    } else {
+      track("push_failed", { reason: out.reason });
+      setPush((p) => ({ ...p, busy: false, msg: out.message }));
+      refreshPushState();
+    }
+  }, [loc, refreshPushState]);
+
+  const disablePush = useCallback(async () => {
+    setPush((p) => ({ ...p, busy: true, msg: null }));
+    const out = await unsubscribePush();
+    setPush((p) => ({ ...p, busy: false, msg: out.ok ? null : out.message, dropped: [] }));
+    if (out.ok) track("push_disabled");
+    refreshPushState();
+  }, [refreshPushState]);
+
+  const openAlerts = useCallback(() => {
+    setAlertsOpen(true);
+    refreshPushState();
+  }, [refreshPushState]);
+
+  const enablePushFromStories = useCallback(() => {
+    setAlertsOpen(true);
+    const canAskNow = loc && loc.stateAbbr && pushSupported() && !needsInstallForPush() &&
+      typeof Notification !== "undefined" && Notification.permission !== "denied";
+    if (canAskNow) enablePush();
+    else refreshPushState();
+  }, [loc, enablePush, refreshPushState]);
 
   /** Selecting a store is one action: focus its pin and scope the product list.
    *  Open on the bucket that has something in it — "names this store" when a
@@ -1422,6 +1788,42 @@ export default function App() {
             </Tooltip>
           </span>
 
+          {/* ---- where you are (wide screens) ----
+              The phone has the bottom bar for this; a wide screen has no bar,
+              so Home and the map-and-lists view are a two-way switch here,
+              next to the name. Two, not three: at this width the store list
+              and the recall list are one view side by side, not two places. */}
+          <div className="hidden shrink-0 items-center gap-1 rounded-full border border-line bg-panel-2 p-0.5 lg:flex"
+               role="group" aria-label="View">
+            {[
+              ["home", "Home", House, () => setTab("home")],
+              ["map", "Stores & recalls", MapIcon, () => setTab((t) => (t === "home" ? "near" : t))],
+            ].map(([key, label, Icon, go]) => {
+              const on = key === "home" ? tab === "home" : tab !== "home";
+              return (
+                <button key={key} type="button" onClick={go} aria-pressed={on}
+                        className={"tap inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[13px] font-semibold " +
+                          (on ? "bg-mint-soft text-mint" : "text-fog hover:text-paper")}>
+                  <Icon className="size-3.5" aria-hidden="true" /> {label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* No place yet: Home still works — search is national and the
+              digest says "nationwide" — so on a phone asking for one is a
+              chip, not a wall. */}
+          {!loc && (
+            <button
+              type="button"
+              onClick={() => setLocOpen(true)}
+              className="tap inline-flex min-w-0 items-center gap-1.5 rounded-full border border-line bg-panel-2 px-3 py-1.5 text-[13px] font-semibold text-fog lg:hidden"
+            >
+              <MapPin className="size-3.5 shrink-0" />
+              <span className="truncate">{verdictState ? `Checking for ${verdictState} · set yours` : "Add your location"}</span>
+            </button>
+          )}
+
           {loc && (
             <>
               <button
@@ -1531,7 +1933,7 @@ export default function App() {
               that decides what the window shows — and they take one list each,
               so "just the recalls, I don't care which shop" is finally a thing
               you can ask for. Turning both off is the old button. */}
-          {loc && (
+          {loc && tab !== "home" && (
             <>
               <span aria-hidden="true" className="hidden h-5 w-px shrink-0 bg-line lg:block" />
               <div className="hidden shrink-0 items-center gap-1.5 lg:flex" role="group" aria-label="Panels to show">
@@ -1596,13 +1998,78 @@ export default function App() {
         )}
       </header>
 
-      {/* ================= body: map + panel ================= */}
-      <main ref={mainRef} className="flex min-h-0 flex-1 flex-col lg:flex-row">
+      {/* ================= home =================
+          Search first, digest second, one column at every width.
+
+          Search leads because it is the question people arrive with ("is
+          the sausage on the news mine?") and it needs nothing from them —
+          no location, no permission. The digest answers the other question,
+          "anything new near me?", and falls back from the live area list to
+          the national index so it has something to say before (or without)
+          a location. The map, the store list and the full recall list are
+          the power-user views now: one tap away on the bottom bar, or the
+          header switch on a wide screen, and exactly as they were.
+
+          On a wide screen this is a centred column rather than a stretched
+          one: a verdict is a sentence, and a sentence 1400px wide is not
+          one anybody reads. */}
+      <div id="home-scroll"
+           className={(tab === "home" ? "block " : "hidden ") + "tabbar-space min-h-0 flex-1 overflow-y-auto"}>
+        <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 pt-5 pb-8 lg:pt-8">
+          <RecallSearch
+            loc={verdictLoc}
+            initialRecallId={DEEP_LINK.recallId}
+            onOpenRecall={(r) => onVerdictOpened(r, "search")}
+            onRequestLocation={(zip) => { setQuery(zip); locateText(zip); }}
+            onSearch={onSearchSettled}
+          />
+          <HomeDigest
+            loc={verdictLoc}
+            index={index}
+            areaRecalls={loc ? recalls : null}
+            lastVisit={lastVisit}
+            onOpenRecall={openRecallSheet}
+            onOpenStores={goStores}
+            onOpenAll={goRecalls}
+            onRequestLocation={requestLocation}
+            onEnablePush={pushOffered ? enablePushFromStories : undefined}
+            onStorySeen={(id) => track("story_viewed", { recall_id: id })}
+            onCaughtUp={() => track("caught_up", { state: verdictState })}
+          />
+          {pushOffered && (
+            <div className="flex items-center gap-3 rounded-2xl border border-line bg-panel px-4 py-3">
+              <span className="grid size-9 shrink-0 place-items-center rounded-full border border-line bg-panel-2">
+                <Bell className="size-4 text-fog" aria-hidden="true" />
+              </span>
+              <p className="min-w-0 flex-1 text-[13px] leading-snug text-fog">
+                <span className="font-semibold text-paper">A weekly heads-up</span>
+                {" "}for {loc?.stateAbbr || "your state"}, and an alert straight away for a serious recall there
+                or one matching a product you follow.
+              </p>
+              <Button variant="secondary" size="sm" className="shrink-0 pointer-coarse:h-10" onClick={openAlerts}>
+                {push.state === "subscribed" ? "Alerts on" : "Set up"}
+              </Button>
+            </div>
+          )}
+          <p className="text-center text-xs leading-relaxed text-subtle">
+            Beta. Recall data comes from public FDA, USDA and CPSC feeds. Not a substitute for the official
+            notice — always check the product codes against it.
+          </p>
+        </div>
+      </div>
+
+      {/* ================= body: map + panel =================
+          Mounted the first time it is opened, then kept (hidden) so a trip
+          Home and back does not throw away the map, the selection or the
+          scroll position. */}
+      {storesWanted && (
+      <main ref={mainRef}
+            className={tab === "home" ? "hidden" : "flex min-h-0 flex-1 flex-col lg:flex-row"}>
         {/* -------- map -------- */}
         <div
           className={"map-shell relative min-h-0 lg:min-w-0 lg:flex-1 lg:basis-auto " +
             (loc ? "shrink-0 " : "") +
-            (mapHidden || tab === "recalls" ? "hidden lg:block " : "") +
+            (loc && (mapHidden || tab === "recalls") ? "hidden lg:block " : "") +
             (selectedStore ? "map-has-selection" : "")}
           style={mapStyle}
         >
@@ -1612,13 +2079,15 @@ export default function App() {
                   it; a phone only when the map has the screen, which is why
                   the selection also reads out in the scope row — the one place
                   that is on both tabs at every size. */}
-              <MapView ref={mapRef} loc={loc} stores={stores} radius={radius}
-                       labels={pinLabels} named={pinNamed} notes={pinNotes} weights={pinWeights}
-                       activeIndex={activeStore}
-                       theme={resolvedTheme}
-                       showPopup={isWide || view === "map"}
-                       onMarkerClick={onMarkerClick}
-                       onBackgroundClick={clearStore} />
+              <Suspense fallback={<div className="shimmer absolute inset-0" aria-hidden="true" />}>
+                <MapView ref={mapRef} loc={loc} stores={stores} radius={radius}
+                         labels={pinLabels} named={pinNamed} notes={pinNotes} weights={pinWeights}
+                         activeIndex={activeStore}
+                         theme={resolvedTheme}
+                         showPopup={isWide || view === "map"}
+                         onMarkerClick={onMarkerClick}
+                         onBackgroundClick={clearStore} />
+              </Suspense>
               {/* Controls on the map, not in a band above the list.
                   The radius is a question about the map — "how far out am I
                   looking" — so it belongs on the thing it changes, where the
@@ -2316,6 +2785,7 @@ export default function App() {
           </aside>
         )}
       </main>
+      )}
 
       {/* ================= footer ================= */}
       <footer
@@ -2347,8 +2817,11 @@ export default function App() {
           only unique content was a disclaimer already written out in full
           inside About. Two rows of chrome removed, one added, and everything
           you press most is now where your hand already is. */}
-      {loc && (
-        <nav
+      {/* Four now: Home leads, and what was "Near me" is "Stores", named for
+          what it holds now that it is no longer where the app starts. Shown
+          without a location too — Home works without one, and the other two
+          answer with the location prompt they always had. */}
+      <nav
           aria-label="Main"
           /* Floating, not welded on.
            *
@@ -2368,12 +2841,13 @@ export default function App() {
           className="tabbar lg:hidden"
         >
           {[
-            { id: "near", label: "Near me", icon: Store, count: stores.length },
+            { id: "home", label: "Home", icon: House },
+            { id: "near", label: "Stores", icon: Store, count: loc && storesWanted ? stores.length : null },
             /* A clipboard, not the sliders glyph. `ListFilter` is what half
                the platforms on a phone draw for "filter" — so the app's second
                destination wore the icon of a control, two rows above an actual
                Filters button wearing very nearly the same one. */
-            { id: "recalls", label: "Recalls", icon: ClipboardList, count: filtered.length },
+            { id: "recalls", label: "Recalls", icon: ClipboardList, count: loc ? filtered.length : null },
             { id: "scan", label: "Scan", icon: ScanLine },
           ].map(({ id, label, icon: Icon, count }) => {
             const on = id !== "scan" && tab === id;
@@ -2385,7 +2859,7 @@ export default function App() {
                 onClick={() => {
                   if (id === "scan") { setScanOpen(true); return; }
                   setTab(id);
-                  if (view === "map") setView("split"); // don't land on a hidden list
+                  if (id !== "home" && view === "map") setView("split"); // don't land on a hidden list
                 }}
                 className={"tabbar-item " + (on ? "tabbar-item-on" : "")}
               >
@@ -2404,7 +2878,6 @@ export default function App() {
             );
           })}
         </nav>
-      )}
 
       {/* ---- location, on a phone ---- */}
       <Sheet open={locOpen} onClose={() => setLocOpen(false)} title="Location">
@@ -2433,6 +2906,99 @@ export default function App() {
                   onClick={() => { setLocOpen(false); useGeolocation(); }}>
             <Crosshair /> Use my location
           </Button>
+          {loc && (
+            <>
+              <p className="text-[12px] leading-relaxed text-subtle">
+                Remembered in this browser only, so the app opens on it next time.
+              </p>
+              <Button variant="outline" className="h-11 w-full"
+                      onClick={() => { setLocOpen(false); forgetLocation(); }}>
+                <MapPinOff /> Forget this location
+              </Button>
+            </>
+          )}
+        </div>
+      </Sheet>
+
+      {/* ---- one recall, opened from the digest ----
+          The digest's headline, a follow match and a story's "Open the full
+          notice" all land here: the same card search answers with, open, in
+          a sheet over wherever the reader was — so the answer never costs
+          them their place in the digest. */}
+      <Sheet open={Boolean(sheetRecall)} onClose={() => setSheetRecall(null)} title="Recall">
+        {sheetRecall && (
+          <div className="px-4 py-4">
+            <VerdictCard
+              recall={sheetRecall}
+              loc={verdictLoc}
+              expanded
+              onRequestLocation={requestLocation}
+            />
+          </div>
+        )}
+      </Sheet>
+
+      {/* ---- alerts ----
+          Every outcome of asking is said here in words, including the ones
+          that are not failures of ours: an iPhone that needs the Home Screen
+          step first, a browser that cannot do it, a permission that was
+          refused. And the privacy line is said before the button, not after
+          it: what leaves this browser is the state and the follow terms. */}
+      <Sheet open={alertsOpen} onClose={() => setAlertsOpen(false)} title="Recall alerts">
+        <div className="flex flex-col gap-3 px-4 py-4 text-[13px] leading-relaxed text-fog">
+          <p>
+            <span className="font-semibold text-paper">Once a week</span>, the new recalls for{" "}
+            {loc?.stateAbbr || "your state"}. <span className="font-semibold text-paper">Straight away</span>, a
+            serious (Class I) recall there, or one matching a product you follow.
+          </p>
+          <p className="text-[12px] text-subtle">
+            Only your state and the products you follow are sent to our server — never your address or
+            coordinates. Turning alerts off deletes them.
+          </p>
+          {push.state === "needs-install" ? (
+            <div className="rounded-xl border border-line bg-panel-2 px-3.5 py-3">
+              <p className="font-semibold text-paper">On iPhone and iPad, one step first</p>
+              <p className="mt-1">
+                Apple only delivers alerts to sites added to the Home Screen. Tap{" "}
+                <span className="font-semibold text-paper">Share</span>, then{" "}
+                <span className="font-semibold text-paper">Add to Home Screen</span>, open Yanked from
+                there, and turn alerts on.
+              </p>
+            </div>
+          ) : !loc?.stateAbbr ? (
+            <Button className="h-11 w-full" onClick={() => { setAlertsOpen(false); requestLocation(); }}>
+              <MapPin /> Set your location first
+            </Button>
+          ) : push.state === "subscribed" ? (
+            <>
+              <p className="flex items-center gap-2 rounded-xl border border-line bg-panel-2 px-3.5 py-3 font-semibold text-paper">
+                <Check className="size-4 shrink-0 text-mint" /> Alerts are on for {loc.stateAbbr}.
+              </p>
+              <Button variant="outline" className="h-11 w-full" disabled={push.busy} onClick={disablePush}>
+                {push.busy ? <Loader2 className="animate-spin" /> : <BellOff />} Turn off alerts
+              </Button>
+            </>
+          ) : push.state === "unsupported" ? (
+            <p className="rounded-xl border border-line bg-panel-2 px-3.5 py-3">
+              This browser can't receive notifications from websites.
+            </p>
+          ) : push.state === "denied" ? (
+            <p className="rounded-xl border border-line bg-panel-2 px-3.5 py-3">
+              Notifications are blocked for this site. You can allow them in your browser's site settings,
+              then come back here.
+            </p>
+          ) : (
+            <Button className="h-11 w-full" disabled={push.busy || push.state === "unknown"} onClick={enablePush}>
+              {push.busy ? <Loader2 className="animate-spin" /> : <Bell />} Turn on alerts
+            </Button>
+          )}
+          {push.msg && <p role="alert" className="text-[12px] font-semibold text-alert">{push.msg}</p>}
+          {push.dropped.length > 0 && (
+            <p className="text-[12px] text-subtle">
+              Alerts can watch up to 20 products of 40 characters each, so these aren't included:{" "}
+              {push.dropped.map((t) => `“${t}”`).join(", ")}.
+            </p>
+          )}
         </div>
       </Sheet>
 
@@ -2468,6 +3034,12 @@ export default function App() {
           </div>
 
           <div className="px-4 py-3">
+            {pushOffered && (
+              <Button variant="secondary" className="mb-2 h-11 w-full"
+                      onClick={() => { setMoreOpen(false); openAlerts(); }}>
+                <Bell /> Recall alerts
+              </Button>
+            )}
             <Button variant="secondary" className="h-11 w-full"
                     onClick={() => { setMoreOpen(false); setAboutOpen(true); }}>
               <Info /> About this data
@@ -2568,7 +3140,18 @@ export default function App() {
               notice's own free text, because no feed publishes a hazard code we can compare across all three
               agencies. It is a reading aid, not a classification: the notice itself is the authority.
             </p>
-            <p className="mt-3">Your location is only used to query the sources above — nothing is stored.</p>
+            <p className="mt-3">
+              <span className="text-paper">Where your location goes.</span>{" "}
+              It is used to query the sources above, and remembered in this browser (not on our server) so
+              the app opens on it next time — &ldquo;Forget this location&rdquo; in the location sheet clears
+              it. If you turn on alerts, only your state and the products you follow are stored with them.
+            </p>
+            <p className="mt-3">
+              <span className="text-paper">&ldquo;Not reported in your state&rdquo; is not &ldquo;doesn&rsquo;t affect you&rdquo;.</span>{" "}
+              A search answer says what the notice says: where it was sent, quoted. Distribution lists can be
+              incomplete — distributors re-ship, and people travel — so an answer that your state isn&rsquo;t
+              listed is grey, never green, and the evidence is always one tap away.
+            </p>
             <div className="mt-4 rounded-xl border border-amber/40 bg-amber-soft p-3.5">
               <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-amber">
                 Beta — no warranty, no liability

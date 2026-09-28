@@ -12,6 +12,13 @@
 # Four times a day is ample: FSIS issues a handful of notices per day, and the
 # app labels the snapshot with its own date rather than pretending it is live.
 #
+# The same run then rebuilds public/feeds/index.json — the national search
+# index (scripts/build-index.mjs) — from the snapshots it just wrote plus a
+# year of openFDA enforcement reports, all statuses. It is committed with the
+# snapshots by the same step below. If openFDA fails, the previous index's FDA
+# records are kept, the file says so (`sources.fda.ok: false`), and the run
+# goes red.
+#
 # On reading a run: the job summary carries a table of what each feed returned
 # and what was kept. A red run means a feed failed or failed its health checks
 # — in which case nothing was written for it and the previous snapshot is still
@@ -43,10 +50,17 @@ jobs:
         with:
           node-version: "22"
 
-      # No install step: the script imports two dependency-free modules from
-      # src/lib and uses nothing but the Node standard library.
-      - name: Fetch feeds
+      # No install step: the script imports dependency-free modules from
+      # src/lib and uses nothing but the Node standard library. (MiniSearch is
+      # only ever loaded by the browser, at search time.)
+      #
+      # OPENFDA_KEY is optional — without it openFDA allows 1000 requests a
+      # day per IP, and the index build makes about a dozen. Set it as a
+      # repository secret to be clear of that limit entirely.
+      - name: Fetch feeds and build the index
         id: fetch
+        env:
+          OPENFDA_KEY: ${{ secrets.OPENFDA_KEY }}
         run: node scripts/refresh-feeds.mjs
 
       # Always, because a failed run is the one you actually need this for:
@@ -62,7 +76,8 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-      # Also always. The script writes a feed only when that feed passed its
+      # Also always. `public/feeds` covers index.json as well as the two
+      # snapshots. The script writes a feed only when that feed passed its
       # checks, so whatever is on disk is worth committing even when the other
       # one failed — a broken USDA should not hold back a good CPSC refresh.
       # The run stays red either way; this step does not mask it.
@@ -76,7 +91,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add public/feeds
-          git commit -m "Refresh recall feed snapshots
+          git commit -m "Refresh recall feed snapshots and national index
 
           Fetched from a GitHub runner, which reaches USDA when production
           cannot. Committed so the deployment carries the data as a static
