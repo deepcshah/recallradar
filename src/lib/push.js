@@ -1,8 +1,8 @@
 /* ─────────────────────────────────────────────────────────────────────────
  * PUSH — the browser half of "tell me when something is recalled here"
  *
- * The server half is api/push-subscribe.js (stores the subscription) and
- * api/send-digest.js (the crons that send). What leaves this browser when
+ * The server half is api/push.js (stores the subscription) and
+ * api/_lib/send-digest.js (the crons that send). What leaves this browser when
  * someone opts in is the push subscription itself, the two-letter state, and
  * their follow terms — never coordinates, a ZIP, or a store. Same line as
  * analytics (see the README).
@@ -17,7 +17,7 @@
  *      false, and the honest thing to show is "Add to Home Screen first", not
  *      a greyed-out bell — `needsInstallForPush()` tells the UI which.
  *   3. A deployment may have push switched off (no VAPID keys, no Blob). GET
- *      /api/push-subscribe says so, and `pushAvailable()` caches the answer,
+ *      /api/push says so, and `pushAvailable()` caches the answer,
  *      so the UI can hide the offer rather than prompt for a permission that
  *      would deliver nothing.
  *
@@ -26,7 +26,7 @@
  * ───────────────────────────────────────────────────────────────────────── */
 
 const SW_URL = "/sw.js";
-const API = "/api/push-subscribe";
+const API = "/api/push";
 
 function hasWindow() {
   return typeof window !== "undefined" && typeof navigator !== "undefined";

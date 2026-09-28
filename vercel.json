@@ -13,8 +13,8 @@
   "crons": [
     { "path": "/api/refresh-tiles", "schedule": "0 9 * * *" },
     { "path": "/api/refresh-feeds", "schedule": "20 5 * * *" },
-    { "path": "/api/send-digest", "schedule": "0 14 * * 6" },
-    { "path": "/api/send-digest?mode=urgent", "schedule": "30 15 * * *" }
+    { "path": "/api/push?action=digest", "schedule": "0 14 * * 6" },
+    { "path": "/api/push?action=digest&mode=urgent", "schedule": "30 15 * * *" }
   ],
   "headers": [
     {

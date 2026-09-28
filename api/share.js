@@ -6,7 +6,7 @@
  *
  * Two readers, one response. A link unfurler (iMessage, Slack, WhatsApp,
  * Facebook) does not run JavaScript; it reads the meta tags and fetches
- * og:image, which is /api/og drawing the verdict card. A person runs the
+ * og:image, which is /api/share?format=png drawing the verdict card. A person runs the
  * inline script and is replaced straight into the SPA, which opens that
  * recall's verdict. The meta refresh is for the rare browser with scripts
  * off; the visible link is for the rarer one that ignores both.
@@ -28,6 +28,7 @@
 import { readIndex, findRecall } from "../src/lib/index-server.js";
 import { cardVerdict, cleanState } from "../src/lib/share.js";
 import { VERDICTS } from "../src/lib/verdict.js";
+import ogHandler from "./_lib/og.js";
 
 const SITE = "https://yanked.app";
 
@@ -99,8 +100,14 @@ function page({ title, description, image, url, target }) {
 </html>`;
 }
 
+/* One function, two answers. Vercel's Hobby plan deploys at most twelve
+ * functions, and every file directly under api/ is one — so the preview
+ * image is not its own endpoint but `?format=png` on this one. The card's
+ * code lives in api/_lib/og.js; the underscore keeps Vercel from deploying
+ * it separately. */
 export default async function handler(req, res) {
   const q = req.query || {};
+  if (q.format === "png") return ogHandler(req, res);
   const id = String(q.id || "").slice(0, 120);
   const st = cleanState(q.st);
   const origin = originOf(req);
@@ -131,7 +138,7 @@ export default async function handler(req, res) {
     body = page({
       title: `Recall: ${product}`,
       description: clip(`${lead} ${tail}`, 300),
-      image: `${origin}/api/og?${qs}`,
+      image: `${origin}/api/share?format=png&${qs}`,
       url: `${origin}/r/${encodeURIComponent(record.id)}${st ? `?st=${st}` : ""}`,
       target,
     });
@@ -140,7 +147,7 @@ export default async function handler(req, res) {
       title: "Yanked — recalls near you",
       description:
         "Which FDA, USDA and CPSC recalls reached your state, and which stores near you are named in the notices.",
-      image: `${origin}/api/og`,
+      image: `${origin}/api/share?format=png`,
       url: `${origin}/`,
       target: "/",
     });

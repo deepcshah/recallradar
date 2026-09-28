@@ -63,7 +63,7 @@ function badRequest(message) {
   return { ok: false, error: message };
 }
 
-/* WHERE AN ENDPOINT MAY POINT. send-digest POSTs to every stored endpoint
+/* WHERE AN ENDPOINT MAY POINT. the digest cron POSTs to every stored endpoint
  * from inside our own deployment, so "any https URL" would make this a
  * request-forgery relay: subscribe with https://169.254.169.254/… or
  * https://internal-service/… and the cron dutifully calls it, signed, every

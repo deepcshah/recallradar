@@ -1,9 +1,9 @@
 /* Web push subscriptions.
  *
- *   GET    /api/push-subscribe   -> { enabled:true, publicKey } | { enabled:false, reason }
- *   POST   /api/push-subscribe   { subscription, stateAbbr, follows }  -> store / update
- *   POST   /api/push-subscribe   { subscription, replaces }            -> rotate (from sw.js)
- *   DELETE /api/push-subscribe   { endpoint }  (or ?endpoint=)         -> remove
+ *   GET    /api/push   -> { enabled:true, publicKey } | { enabled:false, reason }
+ *   POST   /api/push   { subscription, stateAbbr, follows }  -> store / update
+ *   POST   /api/push   { subscription, replaces }            -> rotate (from sw.js)
+ *   DELETE /api/push   { endpoint }  (or ?endpoint=)         -> remove
  *
  * The GET is how the client learns whether push is on at all. Push needs two
  * things this deployment may not have — VAPID keys and a Blob store to keep
@@ -19,6 +19,7 @@
 import {
   validateSubscribeBody, cleanSubscription, endpointKey, pushStore, vapidConfig,
 } from "../src/lib/push-store.js";
+import digestHandler from "./_lib/send-digest.js";
 
 const MAX_BODY_CHARS = 4096;
 
@@ -43,7 +44,12 @@ function unavailable() {
   return null;
 }
 
+/* The digest crons ride on this function as `?action=digest` rather than
+ * being their own: Vercel's Hobby plan deploys at most twelve functions and
+ * every file directly under api/ is one. The cron code is api/_lib/send-digest.js,
+ * which does its own CRON_SECRET check before anything is sent. */
 export default async function handler(req, res) {
+  if ((req.query || {}).action === "digest") return digestHandler(req, res);
   res.setHeader("Cache-Control", "no-store");
   const method = String(req.method || "GET").toUpperCase();
 

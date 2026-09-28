@@ -1,7 +1,7 @@
 /* Cron (see vercel.json): push notifications, built from the national index.
  *
- *   GET /api/send-digest               weekly per-state digest (Saturdays)
- *   GET /api/send-digest?mode=urgent   daily: new serious recalls in the
+ *   GET /api/push?action=digest            weekly per-state digest (Saturdays)
+ *   GET /api/push?action=digest&mode=urgent   daily: new serious recalls in the
  *                                      reader's state, plus new matches for
  *                                      the products they follow
  *   &dry=1                             compute and return what would be sent,
@@ -38,12 +38,12 @@
  * With VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY unset this is a no-op that says
  * so in its JSON, so the cron is safe to ship before push is switched on.
  */
-import { readIndex } from "../src/lib/index-server.js";
-import { isInArea } from "../src/lib/verdict.js";
-import { matchFollows } from "../src/lib/follows.js";
-import { reasonFor } from "../src/lib/reason.js";
-import { ABBR_TO_NAME } from "../src/lib/states.js";
-import { pushStore, vapidConfig, MAX_SENT_IDS } from "../src/lib/push-store.js";
+import { readIndex } from "../../src/lib/index-server.js";
+import { isInArea } from "../../src/lib/verdict.js";
+import { matchFollows } from "../../src/lib/follows.js";
+import { reasonFor } from "../../src/lib/reason.js";
+import { ABBR_TO_NAME } from "../../src/lib/states.js";
+import { pushStore, vapidConfig, MAX_SENT_IDS } from "../../src/lib/push-store.js";
 
 const DAY = 24 * 60 * 60 * 1000;
 /** The digest's "this week". */

@@ -1,7 +1,7 @@
 /* The picture a shared recall unfurls into.
  *
- *   GET /api/og?id=fsis-024-2026&st=CA   -> 1200×630 PNG
- *   GET /api/og                          -> the generic Yanked card
+ *   GET /api/share?format=png&id=fsis-024-2026&st=CA   -> 1200×630 PNG
+ *   GET /api/share?format=png                       -> the generic Yanked card
  *
  * Referenced only from /api/share's og:image; nobody visits it directly.
  *
@@ -40,9 +40,9 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readIndex, findRecall } from "../src/lib/index-server.js";
-import { cardVerdict } from "../src/lib/share.js";
-import { coverageOf } from "../src/lib/verdict.js";
+import { readIndex, findRecall } from "../../src/lib/index-server.js";
+import { cardVerdict } from "../../src/lib/share.js";
+import { coverageOf } from "../../src/lib/verdict.js";
 
 const h = React.createElement;
 const W = 1200;
@@ -255,7 +255,7 @@ function recallCard(r, st) {
  * unfurlers then show a text-only preview from /api/share's meta tags, which
  * is degraded but not wrong. Drop this shim once @vercel/og's Node build
  * imports cleanly (`node -e 'import("@vercel/og")'` is the test). */
-const HB_WASM = fileURLToPath(new URL("../node_modules/harfbuzzjs/hb.wasm", import.meta.url));
+const HB_WASM = fileURLToPath(new URL("../../node_modules/harfbuzzjs/hb.wasm", import.meta.url));
 let ogModule = null;
 
 function hbDir() {

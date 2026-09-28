@@ -4,7 +4,7 @@
  *   https://yanked.app/r/fsis-024-2026?st=CA
  *
  * A shared recall is read twice: once by a link unfurler (iMessage, Slack,
- * WhatsApp), which sees only /api/share's meta tags and /api/og's card, and
+ * WhatsApp), which sees only /api/share's meta tags and /api/share?format=png's card, and
  * once by the person who taps it, who lands in the app with that recall's
  * verdict open (`/?r=<id>&st=<ST>`). The state rides along because the
  * verdict is meaningless without one — "Not reported in California" is the

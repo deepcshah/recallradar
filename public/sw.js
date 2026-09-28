@@ -26,7 +26,7 @@
  * worth caching is /feeds/index.json, network-first with the fetched-at time
  * surfaced in the UI — never the HTML, never /api/*.
  *
- * Push payloads are JSON written by api/send-digest.js:
+ * Push payloads are JSON written by api/_lib/send-digest.js:
  *   { title, body, url, tag?, recallId? }
  * `url` is always same-origin ("/" or "/?r=<id>&st=<ST>"); anything else is
  * ignored in favour of "/" so a payload can never open a foreign page.
@@ -103,7 +103,7 @@ self.addEventListener("pushsubscriptionchange", (event) => {
       const sub = event.newSubscription ||
         (options ? await self.registration.pushManager.subscribe(options) : null);
       if (!sub) return;
-      await fetch("/api/push-subscribe", {
+      await fetch("/api/push", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ subscription: sub.toJSON(), replaces: old ? old.endpoint : undefined }),

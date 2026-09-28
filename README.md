@@ -85,9 +85,9 @@ An empty search is held to the scanner's rule: it lists each agency that was sea
 
 ### Share cards
 
-Every opened card can be shared. The link is `/r/<id>?st=CA`; `vercel.json` rewrites it to `api/share.js`, which answers crawlers with Open Graph tags and people with a redirect to `/?r=<id>&st=CA`. The preview image is `api/og.js`, a 1200×630 PNG of the verdict rendered with `@vercel/og` from the same wording the card uses (`cardVerdict` in `src/lib/share.js`), so an unfurl in a group chat says "Not reported in California" and not just a product name. Opening the link lands on Home with that recall open, labelled *Shared with you*. The `st` is the sender's state: it answers for a reader the app knows nothing about yet, and a reader with a saved location gets their own state instead.
+Every opened card can be shared. The link is `/r/<id>?st=CA`; `vercel.json` rewrites it to `api/share.js`, which answers crawlers with Open Graph tags and people with a redirect to `/?r=<id>&st=CA`. The preview image is `api/_lib/og.js` (served as `/api/share?format=png`), a 1200×630 PNG of the verdict rendered with `@vercel/og` from the same wording the card uses (`cardVerdict` in `src/lib/share.js`), so an unfurl in a group chat says "Not reported in California" and not just a product name. Opening the link lands on Home with that recall open, labelled *Shared with you*. The `st` is the sender's state: it answers for a reader the app knows nothing about yet, and a reader with a saved location gets their own state instead.
 
-`@vercel/og` 1.0.3's Node build cannot be imported as shipped (it bundles a CommonJS loader that needs `require` and a `hb.wasm` it does not ship); `api/og.js` works around it and explains when the shim can go. If `/api/og` ever 500s in production, add `node_modules/harfbuzzjs/hb.wasm` to `includeFiles` — unfurls degrade to the text-only tags from `api/share.js` meanwhile, which are still accurate.
+`@vercel/og` 1.0.3's Node build cannot be imported as shipped (it bundles a CommonJS loader that needs `require` and a `hb.wasm` it does not ship); `api/_lib/og.js` (served as `/api/share?format=png`) works around it and explains when the shim can go. If `/api/share?format=png` ever 500s in production, add `node_modules/harfbuzzjs/hb.wasm` to `includeFiles` — unfurls degrade to the text-only tags from `api/share.js` meanwhile, which are still accurate.
 
 ## The national index
 
@@ -107,7 +107,7 @@ An openFDA failure at build time keeps the previous FDA records and turns the wo
 
 **Follows** ("products I buy") are short phrases — "spinach", "Trader Joe's" — kept in `localStorage` (`rr-follows`, `src/lib/follows.js`) and matched literally against product and firm names: every word must start a word, no fuzzy matching, and never the recall reason, so "milk" does not fire on every undeclared-milk allergen notice. Any card can be followed with one tap; the digest lists matches first.
 
-**Alerts** are web push (`public/sw.js`, `src/lib/push.js`, `api/push-subscribe.js`, `api/send-digest.js`), offered only where they can work:
+**Alerts** are web push (`public/sw.js`, `src/lib/push.js`, `api/push.js`, `api/_lib/send-digest.js`), offered only where they can work:
 
 - **What is sent:** a weekly digest of new recalls in your state (Saturday, `0 14 * * 6` UTC), and a push within the day for a new Class I recall in your state or one matching a follow (`30 15 * * *`). A week with nothing new sends nothing, rather than a "0 recalls" push.
 - **What is stored:** the push subscription, the two-letter state and the follow terms (at most 20, of at most 40 characters — the alerts sheet names any it could not include). One Blob file per subscriber, keyed by a hash of the endpoint. Never coordinates. Turning alerts off deletes it; a push service's 410 deletes it too.
@@ -115,7 +115,7 @@ An openFDA failure at build time keeps the previous FDA records and turns the wo
 - **The service worker has no fetch handler**, on purpose: it can never serve a stale page or a stale recall list, which for this app is the worst failure available.
 - An existing subscription is kept in step when the follows or the state change, without prompting. The browser's permission prompt only ever comes from a click on *Turn on alerts* (or the stories' *Get a weekly heads-up*, which calls it directly).
 
-Environment (server-side only, see `.env.example`): `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` (generate once with `npx web-push generate-vapid-keys`; rotating them orphans every subscription), `VAPID_SUBJECT`, and `CRON_SECRET`, which `/api/send-digest` requires since it sends pushes (with VAPID keys set and no `CRON_SECRET`, it refuses to run). Subscription endpoints must belong to a browser push service (FCM, Mozilla, Apple, Windows); anything else is refused, so the cron can never be pointed at an arbitrary URL. With either VAPID key unset, push is simply off: `GET /api/push-subscribe` reports `{ enabled: false }`, the cron returns a no-op message, and the app hides the offer. `PUSH_BLOB_ACCESS=private` is only for a Blob store created private.
+Environment (server-side only, see `.env.example`): `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` (generate once with `npx web-push generate-vapid-keys`; rotating them orphans every subscription), `VAPID_SUBJECT`, and `CRON_SECRET`, which `/api/push?action=digest` requires since it sends pushes (with VAPID keys set and no `CRON_SECRET`, it refuses to run). Subscription endpoints must belong to a browser push service (FCM, Mozilla, Apple, Windows); anything else is refused, so the cron can never be pointed at an arbitrary URL. With either VAPID key unset, push is simply off: `GET /api/push` reports `{ enabled: false }`, the cron returns a no-op message, and the app hides the offer. `PUSH_BLOB_ACCESS=private` is only for a Blob store created private.
 
 ## Running it
 
@@ -220,11 +220,11 @@ src/lib/classification.js       — what Class I/II/III and USDA's risk words ac
 src/lib/feed-cache.js           — last-good copies of the feeds, in Vercel Blob
 src/lib/blob.js                 — the Blob token, read from the RR_BLOB_-prefixed name
 src/lib/theme.js, tuning.js     — light/dark, and the DialKit-tunable motion constants
-api/                            — Vercel functions: recalls, stores, per-feed proxies, diagnostics
+api/                            — Vercel functions (11 of the Hobby plan's 12 — see Design notes): recalls, stores, per-feed proxies, diagnostics
 api/lookup.js                   — one product across openFDA, INCLUDING finished recalls
-api/share.js, api/og.js         — /r/:id unfurls: meta tags + redirect, and the 1200×630 verdict card
-api/push-subscribe.js           — store / remove a push subscription (state + follows only)
-api/send-digest.js              — crons: weekly per-state digest, urgent Class I + follow matches
+api/share.js                    — /r/:id unfurls: meta tags + redirect; ?format=png is the 1200×630 verdict card
+api/push.js                     — store / remove a push subscription (state + follows only); ?action=digest runs the crons
+api/_lib/                       — og.js (the card) and send-digest.js (the crons): code, not deployed functions
 public/sw.js, manifest.webmanifest — push-only service worker (no fetch handler) and install manifest
 scripts/build-index.mjs         — build public/feeds/index.json, the national index
 api/refresh-feeds.js            — daily cron: warm the FSIS and CPSC caches off the request path
@@ -234,6 +234,7 @@ public/feeds/                   — the committed snapshots; machine-generated, 
 
 Design notes:
 
+- **Twelve functions, and every file in `api/` is one.** Vercel's Hobby plan refuses a deployment with more than twelve serverless functions, and it counts each file directly under `api/`. So new server work rides on an existing function behind a query parameter — the verdict card is `/api/share?format=png`, the digest crons are `/api/push?action=digest` — with the code itself in `api/_lib/`, which the underscore keeps from being deployed on its own. Count `ls api/*.js` before adding a file.
 - **Per-source resilience:** each feed is fetched with `Promise.allSettled`; one failure never breaks the page. openFDA's "no results" 404 is treated as an empty set.
 - **Four tiers for USDA and CPSC, because one is not enough.** `https://www.fsis.usda.gov/fsis/api/recall/v/1?format=json` is the documented endpoint, it is correct, and it takes no API key — it is served off the agency's own web host rather than from behind api.data.gov, so a 403 is not asking for a credential. It nonetheless refuses this app's serverless function much of the time, and CPSC's `saferproducts.gov` returns 180 days as one uncompressed document that regularly outruns the request budget. So the data is fetched from four places that fail independently: (1) a live server-side fetch with a few spaced retries; (2) a Vercel Blob copy, warmed daily by `api/refresh-feeds.js` **off** the request path, where a cron can afford to be patient; (3) a direct fetch from the user's own browser, which is a different client on a different network; and (4) a snapshot committed to `public/feeds/` by a GitHub Action. Each tier says how old it is, and the recall list names which one answered.
 - **The fourth tier is the one that matters, and both sides read it.** Tiers 1–3 all ultimately need USDA to answer *this deployment* at some point; if it never does, they are empty together. `.github/workflows/refresh-feeds.yml` runs `scripts/refresh-feeds.mjs` on a GitHub runner four times a day — a different network with a different IP reputation — and commits the result, so the build ships with the data as a static asset needing no Blob store, no environment variable, and no cooperation from USDA at request time. The browser reads that snapshot over the CDN and the server reads its own copy off disk (`src/lib/snapshot.js`, the last tier of `feedWithFallback`) — without the server half, a deployment with refused egress and an unattached Blob store answers `/api/recalls` with "USDA FSIS: unavailable" while the data sits inside it.
