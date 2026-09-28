@@ -19,9 +19,15 @@
  * Record shape (contract 3; see scripts/build-index.mjs for how each field is
  * derived):
  *   { id, source, product, firm, reason, classification, severity, date,
- *     status: 'active'|'ended', endDate?, distribution, states,
+ *     status: 'active'|'ended'|'announced', endDate?, distribution, states,
  *     coverage: 'nationwide'|'states'|'unstated', category, reasonKey, url,
- *     upcs? }
+ *     upcs?, announcement? }
+ *
+ * `source: 'FDA announcement'`, `status: 'announced'`, `announcement: true`
+ * marks a company press release from FDA's recalls RSS feed that has no
+ * openFDA enforcement record yet (see scripts/build-index.mjs). verdict.js
+ * gives it its own answer and keeps it out of area counts unless the release
+ * itself names states.
  *
  * Two honesty rules carry over from the rest of the app and matter more here,
  * because a search result is read as an answer:
@@ -337,6 +343,17 @@ export function recentFor(index, loc, { sinceDays = 7 } = {}) {
     .sort((a, b) => String(b.date).localeCompare(String(a.date)) || (sevRank[a.severity] ?? 1) - (sevRank[b.severity] ?? 1));
 }
 
+/** The All US counterpart of recentFor: active and in the window, wherever it
+ *  went — no area filter at all. Announcements are kept (they are real
+ *  recalls); the digest decides how to count them. */
+export function recentForUs(index, { sinceDays = 7 } = {}) {
+  if (!index || !Array.isArray(index.recalls)) return [];
+  const since = daysAgo(sinceDays);
+  return index.recalls
+    .filter((r) => r.status !== "ended" && String(r.date) >= since)
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || (sevRank[a.severity] ?? 1) - (sevRank[b.severity] ?? 1));
+}
+
 /* Store aisles, in the order a shopper walks them, mapped from category.js
  * keys. Categories that are not an aisle (snacks, pantry, beverages, sports,
  * a bare "food") are left out rather than forced into the nearest one — an
@@ -361,6 +378,75 @@ export function byAisle(records) {
   return out;
 }
 
+// ------------------------------------------------------------ freshness
+/* How old is what we are answering from, per agency?
+ *
+ * Two kinds of date, and they are not the same claim:
+ *   'updated'  the agency's own "data as of" — openFDA's meta.last_updated.
+ *              openFDA refreshes enforcement weekly, so a week-old date is
+ *              normal, not stale.
+ *   'fetched'  when we last fetched the feed. FSIS and CPSC publish no "as
+ *              of" date, so our fetch time is the best claim available (and
+ *              for FDA, the fallback when last_updated is missing).
+ *
+ * Staleness thresholds, in days, by source and kind:
+ *   FDA  updated  10  weekly publication + a few days' slack
+ *   FDA  fetched   2  the refresh workflow runs every 6 hours
+ *   FSIS fetched   2  same workflow; USDA posts most weekdays
+ *   CPSC fetched   3  same workflow; CPSC posts on weekdays, so a weekend
+ *                     gap alone must not read as stale
+ */
+export const STALE_AFTER_DAYS = {
+  FDA: { updated: 10, fetched: 2 },
+  "USDA FSIS": { fetched: 2 },
+  CPSC: { fetched: 3 },
+};
+
+function isoOf(v) {
+  if (!v) return null;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+
+function newestIso(values) {
+  return values.map(isoOf).filter(Boolean).sort().pop() || null;
+}
+
+/** Per-agency freshness, for "as of" lines and stale warnings.
+ *
+ *  @param index    the national index (or null)
+ *  @param recallsResponseSources  optional `sources` array from /api/recalls
+ *                  (fetchAll). When given, its live dates win over the index's.
+ *  @param opts.now for tests
+ *  @returns {{source:'FDA'|'USDA FSIS'|'CPSC', asOf:string|null,
+ *             kind:'updated'|'fetched', stale:boolean}[]}
+ *  `asOf` is an ISO timestamp (an 'updated' date is midnight UTC of that day).
+ *  Unknown dates are `asOf: null, stale: true` — never assumed fresh. */
+export function freshnessOf(index, recallsResponseSources = null, { now = Date.now() } = {}) {
+  const src = (index && index.sources) || {};
+  const live = Array.isArray(recallsResponseSources) ? recallsResponseSources.filter((x) => x && x.ok) : [];
+  const liveOf = (prefix) => live.filter((x) => String(x.name || "").startsWith(prefix));
+
+  const entry = (source, asOf, kind) => {
+    const days = STALE_AFTER_DAYS[source][kind];
+    const age = asOf ? (now - Date.parse(asOf)) / DAY_MS : Infinity;
+    return { source, asOf, kind, stale: !(age <= days) };
+  };
+
+  // FDA: prefer openFDA's own date, live first, then the index's.
+  const fdaLive = liveOf("FDA");
+  const fdaUpdated = newestIso(fdaLive.map((x) => x.lastUpdated)) ||
+    (src.fda && newestIso([src.fda.lastUpdated]));
+  const fda = fdaUpdated
+    ? entry("FDA", fdaUpdated, "updated")
+    : entry("FDA", newestIso(fdaLive.map((x) => x.fetchedAt)) || isoOf(src.fda && src.fda.fetchedAt), "fetched");
+
+  const fetched = (source, prefix, key) =>
+    entry(source, newestIso(liveOf(prefix).map((x) => x.fetchedAt)) || isoOf(src[key] && src[key].fetchedAt), "fetched");
+
+  return [fda, fetched("USDA FSIS", "USDA FSIS", "fsis"), fetched("CPSC", "CPSC", "cpsc")];
+}
+
 // ------------------------------------------------------------ live fallback
 function fdaDate(s) {
   const t = String(s || "");
@@ -375,7 +461,8 @@ function severityFromClass(cls) {
 }
 
 /** Map one /api/lookup match into the index record shape. Exported so the
- *  mapping can be exercised without a network. */
+ *  mapping can be exercised without a network. `relevance` (1–3, see
+ *  api/_lib/lookup-rank.js) is carried through when the server sent it. */
 export function lookupMatchToRecord(m) {
   const { coverage, states } = coverageFromText(m.distribution, m.source);
   const status = /ongoing|pending/i.test(m.status || "") ? "active" : "ended";
@@ -401,6 +488,7 @@ export function lookupMatchToRecord(m) {
   if (status === "ended" && end) rec.endDate = end;
   const upcs = upcsIn([m.codeInfo, m.product].filter(Boolean).join(" \n "));
   if (upcs.length) rec.upcs = upcs;
+  if (m.relevance) rec.relevance = m.relevance;
   return rec;
 }
 
@@ -409,8 +497,17 @@ export function lookupMatchToRecord(m) {
  *  For the case where `index.sources.fda.ok` is false and the index search
  *  found no FDA record: that silence means "not checked", and this checks.
  *  A barcode-shaped query goes as ?upc=, anything else as ?q=. Resolves to
- *  records in the index shape; rejects when openFDA is unreachable, so the
- *  caller can say so instead of rendering an empty list. */
+ *  records in the index shape, already ranked by the server (see
+ *  api/_lib/lookup-rank.js); rejects when openFDA is unreachable, so the
+ *  caller can say so instead of rendering an empty list.
+ *
+ *  The array also carries the response's summary as properties, so existing
+ *  callers that treat it as a plain list keep working:
+ *    .total        relevant matches (the list holds the top 40)
+ *    .dropped      ingredient-list-only matches left out
+ *    .truncated    openFDA had more matches than were fetched
+ *    .lastUpdated  openFDA's data date (YYYY-MM-DD), or null
+ *    .partial      kinds that failed, or undefined */
 export async function liveLookup(query, { timeoutMs = 15000 } = {}) {
   const q = String(query || "").trim();
   if (!q) return [];
@@ -423,7 +520,13 @@ export async function liveLookup(query, { timeoutMs = 15000 } = {}) {
     let body = null;
     try { body = await res.json(); } catch (_) { /* non-JSON error page */ }
     if (!res.ok) throw new Error((body && body.error) || `HTTP ${res.status}`);
-    return ((body && body.matches) || []).map(lookupMatchToRecord);
+    const out = ((body && body.matches) || []).map(lookupMatchToRecord);
+    out.total = body && Number.isFinite(body.total) ? body.total : out.length;
+    out.dropped = (body && body.dropped) || 0;
+    out.truncated = !!(body && body.truncated);
+    out.lastUpdated = (body && body.lastUpdated) || null;
+    out.partial = (body && body.partial) || undefined;
+    return out;
   } catch (err) {
     throw err && err.name === "AbortError" ? new Error("openFDA lookup timed out") : err;
   } finally {

@@ -37,6 +37,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { verdictFor, resolveLoc } from "@/lib/verdict";
+import { coverageLine } from "@/lib/coverage-line";
 import { severityLabel, severityVariant } from "@/lib/classification";
 import { hazardLabel, shortProduct, whatToDo, markSeen, getSeen, dayOf } from "@/lib/digest";
 import { cn } from "@/lib/utils";
@@ -91,8 +92,10 @@ function StoryMedia({ record, aisleKey }) {
   );
 }
 
-function RecallStory({ record, aisleKey, loc, onOpenRecall }) {
+function RecallStory({ record, aisleKey, loc, scope, onOpenRecall }) {
   const verdict = verdictFor(record, loc);
+  const us = scope === "us";
+  const hasPlace = !!resolveLoc(loc);
   const todo = whatToDo(record);
   const ended = verdict.verdict === "ended";
   const what = todo.steps.map((s, i) => (i ? s.charAt(0).toLowerCase() + s.slice(1) : s)).join("; ");
@@ -116,10 +119,26 @@ function RecallStory({ record, aisleKey, loc, onOpenRecall }) {
           {record.firm ? <span className="text-subtle"> · {record.firm}</span> : null}
         </p>
       </div>
-      <p className="flex items-start gap-1.5 text-sm font-semibold text-paper">
-        <MapPin className="mt-0.5 size-4 shrink-0 text-subtle" aria-hidden="true" />
-        <span>{verdict.headline}</span>
-      </p>
+      {us ? (
+        /* All US: where it went is the headline fact; the reader's own answer
+           rides beside it as a neutral pill when we know their state. */
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="flex items-start gap-1.5 text-sm font-semibold text-paper">
+            <MapPin className="mt-0.5 size-4 shrink-0 text-subtle" aria-hidden="true" />
+            <span>{coverageLine(record)}</span>
+          </p>
+          {hasPlace && (
+            <span className="rounded-full border border-line bg-panel-2 px-2 py-0.5 text-[12px] font-semibold text-fog">
+              {verdict.headline}
+            </span>
+          )}
+        </div>
+      ) : (
+        <p className="flex items-start gap-1.5 text-sm font-semibold text-paper">
+          <MapPin className="mt-0.5 size-4 shrink-0 text-subtle" aria-hidden="true" />
+          <span>{verdict.headline}</span>
+        </p>
+      )}
       <div className="rounded-xl border border-line bg-panel-2 p-3 text-sm leading-snug text-paper">
         <span className="font-semibold">What to do: </span>
         <span className="text-fog">{what}.</span>
@@ -143,7 +162,7 @@ function RecallStory({ record, aisleKey, loc, onOpenRecall }) {
   );
 }
 
-function EndCard({ place, onEnablePush, onClose }) {
+function EndCard({ place, scope, onEnablePush, onRequestLocation, onClose }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-4 px-2 text-center">
       <div className="flex size-16 items-center justify-center rounded-full border border-line bg-sunken">
@@ -151,13 +170,18 @@ function EndCard({ place, onEnablePush, onClose }) {
       </div>
       <h3 className="text-2xl font-bold tracking-tight text-paper">You're all caught up</h3>
       <p className="max-w-[30ch] text-sm leading-relaxed text-fog">
-        That's every recent recall in these aisles{place ? ` for ${place}` : ""} that we know of.
+        That's every recent recall in these aisles {scope === "us" || !place ? "across the US" : `for ${place}`} that we know of.
         Agencies publish new notices every week.
       </p>
       <div className="mt-2 flex w-full max-w-xs flex-col gap-2" data-story-control>
-        {onEnablePush && (
+        {/* Alerts are per state, whichever view you are browsing. */}
+        {!place && onRequestLocation ? (
+          <Button onClick={onRequestLocation}>
+            <MapPin aria-hidden="true" /> Set a location to get a weekly heads-up for your state
+          </Button>
+        ) : onEnablePush && (
           <Button onClick={onEnablePush}>
-            <Bell aria-hidden="true" /> Get a weekly heads-up
+            <Bell aria-hidden="true" /> Get a weekly heads-up{place ? ` for ${place}` : ""}
           </Button>
         )}
         <Button variant="secondary" onClick={onClose}>Done</Button>
@@ -180,7 +204,9 @@ function EndCard({ place, onEnablePush, onClose }) {
  *   onSeen(id)            optional; called after an id is written to rr-seen
  *   onCaughtUp()          optional; called once each time the end card is reached
  */
-export default function AisleStories({ open, aisles, startAisle, loc, onClose, onOpenRecall, onEnablePush, onSeen, onCaughtUp }) {
+export default function AisleStories({
+  open, aisles, startAisle, loc, scope = "near", onClose, onOpenRecall, onEnablePush, onRequestLocation, onSeen, onCaughtUp,
+}) {
   const reduce = useReducedMotion();
 
   /* One flat sequence across aisles, so "next" at the end of Meat is the
@@ -433,12 +459,13 @@ export default function AisleStories({ open, aisles, startAisle, loc, onClose, o
                   aria-live="polite"
                 >
                   {cur && cur.end
-                    ? <EndCard place={place} onEnablePush={onEnablePush} onClose={close} />
+                    ? <EndCard place={place} scope={scope} onEnablePush={onEnablePush} onRequestLocation={onRequestLocation} onClose={close} />
                     : cur && (
                       <RecallStory
                         record={cur.record}
                         aisleKey={cur.aisle.key}
                         loc={loc}
+                        scope={scope}
                         onOpenRecall={(r) => { close(); onOpenRecall && onOpenRecall(r); }}
                       />
                     )}

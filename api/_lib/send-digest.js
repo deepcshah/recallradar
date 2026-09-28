@@ -39,7 +39,7 @@
  * so in its JSON, so the cron is safe to ship before push is switched on.
  */
 import { readIndex } from "../../src/lib/index-server.js";
-import { isInArea } from "../../src/lib/verdict.js";
+import { isInArea, isAnnounced } from "../../src/lib/verdict.js";
 import { matchFollows } from "../../src/lib/follows.js";
 import { reasonFor } from "../../src/lib/reason.js";
 import { ABBR_TO_NAME } from "../../src/lib/states.js";
@@ -98,7 +98,10 @@ function recallUrl(r, st) {
  * the 25th. Comparing instants instead dropped a recall dated the 25th from a
  * run at 3pm on the 28th — exactly the notice the urgent cron exists for. */
 function withinDays(r, days, now) {
-  const day = String(r.date || "").slice(0, 10);
+  // The later of the notice's date and FDA's publication date (digest.js newsDay).
+  const d = String(r.date || "").slice(0, 10);
+  const p = String(r.posted || "").slice(0, 10);
+  const day = p > d ? p : d;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return false;
   const from = new Date(now - days * DAY).toISOString().slice(0, 10);
   const to = new Date(now + DAY).toISOString().slice(0, 10);
@@ -167,14 +170,18 @@ export function planPush(sub, index, mode, now = Date.now()) {
   }
 
   // weekly
-  const week = areaRecalls(index, st, WEEK_DAYS, now).sort(rank);
+  /* Company announcements FDA has not classified are never counted as "new
+   * recalls" (the app's digest headline doesn't count them either, see
+   * digest.js summarize) — they can still reach a reader as a follow match. */
+  const inArea = areaRecalls(index, st, WEEK_DAYS, now).sort(rank);
+  const week = inArea.filter((r) => !isAnnounced(r));
   if (!week.length || week.every((r) => sent.has(r.id))) return null;
   const serious = week.filter((r) => r.severity === "high");
   const lead = serious[0] || week[0];
   let body = `This week in ${st}: ${plural(week.length, "new recall")}`;
   if (serious.length) body += ` · ${serious.length} serious`;
   body += ` — ${headlineOf(lead)}`;
-  const hits = matchFollows(week, follows);
+  const hits = matchFollows(inArea, follows);
   if (hits.length) body += `. Matches: ${hits.slice(0, 3).map((h) => `“${h.term}”`).join(", ")}`;
   return {
     ids: week.map((r) => r.id),

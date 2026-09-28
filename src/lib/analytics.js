@@ -139,7 +139,7 @@ export function initAnalytics() {
       });
       /* A super property, not a per-call one: it has to ride on autocapture
        * and $pageview too, and neither goes through track(). */
-      posthog.register({ environment: VERCEL_ENV });
+      posthog.register({ environment: VERCEL_ENV, ...superProps });
       ph = posthog;
       for (const [event, props] of pending.splice(0)) posthog.capture(event, props);
     })
@@ -150,6 +150,18 @@ export function initAnalytics() {
       failed = true;
       pending.length = 0;
     });
+}
+
+/* Super properties set before PostHog has loaded (the scope is known on the
+ * first render, the library arrives a few hundred ms later). */
+const superProps = {};
+
+/** Register a property on every later event, autocapture included. Only
+ *  coarse values belong here — `scope` is "near" | "us", never a place. */
+export function registerSuper(props) {
+  Object.assign(superProps, props);
+  if (!ENABLED || failed || !ph) return;
+  try { ph.register(props); } catch (_) { /* never break the page */ }
 }
 
 /** Send an event. A no-op when PostHog is not configured or not enabled. */

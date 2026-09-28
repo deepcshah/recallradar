@@ -1,12 +1,14 @@
 import { useEffect, useId, useState } from "react";
 import {
-  BellRing, Check, CircleHelp, ExternalLink, History, MapPin, MapPinOff, Plus, Share2,
+  BellRing, Check, CircleHelp, ExternalLink, History, MapPin, MapPinOff, Megaphone, Plus, Share2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InfoTip } from "@/components/ui/tooltip";
 import StateMap from "@/components/StateMap";
-import { verdictFor, coverageOf, resolveLoc, VERDICTS } from "@/lib/verdict";
+import { verdictFor, coverageOf, resolveLoc, VERDICTS, isAnnounced } from "@/lib/verdict";
+import { coverageLine } from "@/lib/coverage-line";
+import { fmtAsOf } from "@/components/FreshnessLine";
 import { classInfo, severityLabel, severityVariant } from "@/lib/classification";
 import { reasonFor } from "@/lib/reason";
 import { recallUpcs, lookupProduct } from "@/lib/upc";
@@ -44,12 +46,35 @@ const VERDICT_ICON = {
   [VERDICTS.UNSTATED]: CircleHelp,
   [VERDICTS.ENDED]: History,
   [VERDICTS.NEEDS_LOCATION]: MapPin,
+  [VERDICTS.ANNOUNCED]: Megaphone,
 };
 
-/* The headline verdictFor gives a reader with no location is written for a
- * sheet that has a location form beside it. Here the fix is one ZIP away, so
- * say that, and say what the ZIP is for. */
-const NEEDS_LOCATION_HEADLINE = "Add your ZIP to see if it reached you";
+/* The agency key freshnessOf() uses for a record's source. */
+function freshKey(source) {
+  const s = String(source || "");
+  if (s.startsWith("FDA")) return "FDA";
+  if (s.startsWith("USDA")) return "USDA FSIS";
+  return s === "CPSC" ? "CPSC" : null;
+}
+
+/* "Announced — not yet classified". Neutral and dashed, never amber or red:
+ * the class is the government's word, and the government hasn't said one. */
+export function AnnouncedBadge() {
+  return (
+    <InfoTip
+      title="Announced — not yet classified"
+      body="The company announced this recall. FDA hasn't classified it or published where it went yet."
+      label="Announced, not yet classified: what this means"
+      variant="badge"
+      triggerClassName="text-fog"
+      side="bottom"
+    >
+      <Badge variant="low" className="border-dashed border-line-strong bg-transparent text-fog">
+        Announced — not yet classified
+      </Badge>
+    </InfoTip>
+  );
+}
 
 /** "FDA Food" → "FDA". The evidence line names the agency, not our feed key. */
 export function agencyOf(source) {
@@ -241,14 +266,16 @@ function FollowButton({ term }) {
  * @param {boolean}  [props.expanded] show the evidence, map and actions
  * @param {Function} [props.onToggle] () => void — header clicked; omit to make
  *                                    the card static (always as `expanded` says)
- * @param {Function} [props.onRequestLocation] () => void — the "Add your ZIP"
- *                                    prompt, shown only when loc is null
+ * @param {Function} [props.onRequestLocation] () => void — "Check your state",
+ *                                    shown only when loc is null
+ * @param {object[]} [props.freshness] freshnessOf() entries; dates the
+ *                                    "not reported" answer
  * @param {string}   [props.eyebrow]  a small label above the product ("Linked recall")
  * @param {string}   [props.className]
  * @param {object}   [props.style]
  */
 export default function VerdictCard({
-  recall, loc, expanded = false, onToggle, onRequestLocation, eyebrow, className, style,
+  recall, loc, expanded = false, onToggle, onRequestLocation, eyebrow, className, style, freshness,
 }) {
   const bodyId = useId();
   const L = resolveLoc(loc);
@@ -258,10 +285,21 @@ export default function VerdictCard({
   const agency = agencyOf(recall.source);
   const Icon = VERDICT_ICON[v.verdict] || CircleHelp;
   const needsLoc = v.verdict === VERDICTS.NEEDS_LOCATION;
-  const headline = needsLoc ? NEEDS_LOCATION_HEADLINE : v.headline;
+  const announced = isAnnounced(recall);
+  /* Without a location the coverage IS the answer we can give, so it takes
+   * the verdict's line; the CTA under it turns it into a verdict. */
+  const where = coverageLine(recall);
+  const headline = needsLoc ? where : v.headline;
+  const showWhere = !needsLoc && where !== v.headline;
+  const fresh = (freshness || []).find((e) => e.source === freshKey(recall.source));
+  const asOf = fresh && fresh.asOf ? fmtAsOf(fresh.asOf) : "";
   const evidence = OUR_PLACEHOLDERS.test(String(v.evidence || "").trim()) ? "" : v.evidence;
   const term = followTermFor(recall);
-  const date = fmtDay(recall.date);
+  /* The publish date leads: it is the one that matches the headline the
+   * reader saw. The start date is weeks earlier and reads as stale on its own. */
+  const date = recall.posted
+    ? `Posted ${fmtDay(recall.posted)}${recall.date && fmtDay(recall.date) !== fmtDay(recall.posted) ? ` · started ${fmtDay(recall.date)}` : ""}`
+    : fmtDay(recall.date);
 
   const head = (
     <>
@@ -272,8 +310,11 @@ export default function VerdictCard({
       {recall.firm && <p className="mt-0.5 truncate text-xs text-fog">{recall.firm}</p>}
       <p className="mt-2 flex items-start gap-1.5 text-sm font-bold leading-snug text-paper">
         <Icon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-fog" />
-        <span>{headline}</span>
+        <span className="verdict-line">{headline}</span>
       </p>
+      {showWhere && (
+        <p className="coverage-line mt-0.5 pl-[22px] text-[12px] leading-snug text-fog">{where}</p>
+      )}
     </>
   );
 
@@ -301,11 +342,24 @@ export default function VerdictCard({
         <div className="px-3.5 pt-3.5 pb-2">{head}</div>
       )}
 
+      {/* Outside the toggle: a button inside a button is invalid. */}
+      {needsLoc && onRequestLocation && (
+        <div className="-mt-1 px-3.5 pb-1.5 pl-[36px]">
+          <button
+            type="button"
+            onClick={onRequestLocation}
+            className="tap inline-flex items-center gap-1 text-[13px] font-semibold text-mint hover:underline"
+          >
+            <MapPin aria-hidden="true" className="size-3.5" /> Check your state
+          </button>
+        </div>
+      )}
+
       {/* Badges sit outside the toggle: the class badge is its own button
        * (a disclosure), and a button inside a button is invalid and would
        * swallow the tap meant for one of them. */}
       <div className="flex flex-wrap items-center gap-1.5 px-3.5 pb-3">
-        <ClassBadge recall={recall} />
+        {announced ? <AnnouncedBadge /> : <ClassBadge recall={recall} />}
         <Badge variant="low">{reason.label}</Badge>
         {v.verdict === VERDICTS.ENDED && <Badge variant="scope">Ended</Badge>}
         <Badge variant="source">{recall.source}</Badge>
@@ -317,14 +371,11 @@ export default function VerdictCard({
           <div className="flex gap-3">
             <div className="min-w-0 flex-1">
               <p className="text-[13px] leading-relaxed text-paper">{v.detail}</p>
-              {needsLoc && onRequestLocation && (
-                <button
-                  type="button"
-                  onClick={onRequestLocation}
-                  className="tap mt-1.5 text-[13px] font-semibold text-mint underline decoration-dotted underline-offset-4"
-                >
-                  Add your ZIP
-                </button>
+              {v.note && <p className="mt-1.5 text-[12px] leading-snug text-fog">{v.note}</p>}
+              {v.verdict === VERDICTS.NOT_LISTED && (
+                <p className="mt-1.5 text-[12px] leading-snug text-subtle">
+                  Distribution as published by {agency}{asOf ? `; data as of ${asOf}` : ""}.
+                </p>
               )}
             </div>
             <ProductPhoto recall={recall} />

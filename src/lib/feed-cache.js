@@ -97,14 +97,21 @@ export function staleness(uploadedAt) {
  *  @param fetchLive async () => raw upstream payload
  *  @param slim      raw payload -> the small array we cache and normalize
  *  @param snapshot  name under public/feeds (e.g. "fsis"), or null to skip
- *  @returns {Promise<{list: any[], note?: string, cached: boolean}>}
+ *  @returns {Promise<{list: any[], note?: string, cached: boolean, fetchedAt: string|null}>}
+ *  `fetchedAt` is when the list served was fetched from upstream: now for a
+ *  live answer, the cache's upload time, or the snapshot's own stamp.
  */
+function isoOrNull(v) {
+  const t = typeof v === "number" ? v : Date.parse(v);
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+}
+
 export async function feedWithFallback(path, fetchLive, slim, snapshot = null) {
   let err;
   try {
     const list = slim(await fetchLive());
     await writeFeedCache(path, list);
-    return { list, cached: false };
+    return { list, cached: false, fetchedAt: new Date().toISOString() };
   } catch (e) {
     err = e;
   }
@@ -115,6 +122,7 @@ export async function feedWithFallback(path, fetchLive, slim, snapshot = null) {
     return {
       list: hit.list,
       cached: true,
+      fetchedAt: isoOrNull(hit.uploadedAt),
       note: `Live fetch failed (${why}) — showing the copy saved ${staleness(hit.uploadedAt)}.`,
     };
   }
@@ -126,6 +134,7 @@ export async function feedWithFallback(path, fetchLive, slim, snapshot = null) {
     return {
       list: snap.list,
       cached: true,
+      fetchedAt: isoOrNull(snap.fetchedAt),
       note: `Live fetch failed (${why}) and no cache was warm — showing the snapshot committed ${staleness(snap.fetchedAt)}.`,
     };
   }

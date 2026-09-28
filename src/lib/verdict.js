@@ -11,6 +11,8 @@
  *   not_listed  the notice lists states, and yours is not among them
  *   unstated    the notice names no geography at all
  *   ended       the agency has closed the recall
+ *   announced   a company announcement FDA has not classified yet, naming no
+ *               geography (one that names states gets the answers above)
  *
  * There is no "safe". A distribution list is what the recalling firm told the
  * agency it shipped to; product is re-shipped by distributors, carried across
@@ -41,7 +43,21 @@ export const VERDICTS = {
    * were not told where the reader is. Everything except an ended recall
    * gets this when `loc` is null, rather than a guess. */
   NEEDS_LOCATION: "needs_location",
+  /* A company press release the FDA has posted but not yet classified: no
+   * enforcement record, so no distribution list. When the release itself
+   * names states (or says nationwide) the normal geographic answer is given
+   * instead, with `announced: true` and a `note` saying where it came from. */
+  ANNOUNCED: "announced",
 };
+
+/** A company announcement (FDA press-release feed) with no enforcement record
+ *  behind it yet. See scripts/build-index.mjs. */
+export function isAnnounced(r) {
+  return !!r && (r.status === "announced" || r.announcement === true);
+}
+
+const ANNOUNCED_NOTE =
+  "From the company's announcement. The FDA hasn't classified this recall or published its distribution list yet.";
 
 export const NATIONWIDE_RE =
   /nation\s?wide|national distribution|throughout the (?:u\.?s|united states)|all (?:50 )?(?:u\.?s\.? )?states|across the (?:u\.?s|united states)|(?:^|\W)usa?(?:\W|$)|worldwide|international/i;
@@ -73,8 +89,42 @@ export function statesIn(text) {
     re.lastIndex = 0;
   }
   // Case-sensitive: "OR", "IN" and "DE" are states; "or", "in", "de" are not.
-  for (const [abbr, re] of ABBR_RES) if (re.test(t)) found.add(abbr);
+  // Case cannot help in text with no lower case at all ("DISTRIBUTED IN
+  // CALIFORNIA"), so there an ambiguous code only counts in a list of states
+  // ("IL, IN, IA") — see AMBIGUOUS_STATE_ABBRS.
+  const shouting = !/[a-z]/.test(t);
+  for (const [abbr, re] of ABBR_RES) {
+    if (!re.test(t)) continue;
+    if (shouting && AMBIGUOUS_STATE_ABBRS.has(abbr) && !inStateList(t, abbr)) continue;
+    found.add(abbr);
+  }
   return [...found].sort();
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Two-letter codes that are also ordinary words
+ *
+ * openFDA's text search is case-insensitive, so `distribution_pattern:"IN"`
+ * matches the word "in" and returns nearly every notice. The rule for this
+ * list: a code belongs here when its lower-case form is a word that turns up
+ * in ordinary distribution prose — an English word (in, or, me, ok, hi), a
+ * Spanish/Arabic article common in firm and brand names that notices quote
+ * (de, la, al — "Productos de la Sierra", "Al Safa"), or a routine
+ * abbreviation (co = company, id = identifier). Codes whose lower-case forms
+ * are rare in notices (pa, ma, oh, ne, mo, ga, …) are left out: querying them
+ * costs nothing extra. For these, sources.js queries only the full state
+ * name, and statesIn's case-sensitive match is what finds the abbreviation.
+ * ───────────────────────────────────────────────────────────────────────── */
+export const AMBIGUOUS_STATE_ABBRS = new Set(["IN", "OR", "ME", "OK", "HI", "DE", "LA", "AL", "CO", "ID"]);
+
+/** In an all-caps text, is this code in a list with another state code
+ *  ("CA, OR, WA", "IN/OH", "IN AND OH")? Bare whitespace does not count:
+ *  "IN CA" is "in California". */
+function inStateList(t, abbr) {
+  const other = `(?:${STATE_ABBRS.filter((a) => a !== abbr).join("|")})`;
+  const sep = "\\s*(?:[,;/&]|\\bAND\\b)\\s*";
+  const re = new RegExp(`(?:(?:^|[^A-Z])${other}${sep}${abbr}(?![A-Z]))|(?:(?:^|[^A-Z])${abbr}${sep}${other}(?![A-Z]))`);
+  return re.test(t);
 }
 
 /** Normalize whatever location shape a caller holds into both spellings.
@@ -149,6 +199,10 @@ export function isInArea(record, loc) {
   const cov = coverageOf(record);
   if (cov.kind === "nationwide") return true;
   if (cov.kind === "states") return cov.states.includes(L.stateAbbr);
+  /* An announcement with no geography is never "yours": nothing has been
+   * published about where it went, so it must not swell an area count.
+   * Search still shows it, with the ANNOUNCED verdict. */
+  if (isAnnounced(record)) return false;
   return retailersOf(record).length > 0;
 }
 
@@ -177,12 +231,34 @@ const CAVEAT =
 
 /** The one sentence, plus what it rests on.
  *
- *  { verdict, headline, detail, states, evidence }
- *    states   — the states the notice names (empty for nationwide/unstated)
- *    evidence — the distribution text exactly as the agency published it, so
- *               any surface can show the reader what the verdict was read from
+ *  { verdict, headline, detail, states, evidence, announced?, note? }
+ *    states    — the states the notice names (empty for nationwide/unstated)
+ *    evidence  — the distribution text exactly as the agency published it, so
+ *                any surface can show the reader what the verdict was read from
+ *    announced — true for a company announcement not yet classified by FDA;
+ *                `note` then says so, whatever the verdict
  */
 export function verdictFor(record, loc) {
+  const r = record || {};
+  if (isAnnounced(r) && !isEnded(r)) {
+    const cov = coverageOf(r);
+    if (cov.kind === "unstated") {
+      return {
+        states: [],
+        evidence: String(r.distribution || ""),
+        verdict: VERDICTS.ANNOUNCED,
+        headline: "Announced, not yet classified",
+        detail: "The company announced this recall; the FDA hasn't published where it was distributed yet. Check the notice.",
+        announced: true,
+        note: ANNOUNCED_NOTE,
+      };
+    }
+    return { ...geographicVerdict({ ...r, status: "active" }, loc), announced: true, note: ANNOUNCED_NOTE };
+  }
+  return geographicVerdict(r, loc);
+}
+
+function geographicVerdict(record, loc) {
   const r = record || {};
   const cov = coverageOf(r);
   const evidence = String(r.distribution || "");

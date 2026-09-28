@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LoaderCircle, RotateCw, Search, SearchX, TrendingUp, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import VerdictCard from "@/components/VerdictCard";
+import FreshnessLine, { fmtAsOf, oldestAsOf } from "@/components/FreshnessLine";
 import { loadIndex, searchIndex, trending, liveLookup } from "@/lib/search-index";
-import { verdictFor, resolveLoc, VERDICTS } from "@/lib/verdict";
+import { verdictFor, resolveLoc, VERDICTS, isAnnounced } from "@/lib/verdict";
+import { relevanceOf } from "@/lib/relevance";
 import { cn } from "@/lib/utils";
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -36,7 +38,12 @@ import { cn } from "@/lib/utils";
  *
  * 3. Without a location there is no verdict, only coverage. Every card then
  *    offers the one thing that would turn "sent to AZ, NM, TX" into an answer:
- *    a ZIP.
+ *    "Check your state", which opens the location picker.
+ *
+ * Search is always national, in both scopes — "is the thing on the news
+ * mine?" must never be scoped away. The global scope switch changes framing
+ * only: Near me groups by the verdict for your state; All US is one flat list
+ * ("3 recalls across the US"), and each card still carries its verdict line.
  * ───────────────────────────────────────────────────────────────────────── */
 
 const DEBOUNCE_MS = 80;
@@ -75,7 +82,10 @@ function ago(iso) {
   return rtf.format(Math.round(hrs / 24), "day");
 }
 
-const isFda = (r) => String(r && r.source).startsWith("FDA");
+/* An FDA *announcement* (press release, not yet classified) is not an openFDA
+ * enforcement hit: letting it count would stop the live openFDA check for a
+ * query whose enforcement record the index does not have. */
+const isFda = (r) => String(r && r.source).startsWith("FDA") && !isAnnounced(r);
 
 /* ───────────────────────────── grouping ────────────────────────────────── */
 
@@ -83,13 +93,15 @@ export function groupsFor(records, loc) {
   const L = resolveLoc(loc);
   const order = L
     ? [
-        [VERDICTS.IN_AREA, "In your area"],
+        [VERDICTS.IN_AREA, `In ${L.state}`],
         [VERDICTS.UNSTATED, "Region not stated"],
+        [VERDICTS.ANNOUNCED, "Announced, not yet classified"],
         [VERDICTS.NOT_LISTED, `Not reported in ${L.state}`],
         [VERDICTS.ENDED, "Ended"],
       ]
     : [
         [VERDICTS.NEEDS_LOCATION, "Where the notices say they went"],
+        [VERDICTS.ANNOUNCED, "Announced, not yet classified"],
         [VERDICTS.ENDED, "Ended"],
       ];
   const buckets = new Map(order.map(([k]) => [k, []]));
@@ -100,43 +112,6 @@ export function groupsFor(records, loc) {
   return order
     .map(([key, label]) => ({ key, label, records: buckets.get(key) }))
     .filter((g) => g.records.length);
-}
-
-/* ───────────────────────────── the ZIP prompt ──────────────────────────── */
-
-function ZipPrompt({ onSubmit, inputRef }) {
-  const [zip, setZip] = useState("");
-  const ok = /^\d{5}$/.test(zip);
-  return (
-    <form
-      className="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-panel-2 px-3.5 py-3"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (ok) onSubmit(zip);
-      }}
-    >
-      <label htmlFor="rs-zip" className="min-w-[12rem] flex-1 text-[13px] leading-snug text-fog">
-        <span className="font-semibold text-paper">Add your ZIP to see if it reached you.</span>{" "}
-        Only your state is used to answer.
-      </label>
-      <div className="flex items-center gap-2">
-        <input
-          ref={inputRef}
-          id="rs-zip"
-          inputMode="numeric"
-          autoComplete="postal-code"
-          maxLength={5}
-          placeholder="ZIP"
-          value={zip}
-          onChange={(e) => setZip(e.target.value.replace(/\D/g, "").slice(0, 5))}
-          className="tnum h-10 w-24 rounded-lg border border-line-strong bg-panel px-3 text-sm text-paper shadow-[var(--rr-field)] placeholder:text-subtle focus-visible:border-mint/60 focus-visible:outline-none"
-        />
-        <Button type="submit" size="sm" variant="secondary" disabled={!ok} className="h-10">
-          Check
-        </Button>
-      </div>
-    </form>
-  );
 }
 
 /* ───────────────────────────── nothing found ───────────────────────────── */
@@ -158,7 +133,7 @@ function freshness(src) {
   return `${src.count} notices · updated ${ago(src.fetchedAt)}`;
 }
 
-function NothingFound({ query, index, live, fdaChecked }) {
+function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
   const s = (index && index.sources) || {};
   const span = lookbackPhrase(index && index.lookbackDays);
   const fdaInIndex = !!(s.fda && s.fda.ok);
@@ -196,6 +171,27 @@ function NothingFound({ query, index, live, fdaChecked }) {
         <SourceRow name="CPSC" covers="consumer products">{freshness(s.cpsc)}</SourceRow>
       </ul>
 
+      {fresh && fresh.length > 0 && (() => {
+        const fda = fresh.find((e) => e.source === "FDA");
+        const oldest = oldestAsOf(fresh);
+        const asked = live.status === "done" ? "no matching recall" : live.status === "pending" ? "still checking" : "couldn't be reached";
+        return (
+          <div className="mt-4 space-y-1">
+            <FreshnessLine entries={fresh} variant="block" />
+            {oldest && (
+              <p className="text-[12px] leading-snug text-subtle">
+                A recall announced after {fmtAsOf(oldest)} may not be here yet.
+              </p>
+            )}
+            {fda && !fda.asOf && (
+              <p className="text-[12px] leading-snug text-subtle">
+                FDA couldn't be checked from our copy. We asked FDA directly: {asked}.
+              </p>
+            )}
+          </div>
+        );
+      })()}
+
       <p className="microlabel mt-4">Not covered here</p>
       <p className="mt-1 text-[13px] leading-relaxed text-fog">{NOT_COVERED}.</p>
 
@@ -217,14 +213,18 @@ function NothingFound({ query, index, live, fdaChecked }) {
  * @param {Function} [props.onOpenRecall]    (record) => void, when a card is opened
  * @param {string}   [props.initialRecallId] open this recall's card on load (/r/:id deep links)
  * @param {boolean}  [props.autoFocus]       focus the search box on mount
- * @param {Function} [props.onRequestLocation] (zip: string) => void; with loc null,
- *                                           a ZIP form is shown and calls this
+ * @param {Function} [props.onRequestLocation] () => void; with loc null, each
+ *                                           card's "Check your state" calls this
+ * @param {string}   [props.scope]           "near" | "us" — framing only (see top)
+ * @param {object[]} [props.freshness]       freshnessOf() entries, for empty
+ *                                           results and "not reported" cards
  * @param {Function} [props.onSearch]      ({ query, results, live }) => void, once per
  *                                           query that has settled (see SETTLED_MS)
  * @param {string}   [props.className]
  */
 export default function RecallSearch({
   loc, onOpenRecall, initialRecallId, autoFocus = false, onRequestLocation, onSearch, className,
+  scope = "near", freshness,
 }) {
   const [index, setIndex] = useState(null);
   const [loadError, setLoadError] = useState("");
@@ -235,8 +235,8 @@ export default function RecallSearch({
   const [live, setLive] = useState({ q: "", status: "idle", records: [] });
   const liveCache = useRef(new Map());
   const inputRef = useRef(null);
-  const zipRef = useRef(null);
   const L = resolveLoc(loc);
+  const flat = scope === "us" || !L;
 
   // ── the index ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -268,7 +268,10 @@ export default function RecallSearch({
   );
 
   const fdaInIndex = !!(index && index.sources && index.sources.fda && index.sources.fda.ok);
-  const wantLive = !!index && q.length >= LIVE_MIN_CHARS && (!fdaInIndex || !hits.some(isFda));
+  /* Only a real FDA answer stops the live check: a cookie whose ingredient
+   * list mentions sugar is not the sugar recall, and must not stand in for it. */
+  const wantLive = !!index && q.length >= LIVE_MIN_CHARS &&
+    (!fdaInIndex || !hits.some((r) => isFda(r) && relevanceOf(r, q) >= 2));
 
   /* openFDA, directly — see rule 2 at the top. One request per settled query,
    * cached for the life of the component so backspacing to an earlier query
@@ -294,14 +297,35 @@ export default function RecallSearch({
     return () => { current = false; clearTimeout(t); };
   }, [q, wantLive]);
 
-  const results = useMemo(() => {
-    if (!q) return [];
+  /* The same tiers as /api/lookup (src/lib/relevance.js): when something is
+   * ABOUT the query — "sugar" in the product's name or the firm's — a notice
+   * that only lists it among ingredients is held back, behind a count and a
+   * "show them" rather than silently, so nothing is hidden for good. */
+  const [showWeak, setShowWeak] = useState(false);
+  useEffect(() => { setShowWeak(false); }, [q]);
+  const { results, weak } = useMemo(() => {
+    if (!q) return { results: [], weak: [] };
     const seen = new Set(hits.map((r) => r.id));
     const extra = live.q === q ? live.records.filter((r) => r && !seen.has(r.id)) : [];
-    return [...hits, ...extra];
+    const all = [...hits, ...extra];
+    if (/^\d[\d\s-]*$/.test(q)) return { results: all, weak: [] }; // a barcode has no "about"
+    const rel = new Map(all.map((r) => [r.id, relevanceOf(r, q)]));
+    if (![...rel.values()].some((v) => v >= 2)) return { results: all, weak: [] };
+    return { results: all.filter((r) => rel.get(r.id) >= 2), weak: all.filter((r) => rel.get(r.id) < 2) };
   }, [hits, live, q]);
+  const shown = useMemo(() => (showWeak ? [...results, ...weak] : results), [results, weak, showWeak]);
 
-  const groups = useMemo(() => groupsFor(results, L), [results, L && L.stateAbbr]); // eslint-disable-line react-hooks/exhaustive-deps
+  /* All US: one list, in search order (the index's relevance, then what FDA
+   * answered live). The verdict still rides on each card; it just isn't the
+   * heading, because this view is about the country, not about you. Ended
+   * recalls still sink to the bottom: they are the least likely answer. */
+  const groups = useMemo(() => {
+    if (!flat) return groupsFor(shown, L);
+    const ended = (r) => (r.status ? r.status === "ended" : r.active === false);
+    const list = [...shown.filter((r) => !ended(r)), ...shown.filter(ended)];
+    const n = list.length;
+    return n ? [{ key: "us", label: `${n} ${n === 1 ? "recall" : "recalls"} across the US`, records: list, flat: true }] : [];
+  }, [shown, flat, L && L.stateAbbr]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* Reported once per settled query, through a ref so a parent passing a
    * fresh callback each render cannot re-fire it. The count is read when the
@@ -309,7 +333,7 @@ export default function RecallSearch({
   const onSearchRef = useRef(onSearch);
   onSearchRef.current = onSearch;
   const resultsRef = useRef(0);
-  resultsRef.current = results.length;
+  resultsRef.current = shown.length;
   const liveRef = useRef(live);
   liveRef.current = live;
   useEffect(() => {
@@ -336,15 +360,7 @@ export default function RecallSearch({
     if (opening && onOpenRecall) onOpenRecall(r);
   }, [openId, onOpenRecall]);
 
-  const focusZip = useCallback(() => {
-    const el = zipRef.current;
-    if (!el) return;
-    el.scrollIntoView({ block: "center", behavior: "smooth" });
-    el.focus({ preventScroll: true });
-  }, []);
-
-  const showZip = !L && typeof onRequestLocation === "function";
-  const cardZip = showZip ? focusZip : undefined;
+  const cardZip = !L && typeof onRequestLocation === "function" ? () => onRequestLocation() : undefined;
   const livePending = live.q === q && live.status === "pending";
   const liveFailed = live.q === q && live.status === "error";
   const fdaChecked = fdaInIndex || (live.q === q && live.status === "done");
@@ -392,8 +408,6 @@ export default function RecallSearch({
         </div>
       </div>
 
-      {showZip && <ZipPrompt onSubmit={onRequestLocation} inputRef={zipRef} />}
-
       {/* ── loading / failure ── */}
       {!index && !loadError && (
         <p className="flex items-center gap-2 text-[13px] text-fog" role="status">
@@ -423,6 +437,7 @@ export default function RecallSearch({
             expanded={openId === pinned.id}
             onToggle={() => toggle(pinned)}
             onRequestLocation={cardZip}
+            freshness={freshness}
             className="fade-item"
           />
         ) : (
@@ -475,11 +490,22 @@ export default function RecallSearch({
             </p>
           )}
 
+          {live.q === q && live.status === "done" && Number(live.records.total) > live.records.length && (
+            <p className="text-xs text-fog tnum">
+              FDA has {live.records.total} matching notices; these are the {live.records.length} closest to “{q}”.
+              A more specific word narrows it.
+            </p>
+          )}
+
           {groups.map((g) => (
             <div key={g.key}>
-              <h3 className="microlabel mb-2">
-                {g.label} <span className="tnum font-normal">· {g.records.length}</span>
-              </h3>
+              {g.flat ? (
+                <h3 className="mb-2 text-[13px] font-semibold text-paper tnum">{g.label}</h3>
+              ) : (
+                <h3 className="microlabel mb-2">
+                  {g.label} <span className="tnum font-normal">· {g.records.length}</span>
+                </h3>
+              )}
               <ul className="flex flex-col gap-2.5">
                 {g.records.map((r) => (
                   <li key={r.id}>
@@ -489,6 +515,7 @@ export default function RecallSearch({
                       expanded={openId === r.id}
                       onToggle={() => toggle(r)}
                       onRequestLocation={cardZip}
+                      freshness={freshness}
                       className="fade-item"
                       style={{ animationDelay: `calc(var(--rr-card-stagger, 50ms) * ${Math.min(n++, 8)})` }}
                     />
@@ -498,8 +525,21 @@ export default function RecallSearch({
             </div>
           ))}
 
+          {weak.length > 0 && (
+            <p className="text-[12px] leading-snug text-fog">
+              {showWeak
+                ? <>Including {weak.length} {weak.length === 1 ? "notice" : "notices"} that {weak.length === 1 ? "mentions" : "mention"} “{q}” only in passing. </>
+                : <>{weak.length} more {weak.length === 1 ? "notice mentions" : "notices mention"} “{q}” only in passing, such as in an ingredient list. </>}
+              <button type="button" onClick={() => setShowWeak((v) => !v)}
+                      className="font-semibold text-mint hover:underline">
+                {showWeak ? "Hide them" : "Show them"}
+              </button>
+            </p>
+          )}
+
           {!results.length && !livePending && (
-            <NothingFound query={q} index={index} live={live.q === q ? live : { status: "idle" }} fdaChecked={fdaChecked} />
+            <NothingFound query={q} index={index} live={live.q === q ? live : { status: "idle" }} fdaChecked={fdaChecked}
+                          freshness={freshness} />
           )}
           {!results.length && livePending && (
             <p className="text-[13px] text-fog">

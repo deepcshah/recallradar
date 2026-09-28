@@ -27,7 +27,7 @@
  */
 import { chainsInText } from "./retailers.js";
 import { ABBR_TO_NAME, abbrForName } from "./states.js";
-import { NATIONWIDE_RE, statesIn, isInArea } from "./verdict.js";
+import { NATIONWIDE_RE, statesIn, isInArea, AMBIGUOUS_STATE_ABBRS } from "./verdict.js";
 import { FSIS_ENDPOINTS, cpscUrl } from "./feeds.js";
 
 const DAY_MS = 86400000;
@@ -37,7 +37,21 @@ const CACHE_TTL_MS = 30 * 60 * 1000;
 
 // Defined in ./verdict.js (so coverage and scope read text with one regex);
 // re-exported here because callers already import it from this module.
-export { NATIONWIDE_RE, statesIn };
+export { NATIONWIDE_RE, statesIn, AMBIGUOUS_STATE_ABBRS };
+
+/** openFDA's `meta.last_updated` ("2026-09-23") as an ISO day, or null. It is
+ *  the date openFDA last refreshed that endpoint — weekly — which is what
+ *  "how fresh is the FDA data" actually means; our fetch time is not. */
+export function fdaLastUpdated(data) {
+  const v = data && data.meta && data.meta.last_updated;
+  return typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null;
+}
+
+/** openFDA's `meta.results.total`, or null. */
+export function fdaTotal(data) {
+  const v = data && data.meta && data.meta.results && data.meta.results.total;
+  return Number.isFinite(v) ? v : null;
+}
 
 export function fmtFdaDate(d) {
   return d.toISOString().slice(0, 10).replace(/-/g, "");
@@ -173,6 +187,10 @@ export function normalizeFda(kind, results, loc) {
         classification: r.classification || "",
         severity: severityFromFdaClass(r.classification || ""),
         date: parseFdaDate(r.recall_initiation_date) || parseFdaDate(r.report_date),
+        /* When FDA published it (the enforcement report): usually weeks after
+         * the firm started the recall, and the day it reaches the news. What
+         * counts as "new" (digest.js newsDay) reads this; the card shows `date`. */
+        ...(isoDay(parseFdaDate(r.report_date)) ? { posted: isoDay(parseFdaDate(r.report_date)) } : null),
         scope,
         distribution: r.distribution_pattern || "",
         // Named states for `state` AND `elsewhere` — the verdict's "sent to
@@ -447,15 +465,38 @@ export function slimCpsc(raw) {
   }));
 }
 
+/** The geography half of the state-scoped openFDA query.
+ *
+ *  openFDA's text search is case-insensitive, so for a code that is also a
+ *  word (IN, OR, ME, … — AMBIGUOUS_STATE_ABBRS in ./verdict.js) the clause
+ *  `distribution_pattern:"IN"` matches the word "in" and returns almost every
+ *  notice, the newest few hundred crowd out the rest, and an Indiana reader
+ *  loses older in-state recalls to truncation. For those codes only the full
+ *  name is queried; the abbreviation is found by the unscoped pass (see
+ *  api/recalls.js) and the case-sensitive statesIn/scopeFor post-filter. The
+ *  full name is always queried, even when the caller passed only a code. */
+export function fdaDistributionClause(loc) {
+  const abbr = locAbbr(loc);
+  const name = (abbr && ABBR_TO_NAME[abbr]) || (loc && loc.state) || null;
+  const parts = [`distribution_pattern:"nationwide"`];
+  if (abbr && !AMBIGUOUS_STATE_ABBRS.has(abbr)) parts.push(`distribution_pattern:"${abbr}"`);
+  if (name) parts.push(`distribution_pattern:"${name}"`);
+  return `(${parts.join("+OR+")})`;
+}
+
+/** True when this location's abbreviation is not queried (see above), so the
+ *  unscoped pass is what finds notices that list only the code. */
+export function needsUnscopedDepth(loc) {
+  const abbr = locAbbr(loc);
+  return !!abbr && AMBIGUOUS_STATE_ABBRS.has(abbr);
+}
+
 export function fdaSearchQuery(loc) {
   const now = new Date();
   const start = new Date(now.getTime() - LOOKBACK_DAYS * DAY_MS);
-  const parts = [`distribution_pattern:"nationwide"`];
-  if (loc.stateAbbr) parts.push(`distribution_pattern:"${loc.stateAbbr}"`);
-  if (loc.state) parts.push(`distribution_pattern:"${loc.state}"`);
   return (
     `status:"Ongoing"+AND+report_date:[${fmtFdaDate(start)}+TO+${fmtFdaDate(now)}]` +
-    `+AND+(${parts.join("+OR+")})`
+    `+AND+${fdaDistributionClause(loc || {})}`
   );
 }
 
@@ -473,7 +514,13 @@ async function fetchOpenFdaDirect(kind, loc) {
     `https://api.fda.gov/${kind}/enforcement.json?search=${fdaSearchQuery(loc).replace(/ /g, "+")}` +
     `&sort=report_date:desc&limit=100`;
   const data = await cachedFetchJSON(url);
-  return normalizeFda(kind, (data && data.results) || [], loc);
+  const results = (data && data.results) || [];
+  const total = fdaTotal(data);
+  return {
+    recalls: normalizeFda(kind, results, loc),
+    lastUpdated: fdaLastUpdated(data),
+    truncated: total != null && total > results.length,
+  };
 }
 
 /** FSIS straight from the browser: a different IP on a different network from
@@ -622,13 +669,23 @@ async function clientFetchAll(loc) {
 
   // Filtered before counting, so a source's count means what it always
   // meant: notices covering your area. See isInArea in ./verdict.js.
+  const fetchedAt = new Date().toISOString();
   const settled = await Promise.allSettled(
-    jobs.map((j) => j.fn().then((list) => list.filter((r) => isInArea(r, loc)))));
+    jobs.map((j) => j.fn().then((got) => {
+      const meta = Array.isArray(got) ? {} : got;
+      const list = (Array.isArray(got) ? got : got.recalls).filter((r) => isInArea(r, loc));
+      return { list, meta };
+    })));
   const recalls = [];
   const sources = settled.map((s, i) => {
     if (s.status === "fulfilled") {
-      recalls.push(...s.value);
-      return { name: jobs[i].name, ok: true, count: s.value.length };
+      const { list, meta } = s.value;
+      recalls.push(...list);
+      return {
+        name: jobs[i].name, ok: true, count: list.length, fetchedAt,
+        ...(meta.lastUpdated ? { lastUpdated: meta.lastUpdated } : null),
+        ...(meta.truncated ? { truncated: true } : null),
+      };
     }
     return { name: jobs[i].name, ok: false, error: s.reason && s.reason.message ? s.reason.message : "failed" };
   });
@@ -638,7 +695,12 @@ async function clientFetchAll(loc) {
 
 /**
  * Fetch every source for a location. Returns:
- * { recalls: [...normalized, sorted], sources: [{name, ok, count, error}] }
+ * { recalls: [...normalized, sorted],
+ *   sources: [{name, ok, count, error?, note?, fetchedAt?, lastUpdated?,
+ *              newest?, truncated?, oldest?}] }
+ * FDA sources carry openFDA's `lastUpdated`; `truncated: true` means only the
+ * newest notices were fetched (back to `oldest`). See freshnessOf in
+ * ./search-index.js for turning these into "as of" lines.
  */
 export async function fetchAll(loc) {
   try {
@@ -653,5 +715,25 @@ export async function fetchAll(loc) {
     };
   } catch (_) {
     return clientFetchAll(loc); // bare static deployment, or the API is down
+  }
+}
+
+/**
+ * The All US list: every active notice, wherever it went (`/api/recalls?scope=us`).
+ * Same shape as fetchAll. Resolves to null on any failure — never throws — so
+ * the caller falls back to the national index and says which list it is
+ * reading. There is no browser fallback: querying all three openFDA kinds
+ * unscoped from a phone is exactly the request the server exists to cache.
+ */
+export async function fetchNational() {
+  try {
+    const data = await cachedFetchJSON("/api/recalls?scope=us", { timeoutMs: 30000 });
+    if (!data || !Array.isArray(data.recalls)) return null;
+    return {
+      recalls: data.recalls.map((r) => ({ ...r, date: r.date ? new Date(r.date) : null })),
+      sources: data.sources || [],
+    };
+  } catch (_) {
+    return null;
   }
 }

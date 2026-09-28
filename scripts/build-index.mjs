@@ -14,6 +14,8 @@
  *     written beside this file. Not refetched: that script already walked the
  *     identity ladder, retried, and health-checked them, and doing it twice
  *     would only give the two files a chance to disagree.
+ *   FDA recalls press-release RSS — fetched here, best-effort (see "EARLY FDA
+ *     ANNOUNCEMENTS" below). A failure is recorded, never fatal.
  *   openFDA food / drug / device enforcement — fetched here, nationwide, for
  *     the last LOOKBACK_DAYS by report_date, EVERY status. The per-state path
  *     asks for `status:"Ongoing"` because it answers "what is live near me";
@@ -48,7 +50,7 @@ import { writeFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { fsisStatus, fsisGeography, fmtFdaDate, LOOKBACK_DAYS } from "../src/lib/sources.js";
+import { fsisStatus, fsisGeography, fmtFdaDate, LOOKBACK_DAYS, statesIn, fdaLastUpdated } from "../src/lib/sources.js";
 import { categoryFor } from "../src/lib/category.js";
 import { reasonFor } from "../src/lib/reason.js";
 import { upcsIn } from "../src/lib/upc.js";
@@ -154,6 +156,11 @@ export function fdaToIndex(kind, r, caps = CAP_TIERS[0]) {
   };
   const end = isoDay(r.termination_date);
   if (status === "ended" && end) rec.endDate = end;
+  /* The enforcement report's date: when FDA published the notice, usually
+   * weeks after initiation — the day it is news (digest.js newsDay). Only
+   * stored when it differs, to keep the index small. */
+  const posted = isoDay(r.report_date);
+  if (posted && posted !== rec.date) rec.posted = posted;
   /* Coverage is read from the FULL distribution text, not the capped copy:
    * a state named at character 500 is still a state the product went to. */
   const full = finish({ ...rec, distribution: r.distribution_pattern || "" },
@@ -272,15 +279,18 @@ function fdaUrl(kind, from, to, skip) {
     (key ? `&api_key=${encodeURIComponent(key)}` : "");
 }
 
-async function fetchFdaWindow(kind, from, to) {
+/* `meta` collects openFDA's meta.last_updated (newest seen) for the caller. */
+async function fetchFdaWindow(kind, from, to, meta = {}) {
   const first = await withRetries(`fda ${kind}`, () => fetchJson(fdaUrl(kind, from, to, 0)));
+  const updated = fdaLastUpdated(first);
+  if (updated && !(meta.lastUpdated >= updated)) meta.lastUpdated = updated;
   const total = (first.meta && first.meta.results && first.meta.results.total) || 0;
   if (total > SKIP_CAP + PAGE) {
     const mid = new Date(from.getTime() + Math.floor((to.getTime() - from.getTime()) / 2 / DAY_MS) * DAY_MS);
     if (mid <= from) throw new Error(`more than ${SKIP_CAP + PAGE} ${kind} records in one day`);
     console.log(`  fda ${kind}: ${total} records in window, splitting at ${fmtFdaDate(mid)}`);
     const next = new Date(mid.getTime() + DAY_MS);
-    return [...await fetchFdaWindow(kind, from, mid), ...await fetchFdaWindow(kind, next, to)];
+    return [...await fetchFdaWindow(kind, from, mid, meta), ...await fetchFdaWindow(kind, next, to, meta)];
   }
   const out = [...(first.results || [])];
   for (let skip = PAGE; skip < total && skip <= SKIP_CAP; skip += PAGE) {
@@ -290,6 +300,248 @@ async function fetchFdaWindow(kind, from, to) {
   }
   if (out.length < total) throw new Error(`paged ${out.length} of ${total} ${kind} records`);
   return out;
+}
+
+// ------------------------------------------------------------ FDA announcements
+/* ── EARLY FDA ANNOUNCEMENTS ──────────────────────────────────────────────
+ * A company's recall press release is posted to FDA's recalls RSS feed the
+ * day it is issued; the openFDA enforcement record — classification,
+ * distribution list — follows weeks later. For the weeks in between the
+ * recall is in the news and absent from openFDA, which is exactly when
+ * people search for it. So the feed's last ANNOUNCE_DAYS of items go into the
+ * index as their own records:
+ *
+ *   source 'FDA announcement', status 'announced' (not 'active': nothing has
+ *   been classified), announcement: true, classification "Not yet
+ *   classified", url = the press release.
+ *
+ * Geography is read only from sentences about distribution ("distributed
+ * in…", "sold at… in…"), and only from the words after that verb, because a
+ * release's first sentence names the firm's home town — "Acme, of Brooklyn,
+ * New York, is recalling…" — which is not where the product went. Nothing
+ * found is coverage 'unstated', and verdict.js answers that with ANNOUNCED
+ * and keeps it out of area counts.
+ *
+ * Once openFDA has the recall, the announcement is redundant: it is dropped
+ * when an FDA enforcement record from the same firm (normalized name tokens)
+ * is dated within ANNOUNCE_DEDUPE_DAYS of it.
+ *
+ * Best-effort throughout: a failed or malformed feed is recorded in
+ * sources.fdaAnnouncements and never fails the run; the previous index's
+ * announcements (still inside the window) are carried over instead.
+ * ───────────────────────────────────────────────────────────────────────── */
+export const FDA_RSS_URL = "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/recalls/rss.xml";
+export const ANNOUNCE_SOURCE = "FDA announcement";
+const ANNOUNCE_DAYS = 60;
+const ANNOUNCE_DEDUPE_DAYS = 45;
+
+const NAMED_ENTITIES = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", rsquo: "\u2019", lsquo: "\u2018",
+  rdquo: "\u201d", ldquo: "\u201c", ndash: "\u2013", mdash: "\u2014", hellip: "\u2026",
+  reg: "\u00ae", trade: "\u2122", copy: "\u00a9", eacute: "\u00e9", ntilde: "\u00f1",
+};
+
+export function decodeEntities(s) {
+  return String(s || "").replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e) => {
+    if (e[0] === "#") {
+      const n = e[1] === "x" || e[1] === "X" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+      return Number.isFinite(n) && n > 0 && n < 0x110000 ? String.fromCodePoint(n) : m;
+    }
+    const v = NAMED_ENTITIES[e.toLowerCase()];
+    return v == null ? m : v;
+  });
+}
+
+/* One element's text: CDATA sections verbatim, everything else entity-
+ * decoded (the XML layer); then any HTML inside is stripped and its own
+ * entities decoded (the HTML layer). */
+function xmlText(raw) {
+  let out = "";
+  const re = /<!\[CDATA\[([\s\S]*?)\]\]>/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(raw))) {
+    out += decodeEntities(raw.slice(last, m.index)) + m[1];
+    last = re.lastIndex;
+  }
+  out += decodeEntities(raw.slice(last));
+  return decodeEntities(out
+    .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, " ") // their text is code, not prose
+    .replace(/<\/?(?:br|p|div|li|ul|ol|h\d|tr|td|table)\b[^>]*>/gi, " ").replace(/<[^>]+>/g, ""))
+    .replace(/\s+/g, " ").trim();
+}
+
+function tag(block, name) {
+  const re = new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, "i");
+  const m = block.match(re);
+  return m ? xmlText(m[1]) : "";
+}
+
+/* The press release link becomes an href in the app and a meta refresh in
+ * share pages: only http(s), and re-serialized by the URL parser so stray
+ * quotes, spaces and angle brackets come out percent-encoded. */
+function safeHttpUrl(v) {
+  try {
+    const u = new URL(String(v || "").trim());
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+/** Parse RSS 2.0 items — a deliberately small, dependency-free reader for
+ *  one known feed: <item> blocks with title, link, pubDate (or dc:date) and
+ *  description; CDATA and entities handled. Items without a title or link
+ *  are skipped. `pubDate` comes back as an ISO day, or null. */
+export function parseRss(xml) {
+  const items = [];
+  const re = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
+  let m;
+  while ((m = re.exec(String(xml || "")))) {
+    const block = m[1];
+    const title = tag(block, "title");
+    const link = safeHttpUrl(tag(block, "link") || tag(block, "guid"));
+    if (!title || !link) continue;
+    const when = tag(block, "pubDate") || tag(block, "dc:date");
+    items.push({ title, link, pubDate: announceDay(when), description: tag(block, "description") });
+  }
+  return items;
+}
+
+function announceDay(v) {
+  if (!v) return null;
+  let t = Date.parse(v);
+  // Some zone names are not understood everywhere; the day is what matters.
+  if (!Number.isFinite(t)) t = Date.parse(String(v).replace(/\s+[A-Z]{2,5}$/, " GMT"));
+  return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : null;
+}
+
+const FIRM_STOP = new Set(("inc incorporated llc l l c ltd limited co corp corporation company companies " +
+  "the and of dba foods food products product brands brand group holdings usa us america american " +
+  "international enterprises cooperative coop co-op association").split(" "));
+
+/** Distinctive lower-case tokens of a firm name, for matching an
+ *  announcement to its enforcement record. */
+export function firmTokens(name) {
+  return [...new Set(String(name || "").toLowerCase().replace(/&/g, " ").split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 1 && !FIRM_STOP.has(w)))];
+}
+
+/** Same firm: at least 75% of the shorter name's tokens appear in the longer
+ *  one ("United Sugar Producers & Refiners" ~ "... Refiners Cooperative"),
+ *  so one shared generic-ish word ("United") is not enough — and neither is
+ *  a shared place name: "Hudson Valley Greens" is not "Hudson Valley
+ *  Creamery" (2 of 3). A false match here HIDES a recall (the announcement
+ *  is dropped as a duplicate), so the rule errs towards keeping both. */
+export function sameFirm(a, b) {
+  const A = firmTokens(a);
+  const B = firmTokens(b);
+  if (!A.length || !B.length) return false;
+  const [short, long] = A.length <= B.length ? [A, new Set(B)] : [B, new Set(A)];
+  const shared = short.filter((w) => long.has(w)).length;
+  return shared > 0 && shared / short.length >= 0.75;
+}
+
+const VERB_RE = /\s+(?:issues?|announces?|initiates?|expands?|extends?|is\s+(?:voluntarily\s+)?recalling|voluntarily\s+recalls?|recalls?)\b/i;
+
+function firmFromAnnouncement(title, description) {
+  const clean = (f) => f.replace(/,\s*(?:of|in|based in|located in|headquartered in)\s.*$/i, "").replace(/[,.\s]+$/, "").trim();
+  const t = title.match(new RegExp(`^(.{2,90}?)${VERB_RE.source}`, "i"));
+  if (t) return clean(t[1]);
+  const d = description.match(/^(.{2,120}?)\s+(?:is\s+(?:voluntarily\s+)?recalling|(?:has\s+)?(?:voluntarily\s+)?(?:announced|issued|initiated|recalled|recalls))\b/i);
+  return d ? clean(d[1]) : "";
+}
+
+const DIST_RE = /\b(?:distributed|distribution|sold|shipped|available for (?:purchase|sale))\b/i;
+const ANNOUNCE_NATIONWIDE_RE = /\bnation\s?wide\b|\b(?:throughout|across) the (?:u\.?s\.?|united states)\b|\ball 50 states\b/i;
+
+/** Where a release says the product went: coverage from distribution
+ *  sentences only (see the section note). */
+export function announcementGeography(description) {
+  const sentences = String(description || "").split(/(?<=[.!?])\s+/);
+  const hits = sentences.filter((x) => DIST_RE.test(x));
+  const tails = hits.map((x) => x.slice(x.search(DIST_RE))).join(" ");
+  if (ANNOUNCE_NATIONWIDE_RE.test(tails)) return { coverage: "nationwide", states: [], text: hits.join(" ") };
+  const states = statesIn(tails);
+  return states.length ? { coverage: "states", states, text: hits.join(" ") } : { coverage: "unstated", states: [], text: "" };
+}
+
+/* categoryFor keys off the source, so guess which FDA centre a release
+ * belongs to from its own words; food is the default, as it is most of them. */
+function guessFdaSource(text) {
+  if (/\b(?:tablets?|capsules?|injection|injectable|drug|medication|pharmac\w*|ophthalmic|eye drops?|oral solution|\d+\s?mg)\b/i.test(text)) return "FDA Drug";
+  if (/\b(?:device|catheter|infusion pump|syringes?|implant\w*|test kits?|monitor|ventilator|glucose meter)\b/i.test(text)) return "FDA Device";
+  return "FDA Food";
+}
+
+function shortHash(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
+/** One parsed RSS item -> index record. */
+export function announcementToIndex(item, caps = CAP_TIERS[0]) {
+  const title = item.title;
+  const description = item.description || "";
+  const geo = announcementGeography(description);
+  const reasonInTitle = (title.match(/\b(?:because of|due to|for)\s+(?:possible\s+|potential\s+)?(.{4,})$/i) || [])[1] || "";
+  const rec = {
+    id: `fda-ann-${shortHash(item.link)}`,
+    source: ANNOUNCE_SOURCE,
+    product: cap(title, caps.text),
+    firm: cap(firmFromAnnouncement(title, description), caps.firm),
+    // "Because of Possible Health Risk" says nothing; the release body does.
+    reason: cap(reasonInTitle && !/^health (?:risk|hazard)/i.test(reasonInTitle) ? reasonInTitle : description, caps.text),
+    classification: "Not yet classified",
+    severity: "med",
+    date: item.pubDate,
+    status: "announced",
+    announcement: true,
+    distribution: cap(geo.text, caps.dist),
+    states: geo.states,
+    coverage: geo.coverage,
+    url: item.link,
+  };
+  const guessed = { ...rec, source: guessFdaSource(`${title} ${description}`) };
+  rec.category = categoryFor(guessed).key;
+  rec.reasonKey = reasonFor({ reason: `${title} ${description}`, classification: "" }).key;
+  const upcs = upcsIn(description);
+  if (upcs.length) rec.upcs = upcs;
+  return rec;
+}
+
+/** Drop announcements openFDA already covers: same firm, enforcement record
+ *  dated within ANNOUNCE_DEDUPE_DAYS. Returns { kept, dropped }. */
+export function dropAnnouncedDuplicates(announcements, fdaRecords) {
+  const kept = [];
+  const dropped = [];
+  for (const a of announcements) {
+    const t = Date.parse(a.date);
+    const dup = a.firm && Number.isFinite(t) && fdaRecords.some((r) => {
+      const d = Date.parse(r.date);
+      return Number.isFinite(d) && Math.abs(d - t) <= ANNOUNCE_DEDUPE_DAYS * DAY_MS && sameFirm(a.firm, r.firm);
+    });
+    (dup ? dropped : kept).push(a);
+  }
+  return { kept, dropped };
+}
+
+async function fetchText(url) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 30000);
+  try {
+    const res = await fetch(url, {
+      headers: { Accept: "application/rss+xml, application/xml, text/xml", "User-Agent": "Mozilla/5.0 (compatible; YankedRecallIndex/1.0)" },
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.text();
+  } catch (err) {
+    throw err && err.name === "AbortError" ? new Error("timed out after 30000ms") : err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ------------------------------------------------------------ build
@@ -320,18 +572,23 @@ function dedupe(records) {
  * @param {object}   [opts.fdaRaw]    { food: [...], drug: [...], device: [...] }
  *                                    raw openFDA results to use instead of
  *                                    fetching (fixtures)
+ *                                    Each kind may also be a whole openFDA
+ *                                    response ({ meta, results }), so
+ *                                    meta.last_updated is exercised too.
+ * @param {string}   [opts.fdaRss]    FDA recalls RSS XML to use instead of
+ *                                    fetching (fixtures)
+ * @param {Date}     [opts.now]       build time (fixtures)
  * @param {boolean}  [opts.write=true]
  * @param {string}   [opts.out]       output path (default public/feeds/index.json)
  */
-export async function buildIndex({ offline = false, fdaRaw = null, write = true, out = OUT } = {}) {
-  const now = new Date();
+export async function buildIndex({ offline = false, fdaRaw = null, fdaRss = null, now = new Date(), write = true, out = OUT } = {}) {
   const from = new Date(now.getTime() - LOOKBACK_DAYS * DAY_MS);
   const cutoff = from.toISOString().slice(0, 10);
   const problems = [];
 
   const prev = await readJson(out);
   const prevRecalls = (prev && Array.isArray(prev.recalls)) ? prev.recalls : [];
-  const prevFda = prevRecalls.filter((r) => String(r.source).startsWith("FDA") && String(r.date) >= cutoff);
+  const prevFda = prevRecalls.filter((r) => String(r.source).startsWith("FDA") && r.source !== ANNOUNCE_SOURCE && String(r.date) >= cutoff);
 
   // ── snapshots
   const fsisSnap = await readJson(resolve(FEED_DIR, "fsis.json"));
@@ -344,9 +601,12 @@ export async function buildIndex({ offline = false, fdaRaw = null, write = true,
   // ── openFDA: raw results per kind, or null when that kind must be carried over
   const raw = {};
   const kinds = {};
+  const updated = {}; // kind -> openFDA meta.last_updated
   for (const kind of FDA_KINDS) {
     if (fdaRaw) {
-      raw[kind] = fdaRaw[kind] || [];
+      const given = fdaRaw[kind] || [];
+      raw[kind] = Array.isArray(given) ? given : (given.results || []);
+      if (!Array.isArray(given)) updated[kind] = fdaLastUpdated(given);
     } else if (offline) {
       raw[kind] = null;
       kinds[kind] = { ok: false, error: "offline build" };
@@ -354,7 +614,9 @@ export async function buildIndex({ offline = false, fdaRaw = null, write = true,
     } else {
       try {
         console.log(`fda ${kind}:`);
-        raw[kind] = await fetchFdaWindow(kind, from, now);
+        const meta = {};
+        raw[kind] = await fetchFdaWindow(kind, from, now, meta);
+        updated[kind] = meta.lastUpdated || null;
         console.log(`  fda ${kind}: ${raw[kind].length} records`);
       } catch (err) {
         raw[kind] = null;
@@ -365,6 +627,27 @@ export async function buildIndex({ offline = false, fdaRaw = null, write = true,
     }
     kinds[kind] = { ok: true, count: raw[kind].length };
   }
+
+  // ── FDA announcements (RSS): best-effort, never fails the run
+  const prevAnn = prevRecalls.filter((r) => r.source === ANNOUNCE_SOURCE);
+  const annSince = new Date(now.getTime() - ANNOUNCE_DAYS * DAY_MS).toISOString().slice(0, 10);
+  let annItems = null;
+  let annError = null;
+  if (fdaRss != null) {
+    annItems = parseRss(fdaRss);
+  } else if (offline) {
+    annError = "not fetched (offline build)";
+  } else {
+    try {
+      annItems = parseRss(await fetchText(FDA_RSS_URL));
+      if (!annItems.length) throw new Error("feed parsed to zero items");
+    } catch (err) {
+      annItems = null;
+      annError = String((err && err.message) || err);
+      console.log(`  fda announcements: FAILED — ${annError} (carrying over the previous ones)`);
+    }
+  }
+  const annRecent = annItems ? annItems.filter((it) => it.pubDate && it.pubDate >= annSince) : null;
 
   /* Health: judged across all three kinds together, against the committed
    * copy. A refresh that fetched fine but shrank to a fraction is refused
@@ -387,12 +670,22 @@ export async function buildIndex({ offline = false, fdaRaw = null, write = true,
     if (!kinds[k].ok && !offline) problems.push(`openFDA ${k}: ${kinds[k].error}`);
   }
 
+  const prevSrc = (prev && prev.sources) || {};
   const fdaFetchedAt = fdaOk
     ? now.toISOString()
-    : (prev && prev.sources && prev.sources.fda && prev.sources.fda.fetchedAt) || null;
+    : (prevSrc.fda && prevSrc.fda.fetchedAt) || null;
+  /* openFDA's own "data as of" date, per kind; carried with the records when
+   * they are carried. The headline value is the newest across kinds. */
+  const prevByKind = (prevSrc.fda && prevSrc.fda.lastUpdatedByKind) || {};
+  const lastUpdatedByKind = {};
+  for (const k of FDA_KINDS) {
+    const v = raw[k] ? updated[k] : prevByKind[k];
+    if (v) lastUpdatedByKind[k] = v;
+  }
+  const fdaLastUpdatedAll = Object.values(lastUpdatedByKind).sort().pop() || null;
 
   // ── assemble at the loosest caps that fit the budget
-  let recalls, body, tier;
+  let recalls, body, tier, annDedupe;
   for (tier of CAP_TIERS) {
     const fda = [];
     for (const kind of FDA_KINDS) {
@@ -401,10 +694,15 @@ export async function buildIndex({ offline = false, fdaRaw = null, write = true,
        * this tier, which is fine: they are stale either way, and flagged. */
       else fda.push(...prevFda.filter((r) => r.source === FDA_LABEL[kind]));
     }
+    const ann = annRecent
+      ? annRecent.map((it) => announcementToIndex(it, tier))
+      : prevAnn.filter((r) => String(r.date) >= annSince);
+    annDedupe = dropAnnouncedDuplicates(ann, fda);
     recalls = dedupe([
       ...fsisList.map((r) => fsisToIndex(r, tier)),
       ...cpscList.map((r) => cpscToIndex(r, tier)),
       ...fda,
+      ...annDedupe.kept,
     ]).sort((a, b) => String(b.date).localeCompare(String(a.date)) || a.id.localeCompare(b.id));
     body = JSON.stringify(recalls);
     if (body.length <= SIZE_BUDGET) break;
@@ -415,19 +713,36 @@ export async function buildIndex({ offline = false, fdaRaw = null, write = true,
   }
 
   const count = (pred) => recalls.filter(pred).length;
-  const fdaCount = count((r) => String(r.source).startsWith("FDA"));
+  const newest = (pred) => recalls.filter(pred).reduce((m, r) => (String(r.date) > m ? String(r.date) : m), "") || null;
+  const isFda = (r) => String(r.source).startsWith("FDA") && r.source !== ANNOUNCE_SOURCE;
+  const fdaCount = count(isFda);
   const index = {
     builtAt: now.toISOString(),
     lookbackDays: LOOKBACK_DAYS,
     sources: {
+      /* Every source: ok, count, fetchedAt (when we fetched it) and newest
+       * (its newest recall date in this index). FDA adds lastUpdated —
+       * openFDA's meta.last_updated, the data's own date — overall and per
+       * kind. freshnessOf in src/lib/search-index.js reads these. */
       fda: {
         ok: fdaOk,
         count: fdaCount,
         fetchedAt: fdaFetchedAt,
+        lastUpdated: fdaLastUpdatedAll,
+        lastUpdatedByKind,
+        newest: newest(isFda),
         ...(fdaOk ? null : { note: offline ? "not fetched (offline build); records carried over from the previous index" : "openFDA refresh failed; records carried over from the previous index" }),
       },
-      fsis: { ok: fsisList.length > 0, count: count((r) => r.source === "USDA FSIS"), fetchedAt: (fsisSnap && fsisSnap.fetchedAt) || null },
-      cpsc: { ok: cpscList.length > 0, count: count((r) => r.source === "CPSC"), fetchedAt: (cpscSnap && cpscSnap.fetchedAt) || null },
+      fsis: { ok: fsisList.length > 0, count: count((r) => r.source === "USDA FSIS"), fetchedAt: (fsisSnap && fsisSnap.fetchedAt) || null, newest: newest((r) => r.source === "USDA FSIS") },
+      cpsc: { ok: cpscList.length > 0, count: count((r) => r.source === "CPSC"), fetchedAt: (cpscSnap && cpscSnap.fetchedAt) || null, newest: newest((r) => r.source === "CPSC") },
+      fdaAnnouncements: {
+        ok: !!annItems,
+        count: count((r) => r.source === ANNOUNCE_SOURCE),
+        fetchedAt: annItems ? now.toISOString() : (prevSrc.fdaAnnouncements && prevSrc.fdaAnnouncements.fetchedAt) || null,
+        newest: newest((r) => r.source === ANNOUNCE_SOURCE),
+        droppedAsDuplicates: annDedupe.dropped.length,
+        ...(annError ? { note: `${annError}; announcements carried over from the previous index` } : null),
+      },
     },
     count: recalls.length,
     recalls,
@@ -446,7 +761,8 @@ export async function buildIndex({ offline = false, fdaRaw = null, write = true,
 
   console.log(
     `index: ${recalls.length} recalls (FDA ${fdaCount}${fdaOk ? "" : " carried over"}, ` +
-    `FSIS ${index.sources.fsis.count}, CPSC ${index.sources.cpsc.count}), ` +
+    `FSIS ${index.sources.fsis.count}, CPSC ${index.sources.cpsc.count}, ` +
+    `announcements ${index.sources.fdaAnnouncements.count}${annItems ? "" : " carried over"}), ` +
     `${(text.length / 1048576).toFixed(2)} MB at text cap ${tier.text}` +
     `${write ? (changed ? " — written" : " — unchanged, not rewriting") : " — dry run"}`);
 

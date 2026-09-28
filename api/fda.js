@@ -3,7 +3,13 @@
  * IP) to 120,000/day. Responses are edge-cached per kind+state for 30 minutes.
  * openFDA's "no matches" 404 is normalized to an empty result set so it can
  * be cached like any other answer.
+ *
+ * The geography clause is fdaDistributionClause from src/lib/sources.js, so a
+ * state code that is also a word (IN, OR, ME, …) is queried by its full name
+ * only — see AMBIGUOUS_STATE_ABBRS in src/lib/verdict.js.
  */
+import { fdaDistributionClause } from "../src/lib/sources.js";
+
 const KINDS = new Set(["food", "drug", "device"]);
 const DAY_MS = 86400000;
 const LOOKBACK_DAYS = 365;
@@ -25,12 +31,10 @@ export default async function handler(req, res) {
 
   const now = new Date();
   const start = new Date(now.getTime() - LOOKBACK_DAYS * DAY_MS);
-  const parts = [`distribution_pattern:"nationwide"`];
-  if (abbr) parts.push(`distribution_pattern:"${abbr.toUpperCase()}"`);
-  if (state) parts.push(`distribution_pattern:"${state}"`);
+  const clause = fdaDistributionClause({ state: state || null, stateAbbr: abbr ? abbr.toUpperCase() : null });
   const search =
     `status:"Ongoing"+AND+report_date:[${fmtDate(start)}+TO+${fmtDate(now)}]` +
-    `+AND+(${parts.join("+OR+")})`;
+    `+AND+${clause}`;
 
   const key = process.env.openfda;
   const url =

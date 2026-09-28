@@ -25,7 +25,7 @@
 import { categoryFor } from "./category.js";
 import { reasonFor } from "./reason.js";
 import { byAisle } from "./search-index.js";
-import { resolveLoc } from "./verdict.js";
+import { resolveLoc, isAnnounced } from "./verdict.js";
 import { markVisit } from "./follows.js";
 
 const DAY_MS = 86400000;
@@ -50,6 +50,17 @@ export function dayOf(d) {
   if (typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
   const t = d instanceof Date ? d : new Date(d);
   return isNaN(t) ? "" : t.toISOString().slice(0, 10);
+}
+
+/** The day a notice became news: the later of its own date and, for FDA,
+ *  the day FDA published it (`posted`, the enforcement report date). An FDA
+ *  recall initiated in August and classified in late September is new in
+ *  late September — dated by initiation alone it never counted as new at
+ *  all, since FDA posts notices weeks after they start. */
+export function newsDay(r) {
+  const a = dayOf(r && r.date);
+  const b = dayOf(r && r.posted);
+  return b > a ? b : a;
 }
 
 /** category.js key, whichever shape the record came in. Index records carry
@@ -227,13 +238,20 @@ function noun(records) {
  *  { window: { since, label, kind: 'visit'|'week'|'clamped' }, place,
  *    fresh, serious, top, activeTotal, sentence, quiet }
  *
- *  `place` is the two-letter state, or null when there's no location — in
- *  which case the caller has only nationwide notices and the sentence says
- *  "nationwide", not a state it doesn't know. */
-export function summarize(records, { loc, lastVisit, now = Date.now() } = {}) {
+ *  `scope` "near" words it for the reader's state ("This week in NY"); "us",
+ *  or no usable location, words it for the country ("This week in the US").
+ *  `place` is the state in near mode, null in us. `announced` counts company
+ *  announcements in the window, which are never part of `fresh`. */
+export function summarize(records, { loc, scope = "near", lastVisit, now = Date.now() } = {}) {
   const L = resolveLoc(loc);
-  const place = L ? L.stateAbbr : null;
-  const list = Array.isArray(records) ? records : [];
+  const us = scope === "us" || !L;
+  const place = us ? null : L.stateAbbr;
+  const all = Array.isArray(records) ? records : [];
+  /* A company announcement FDA has not classified yet has no class and, often,
+   * no distribution: it is listed (see `announced` below) but never counted as
+   * a new recall or as serious. */
+  const list = all.filter((r) => !isAnnounced(r));
+  const announcedList = all.filter(isAnnounced);
 
   let kind = "week";
   let sinceMs = now - WEEK_DAYS * DAY_MS;
@@ -252,15 +270,16 @@ export function summarize(records, { loc, lastVisit, now = Date.now() } = {}) {
   /* A notice is dated to the day, a visit to the millisecond. A notice dated
    * the same day as the last visit may have been published after it, so it
    * counts as new — erring toward showing it twice, never toward hiding it. */
-  const fresh = list.filter((r) => dayOf(r.date) >= sinceDay).sort(bySeriousness);
+  const fresh = list.filter((r) => newsDay(r) >= sinceDay).sort(bySeriousness);
   const serious = fresh.filter((r) => r.severity === "high").length;
   const activeTotal = list.filter((r) => !isEnded(r)).length;
 
-  const where = place ? `in ${place}` : "nationwide";
+  const where = us ? "in the US" : `in ${place}`;
   const label =
     kind === "visit" ? `Since your last visit (${monthDay(since)})`
     : kind === "clamped" ? `In the last ${MAX_SINCE_DAYS} days ${where}`
-    : place ? `This week in ${place}` : "This week, nationwide";
+    : `This week ${where}`;
+  const announced = announcedList.filter((r) => newsDay(r) >= sinceDay).length;
 
   let sentence;
   let quiet;
@@ -274,9 +293,13 @@ export function summarize(records, { loc, lastVisit, now = Date.now() } = {}) {
       : `Nothing new ${where} this week.`;
     quiet = activeTotal
       ? `${activeTotal} recall${activeTotal === 1 ? " is" : "s are"} still in force ${where}, that we know of.`
-      : `No recall notice we read lists ${place || "nationwide distribution"} right now — that we know of.`;
+      : us ? "No recall notice we read is in force right now — that we know of."
+        : `No recall notice we read lists ${place} right now — that we know of.`;
   }
-  return { window: { since, label, kind }, place, fresh, serious, top: fresh[0] || null, activeTotal, sentence, quiet };
+  return {
+    window: { since, label, kind }, place, scope: us ? "us" : "near",
+    fresh, serious, top: fresh[0] || null, activeTotal, announced, sentence, quiet,
+  };
 }
 
 // ------------------------------------------------------------ aisles
@@ -294,7 +317,7 @@ export const AISLE_LABELS = {
 export function aislesFor(records, { now = Date.now(), windowDays = AISLE_WINDOW_DAYS, max = AISLE_MAX } = {}) {
   const sinceDay = new Date(now - windowDays * DAY_MS).toISOString().slice(0, 10);
   const recent = (records || [])
-    .filter((r) => dayOf(r.date) >= sinceDay)
+    .filter((r) => newsDay(r) >= sinceDay)
     .map((r) => (typeof r.category === "string" ? r : { ...r, category: categoryKeyOf(r) }));
   const grouped = byAisle(recent);
   return AISLE_KEYS.map((key) => {

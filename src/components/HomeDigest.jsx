@@ -9,14 +9,19 @@
  * then three ways in — the aisle rail (stories, see AisleStories.jsx), the
  * products you follow, and the full list / stores — each one tap.
  *
- * Where the records come from. `areaRecalls` is the app's own in-area list,
+ * Two scopes, one component. "Near me" reads the reader's state; "All US"
+ * reads every recall, wherever it went (the global ScopeSwitch decides).
+ *
+ * Where the records come from. `live` is the app's own list for the current
+ * scope — the in-area list, or the national one (/api/recalls?scope=us) —
  * freshly fetched from the live feeds, and is preferred whenever it has
  * anything in it. While it's still loading — or if every live source failed —
  * the national index (public/feeds/index.json, refreshed by a workflow) is
- * read through `recentFor`, which applies the same isInArea rule, and a quiet
- * line says the numbers are from the index and how old it is. The digest
- * never mixes the two: two lists with different freshness summed into one
- * count is a number nobody can check.
+ * read instead: through `recentFor` (the same isInArea rule) for Near me,
+ * through `recentForUs` (no area filter) for All US. The digest never mixes
+ * the two: two lists with different freshness summed into one count is a
+ * number nobody can check. Which one it read is in the freshness line at the
+ * bottom, per agency.
  *
  * What it will not say. "Nothing new" is always followed by how many recalls
  * are still in force, and "that we know of" — an empty week is a statement
@@ -26,11 +31,12 @@
  * ───────────────────────────────────────────────────────────────────────── */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowRight, ChevronRight, MapPin, Plus, X } from "lucide-react";
+import FreshnessLine, { FdaGapNote, fdaMissing } from "@/components/FreshnessLine";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import AisleStories, { AISLE_ICONS } from "@/components/AisleStories";
-import { recentFor } from "@/lib/search-index";
+import { recentFor, recentForUs, freshnessOf } from "@/lib/search-index";
 import { resolveLoc } from "@/lib/verdict";
+import { coverageSuffix } from "@/lib/coverage-line";
 import { severityLabel, severityVariant } from "@/lib/classification";
 import { getFollows, addFollow, removeFollow, matchFollows, FOLLOWS_EVENT } from "@/lib/follows";
 import {
@@ -77,11 +83,6 @@ function fmtDay(d) {
   return new Date(day + "T12:00:00Z").toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
-function fmtBuilt(iso) {
-  const t = new Date(iso);
-  if (isNaN(t)) return "";
-  return t.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
 
 /* ───────────────────────────── aisle bubble ─────────────────────────────
  * Three states, told apart by the ring and nothing else:
@@ -140,7 +141,7 @@ function AisleBubble({ aisle, unseen, onOpen }) {
 }
 
 /* ───────────────────────────── follows strip ───────────────────────────── */
-function FollowsStrip({ follows, matches, place, loading, onOpenRecall }) {
+function FollowsStrip({ follows, matches, where, noticeLabel, loading, onOpenRecall }) {
   const [draft, setDraft] = useState("");
   const [openTerm, setOpenTerm] = useState(null);
   const byTerm = useMemo(() => new Map(matches.map((m) => [m.term, m.records])), [matches]);
@@ -165,7 +166,7 @@ function FollowsStrip({ follows, matches, place, loading, onOpenRecall }) {
         <h3 className="microlabel">Products you follow</h3>
         {matches.length > 0 && (
           <span className="text-[11px] font-semibold text-alert">
-            {matches.length} with a recall{place ? ` in ${place}` : ""}
+            {matches.length} with a recall {where}
           </span>
         )}
       </div>
@@ -244,7 +245,7 @@ function FollowsStrip({ follows, matches, place, loading, onOpenRecall }) {
           while the list is still loading would be a claim we haven't checked. */}
       {follows.length > 0 && matches.length === 0 && !loading && (
         <p className="text-[12px] leading-snug text-subtle">
-          None of these appear in the {place ? `${place} ` : ""}notices we read right now. Matching looks at product and brand names only.
+          None of these appear in the {noticeLabel} notices we read right now. Matching looks at product and brand names only.
         </p>
       )}
 
@@ -276,13 +277,16 @@ function FollowsStrip({ follows, matches, place, loading, onOpenRecall }) {
  * The quick-check home digest.
  *
  * Props:
- *   loc                { state, stateAbbr } | null
+ *   loc                { state, stateAbbr } | null — the state verdicts answer in
+ *   hasLocation        the reader has set a place of their own (stores need one)
+ *   scope              "near" | "us" — see the top of this file
  *   index              the national index (search-index.js loadIndex()), or null while loading
- *   areaRecalls        the app's in-area normalized recalls; preferred when non-empty
+ *   live               { records, sources } for the current scope, or null;
+ *                      preferred when it has records
  *   onOpenRecall(r)    open one recall's verdict sheet
- *   onOpenStores()     "Stores near me →"
- *   onRequestLocation() shown as "Add your location" when loc is null
- *   onOpenAll()        optional; "All recalls in ST →" (falls back to onOpenStores)
+ *   onOpenStores()     "Stores near me →" (only offered with a location)
+ *   onRequestLocation(reason) opens the location picker
+ *   onOpenAll()        optional; "All recalls in ST / the US →"
  *   onEnablePush()     optional; the stories end card's "Get a weekly heads-up"
  *   lastVisit          optional ISO|null; when omitted the component takes the
  *                      baseline itself (digest.js visitBaseline, which calls
@@ -292,23 +296,36 @@ function FollowsStrip({ follows, matches, place, loading, onOpenRecall }) {
  *   onCaughtUp()       optional; the stories' end card was reached (analytics)
  */
 export default function HomeDigest({
-  loc, index, areaRecalls, onOpenRecall, onOpenStores, onRequestLocation, onOpenAll, onEnablePush, lastVisit,
-  onStorySeen, onCaughtUp,
+  loc, hasLocation = false, scope = "near", index, live, onOpenRecall, onOpenStores, onRequestLocation, onOpenAll,
+  onEnablePush, lastVisit, onStorySeen, onCaughtUp,
 }) {
   const L = resolveLoc(loc);
-  const place = L ? L.stateAbbr : null;
+  const us = scope === "us" || !L;
+  const place = us ? null : L.stateAbbr;
+  const where = us ? "in the US" : `in ${place}`;
   const [baseline] = useState(() => (lastVisit !== undefined ? lastVisit : visitBaseline()));
   const since = lastVisit !== undefined ? lastVisit : baseline;
 
-  const { records, from } = useMemo(() => {
-    if (Array.isArray(areaRecalls) && areaRecalls.length) return { records: areaRecalls, from: "area" };
-    if (index && Array.isArray(index.recalls)) {
-      return { records: recentFor(index, loc, { sinceDays: INDEX_LOOKBACK_DAYS }), from: "index" };
+  const { records, from, sources } = useMemo(() => {
+    if (live && Array.isArray(live.records) && live.records.length) {
+      return { records: live.records, from: "live", sources: live.sources || null };
     }
-    return { records: [], from: "none" };
-  }, [areaRecalls, index, loc]);
+    if (index && Array.isArray(index.recalls)) {
+      const recs = us
+        ? recentForUs(index, { sinceDays: INDEX_LOOKBACK_DAYS })
+        : recentFor(index, loc, { sinceDays: INDEX_LOOKBACK_DAYS });
+      return { records: recs, from: "index", sources: null };
+    }
+    return { records: [], from: "none", sources: null };
+  }, [live, index, loc, us]);
 
-  const summary = useMemo(() => summarize(records, { loc, lastVisit: since }), [records, loc, since]);
+  const freshness = useMemo(() => (index || sources ? freshnessOf(index, sources) : []), [index, sources]);
+  const fdaGap = from !== "none" && fdaMissing(freshness, records);
+
+  const summary = useMemo(
+    () => summarize(records, { loc, scope: us ? "us" : "near", lastVisit: since }),
+    [records, loc, us, since],
+  );
   const aisles = useMemo(() => aislesFor(records), [records]);
   const seen = useSeenSet();
   const follows = useFollowsList();
@@ -327,9 +344,9 @@ export default function HomeDigest({
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-2">
           <span className="microlabel">Quick check</span>
-          {from === "index" && index && index.builtAt && (
-            <span className="text-[11px] text-subtle">From the recall index, {fmtBuilt(index.builtAt)}</span>
-          )}
+          <span className="microlabel text-subtle" aria-label={us ? "Showing all US recalls" : `Showing recalls for ${L.state}`}>
+            {us ? "All US" : place}
+          </span>
         </div>
         {from === "none" ? (
           <>
@@ -342,6 +359,9 @@ export default function HomeDigest({
           <>
             <h2 id="rr-digest-title" className="text-lg font-semibold leading-snug tracking-tight text-paper sm:text-xl">
               {summary.sentence}
+              {us && summary.announced > 0 && (
+                <span className="text-[14px] font-normal text-fog"> · +{summary.announced} announced, not yet classified</span>
+              )}
             </h2>
             {top ? (
               <button
@@ -359,6 +379,7 @@ export default function HomeDigest({
                   <span className="text-fog">{top.severity === "high" ? "Most serious: " : "Newest: "}</span>
                   {plainHeadline(top)}
                   {fmtDay(top.date) && <span className="tnum text-[12px] text-subtle"> · {fmtDay(top.date)}</span>}
+                  {us && coverageSuffix(top) && <span className="tnum text-[12px] text-subtle"> · {coverageSuffix(top)}</span>}
                 </span>
                 </span>
                 <ChevronRight className="size-4 shrink-0 text-subtle group-hover:text-paper" aria-hidden="true" />
@@ -368,22 +389,21 @@ export default function HomeDigest({
             )}
           </>
         )}
-        {!place && (
-          <div className="flex flex-wrap items-center gap-2 pt-1">
-            <p className="text-[13px] text-fog">Showing nationwide notices only. State-specific recalls need your location.</p>
-            {onRequestLocation && (
-              <Button size="sm" variant="outline" onClick={onRequestLocation}>
-                <MapPin aria-hidden="true" /> Add your location
-              </Button>
-            )}
-          </div>
+        {!hasLocation && onRequestLocation && (
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 text-[13px] text-fog">
+            <span>Set a location to see which of these reached your state.</span>
+            <button type="button" onClick={() => onRequestLocation("to show recalls for your state", "digest")}
+                    className="tap inline-flex items-center gap-1 font-semibold text-mint hover:underline">
+              <MapPin aria-hidden="true" className="size-3.5" /> Set location
+            </button>
+          </p>
         )}
       </div>
 
       {/* ── aisle rail ── */}
       <div className="space-y-2">
         <div className="flex items-baseline justify-between gap-2">
-          <h3 className="microlabel">By aisle · last 30 days</h3>
+          <h3 className="microlabel">By aisle · last 30 days · {us ? "All US" : place}</h3>
           {!anyAisle && from !== "none" && <span className="text-[11px] text-subtle">No aisle has a recent notice</span>}
         </div>
         <div
@@ -404,24 +424,39 @@ export default function HomeDigest({
       </div>
 
       {/* ── follows ── */}
-      <FollowsStrip follows={follows} matches={matches} place={place} loading={from === "none"} onOpenRecall={onOpenRecall} />
+      <FollowsStrip follows={follows} matches={matches} where={where} noticeLabel={us ? "US" : place}
+                    loading={from === "none"} onOpenRecall={onOpenRecall} />
+
+      {/* ── what this was read from, and how fresh ── */}
+      {(fdaGap || freshness.length > 0) && (
+        <div className="space-y-1.5">
+          {fdaGap && <FdaGapNote />}
+          <FreshnessLine entries={freshness} />
+        </div>
+      )}
 
       {/* ── the way out ── */}
       <nav className="flex flex-wrap items-center gap-x-5 gap-y-1 border-t border-line pt-3" aria-label="More">
-        {onOpenStores && (
-          <button type="button" onClick={onOpenStores} className="tap inline-flex items-center gap-1 text-[13px] font-semibold text-mint hover:underline">
-            Stores near me <ArrowRight className="size-3.5" aria-hidden="true" />
-          </button>
-        )}
-        {(onOpenAll || onOpenStores) && (
-          <button
-            type="button"
-            onClick={onOpenAll || onOpenStores}
-            className="tap inline-flex items-center gap-1 text-[13px] font-semibold text-mint hover:underline"
-          >
-            All recalls {place ? `in ${place}` : "nationwide"} <ArrowRight className="size-3.5" aria-hidden="true" />
-          </button>
-        )}
+        {(() => {
+          const link = "tap inline-flex items-center gap-1 text-[13px] font-semibold text-mint hover:underline";
+          const all = onOpenAll && (
+            <button key="all" type="button" onClick={onOpenAll} className={link}>
+              All recalls {where} <ArrowRight className="size-3.5" aria-hidden="true" />
+            </button>
+          );
+          const stores = hasLocation
+            ? onOpenStores && (
+              <button key="stores" type="button" onClick={onOpenStores} className={link}>
+                Stores near me <ArrowRight className="size-3.5" aria-hidden="true" />
+              </button>
+            )
+            : onRequestLocation && (
+              <button key="stores" type="button" onClick={() => onRequestLocation("to find stores near you", "digest")} className={link}>
+                Find stores near you <ArrowRight className="size-3.5" aria-hidden="true" />
+              </button>
+            );
+          return us ? [all, stores] : [stores, all];
+        })()}
       </nav>
 
       <AisleStories
@@ -429,6 +464,8 @@ export default function HomeDigest({
         aisles={aisles}
         startAisle={storiesAisle}
         loc={loc}
+        scope={us ? "us" : "near"}
+        onRequestLocation={!hasLocation && onRequestLocation ? () => { closeStories(); onRequestLocation("for alerts", "stories"); } : undefined}
         onClose={closeStories}
         onOpenRecall={onOpenRecall}
         onEnablePush={onEnablePush ? () => { closeStories(); onEnablePush(); } : undefined}
