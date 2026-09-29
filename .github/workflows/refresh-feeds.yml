@@ -29,6 +29,19 @@ on:
   schedule:
     - cron: "17 */6 * * *"   # 00:17, 06:17, 12:17, 18:17 UTC — off the hour, where every other cron piles up
   workflow_dispatch:          # and on demand, which is how you test it
+  # And whenever the code that builds the snapshots changes on main. Without
+  # this, a merge that changes the index shape ships the index from whatever
+  # machine built it last — for PR #11 that was an offline sandbox with no FDA
+  # records — and production serves it until the next schedule slot, which
+  # GitHub routinely delays by hours. The job's own commit uses GITHUB_TOKEN,
+  # which never triggers another workflow run, so this cannot loop.
+  push:
+    branches: [main]
+    paths:
+      - "scripts/refresh-feeds.mjs"
+      - "scripts/build-index.mjs"
+      - "src/lib/**"
+      - ".github/workflows/refresh-feeds.yml"
 
 permissions:
   contents: write
