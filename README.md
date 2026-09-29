@@ -1,8 +1,8 @@
 # 📡 Yanked
 
-**Find out which stores near you sold recalled products — and which products to avoid.**
+**Find out whether the recall you heard about reached you — and which stores near you sold recalled products.**
 
-Live at [yanked.app](https://yanked.app). Yanked is a responsive, single-page web app. Give it your location (browser geolocation, a ZIP code, or an address) and it:
+Live at [yanked.app](https://yanked.app). Yanked is a responsive, single-page web app. It opens on **Home**: a search box over every FDA, USDA and CPSC recall of the last year, answered for your state, and a short digest of what is new near you (see *Home, and the question people arrive with* below). Neither needs a location to start. Give it one (browser geolocation, a ZIP code, or an address) and the rest of the app — the **Stores** and **Recalls** views, which were the whole app before Home — does the following:
 
 1. **Pulls active recall notices** affecting your area — nationwide recalls plus recalls distributed specifically to your state — from official government feeds:
    - [openFDA enforcement reports](https://open.fda.gov/apis/food/enforcement/) — FDA food, drug, and medical-device recalls
@@ -19,29 +19,68 @@ Live at [yanked.app](https://yanked.app). Yanked is a responsive, single-page we
 
 The whole information architecture switches once, at `lg`:
 
-- **Below 1024** — a single column with a bottom bar (Near me · Recalls · Scan), a location chip that opens a sheet, and one overflow control for theme, sources and About. This is the phone architecture, and it is also the right one for an iPad in portrait: at 820px the two-column layout gave a 404px map beside a 416px panel and served neither.
-- **1024 and up** — map and panel side by side, with a draggable boundary between them, the location form inline, and Scan as the header's primary action.
+- **Below 1024** — a single column with a bottom bar (Home · Stores · Recalls · Scan), the location button and scope switch in the header, and one overflow control for theme, alerts, sources and About. This is the phone architecture, and it is also the right one for an iPad in portrait: at 820px the two-column layout gave a 404px map beside a 416px panel and served neither.
+- **1024 and up** — Home is a centred column; a two-way switch beside the name (Home · Stores & recalls) opens the map and panel side by side, with a draggable boundary between them. Scan is the header's primary action.
 
 Touch-target sizing is keyed to `pointer: coarse`, not to width — an iPad is 820px wide *and* finger-driven, so viewport width is the wrong question to ask.
 
-### One scope, two answers
+### Where you are: one button, one picker
 
-One control at the top of the panel says how wide a net everything below is casting. It is labelled with its unit, because it sits a few hundred pixels above a bottom bar that also counts things:
+There is exactly one place to set a location: the **location button** in the header (`LocationButton.jsx`) — `📍 New York, NY 10001 ▾`, or `📍 Set location` — the same element at every width. It opens one surface (`LocationPicker.jsx` on `ui/responsive-surface.jsx`): an anchored 360px popover under the button at `md` and up (iPad portrait included), a bottom sheet below that.
 
 ```
-RECALLS ⓘ  [ At a store near you · 12 ]  [ Anywhere in CA · 137 ]
+Your location
+Only your state leaves this browser.
+ZIP code or city  [ e.g. 10001 or Chicago, IL      → ]
+⚠ We couldn't find ZIP 00000. Check the digits, or try a city and state.
+⌖  Use my current location
+📍 New York, NY 10001                         Current ✓
+🕘 Chicago, IL 60601                          State: IL
+─────────────────────────────
+Forget this location   Remembered in this browser only.
+```
+
+- It never closes before the place resolves. A failed lookup keeps it open with the error **under the field** (never a strip across the page) and the text selected. Every error has a code (`GEO_ERRORS` in `src/lib/geo.js`: `empty`, `zip_invalid`, `zip_not_found`, `place_not_found`, `no_state`, `network`, `geo_denied`, `geo_unavailable`, `geo_unsupported`) and a sentence with a next step; a place with no US state is refused rather than set.
+- "Use my current location" is the first row, and the only thing that can trigger the browser's permission prompt. Nothing asks on load. The row is hidden where geolocation cannot work (no API, insecure context).
+- The last three places are kept as recents (`rr-recent-locs`); *Forget this location* clears them too.
+- Every other "set a location" in the app — a search card's *Check your state*, the digest, the Stores tab, alerts, the scope switch — opens this same picker, with a one-line reason ("Needed to find stores near you.").
+- Esc, the scrim or a click outside closes it; focus is trapped while open and returns to the button.
+
+### Three levels of scope
+
+**1. Near me · `ST` │ All US** — the global switch beside the location button (`ScopeSwitch.jsx`, a radio group: one Tab stop, arrow keys). It decides what Home (digest, aisles, follows), the Recalls list and the counts are about:
+
+| | Near me · `ST` | All US |
+| --- | --- | --- |
+| List | the live area list (`/api/recalls?state&abbr`) | the live national list (`/api/recalls?scope=us`), fetched the first time it is needed |
+| Fallback while loading / if it failed | the index through `recentFor` | the index through `recentForUs` (no area filter) |
+| Digest | "This week in NY: 14 new recalls · 3 serious" | "This week in the US: 61 new recalls · 9 serious" |
+| Recalls panel | the store scope row (below) | a banner — "All US · 1,204 recalls · each card shows where it went" — plus *Only ones that reached NY*, which is simply Near me |
+
+All US means **every** recall, not the old no-location meaning of "nationwide-distribution notices only" — which silently left out a recall sent to eight states. Search is national in both modes; the switch changes only its framing (verdict groups in Near me, one flat "3 recalls across the US" list in All US), and every card keeps its verdict for your state either way. Near me needs a state: with no location it opens the picker instead of switching.
+
+Defaults: All US on a first visit; Near me the moment a location is set or changed; All US after *Forget*; otherwise whatever was last chosen (`rr-scope`). `?scope=us` (or `near` / `local`) in the URL wins on load and is written back with `replaceState`, so `?scope=us` is a shareable "all US" link; `?scope=near` without a location falls back to All US and does not pop the picker.
+
+**2. The store scope, in Near me.** One control at the top of the panel:
+
+```
+ⓘ  [ At a store near you · 12 ]  [ All in CA · 137 ]
 ```
 
 | Scope | Recalls | Stores |
 | --- | --- | --- |
 | **At a store near you** | only notices naming a chain with a storefront near you | only those stores |
-| **Anywhere in `ST`** | every active notice covering your area | every store nearby, chains and independents |
+| **All in `ST`** | every active notice covering your area | every store nearby, chains and independents |
 
-Both counts are recalls, and both respect whatever else is filtered — a chip says what turning it on would actually leave you with.
+Both counts are recalls, and both respect whatever else is filtered. Independents can only ever be exposed at the area level — no notice will name one — so **All in `ST`** is the only scope in which one can honestly appear. The store list is always in distance order.
 
-This replaced a three-chip control labelled *Named / All stores / All recalls*, which had two problems that fed each other. "Named" was internal vocabulary — a notice *names* a chain — and said neither by whom nor of what. And the three chips counted three different things (8 stores, 20 stores, 137 recalls) inside one segmented control, directly above a bottom bar counting "Near me 20" and "Recalls 137": two rows of numbers, different units, same digits, no stated subject. Two of the three also produced an identical recall list and differed only in whether the store column was on screen, which is a layout question wearing a filter's clothes. Store-list visibility now lives on the store list itself (a fold control on wide screens; on a phone the bottom bar already is it).
+**3. A selected store** overrides both: it always lists area recalls that name its chain, whatever the global switch says — a Texas-only recall naming Target does not concern the Target on 34th St. Stores themselves are local in both modes; in All US the store list says "Stores are matched to recalls that reach NY."
 
-Independents can only ever be exposed at the area level — no notice will name one — so **Anywhere in `ST`** is the only scope in which one can honestly appear. The store list is always in distance order; whether a notice names a store is the scope control's job, not the sort's.
+Push alerts stay per state in both modes.
+
+### Freshness, said out loud
+
+Every answer that could read as "not here" carries a quiet date line (`FreshnessLine.jsx`, from `freshnessOf` in `search-index.js`): "Data: FDA as of Sep 24 · USDA Sep 27 · CPSC Sep 25", with an amber dot on a stale agency. It sits at the bottom of the digest, under the Recalls list (plus "FDA: the newest notices only, back to …" when `/api/recalls` reports `truncated`), in every empty search, and inside every "Not reported in …" card. When the list on screen has no FDA records and FDA's date is unknown or stale, it says so: "FDA recalls aren't in this list yet … Search still checks FDA directly."
 
 ### Terms that explain themselves
 
@@ -51,7 +90,78 @@ So the badge is a disclosure, not a label (`src/lib/classification.js`, `InfoTip
 
 `Tooltip` (hover-only, `aria-describedby`, supplements a control that already names itself) and `InfoTip` (hover **and** tap, a disclosure on a term) are separate components on one placement engine, because the trigger has to change with the behaviour. Where an agency assigns no class at all — CPSC never does — the badge says "not classified" rather than inventing the "Medium risk" it used to print.
 
-Everything runs client-side against free, key-less public APIs. There is no server, no build step, no tracking — your location never leaves your browser except as query parameters to the public APIs above.
+The recall data comes from free, key-less public APIs. Your location is remembered in your own browser (`localStorage`, so a return visit opens straight onto it; the location picker has *Forget this location*, which also clears recent places), and it leaves the browser only as query parameters to those APIs and to the store lookup — analytics gets the two-letter state and nothing finer, and alerts store the state and your follow terms, never coordinates.
+
+## Home, and the question people arrive with
+
+The map-first app answered "what reached the shops around me?". People mostly arrive with the opposite question: they saw a headline about a sausage and want to know whether it is *their* sausage. So the landing view is now Home, one column at every width:
+
+1. **Search** (`src/components/RecallSearch.jsx`) — the national index (below), searched as you type, every hit answered for your state and grouped by that answer. No location needed: without one, each card says where the notice sent the product ("Sent to IL, IN, IA …") and offers *Check your state*, which opens the location picker. Every collapsed card shows that coverage line, with or without a location.
+2. **The digest** (`src/components/HomeDigest.jsx`) — "This week in CA: 13 new recalls · 2 serious", counted from your last visit (the marker moves when the page is hidden or closed, never on arrival, so a reload does not reset it), the most serious one a tap away, an aisle rail of story-style cards (`AisleStories.jsx`), and your follows. It follows the global scope (Near me · `ST` or All US), reads the live list for that scope when there is one and falls back to the index — never mixing the two — and ends with the freshness line saying what it read. "New" means new *as news*: an FDA notice counts from the later of its own date and the day FDA published it (`posted`, openFDA's `report_date`; `newsDay` in `digest.js`), because FDA posts enforcement notices weeks after the firm starts the recall — the United Sugar recall was initiated Aug 19 and published Sep 24, and dated by initiation alone it would never have been "new" at all. Cards still show the initiation date. The push digest uses the same rule, and neither counts a company announcement FDA hasn't classified as a new recall.
+3. **Alerts**, where the browser can deliver them (see *Follows and alerts*).
+
+The map, store list and full recall list are the power-user views now: demoted, not removed, and unchanged. They are mounted the first time one is opened and kept mounted after, so going Home and back keeps the selection, the scroll and the camera; the store lookup (one Mapbox request per chain) and MapLibre itself (about 800kB, now its own chunk) are not paid for until then. The area recall list is still fetched as soon as there is a location, because the digest and the scanner read it.
+
+A recall opened from the digest opens in a sheet as the same card search answers with. The live area list and the index apply the same rule for when a USDA notice has ended (the 90-day rule below), so one recall gets one answer everywhere; if they still disagree — a live record cached before that rule — the index's reading wins in that sheet.
+
+### The verdict: six answers, and none of them is "safe"
+
+`src/lib/verdict.js` turns one notice and one state into one of six answers, with the notice's own words as evidence:
+
+| Verdict | Headline | When |
+| --- | --- | --- |
+| `in_area` | Distributed in California / Distributed nationwide | the notice names your state, or says nationwide |
+| `not_listed` | Not reported in California | it names states, and yours is not one |
+| `unstated` | The notice doesn't say where it was sold | it names no geography at all |
+| `ended` | This recall has ended | the agency has closed it — which wins over the rest |
+| `needs_location` | Add your location to check your state | we do not know your state yet |
+| `announced` | Announced, not yet classified | a company press release FDA has not classified yet, naming no place — the release has no distribution list, so it is shown in search but never counted as "in your area" (one that does name states gets the answers above, plus a note that it is an announcement) |
+
+**"Not reported in your state" is deliberately not "doesn't affect you".** A distribution list is what the recalling firm told the agency it shipped. Distributors re-ship, people travel and shop across a border, and a chain's warehouse may serve three states the notice never names. So the answer says exactly what is known — "Sent to AZ, NM, TX. California isn't listed." — adds the caveat every time, and is grey, never green. The quoted distribution text (`evidence`) is on every opened card, with a state grid (`StateMap.jsx`) that fills what the notice names and outlines yours.
+
+**"Unstated" is not "nationwide"**, for the reason given under the store matching section below: a notice that names a retailer and no place has said nothing about where, and inventing "everywhere" or "nowhere" would each be a claim the agency did not make. **"Ended" is not "gone"**: a closed recall can still be in a freezer, and the card says so.
+
+An empty search is held to the scanner's rule: it lists each agency that was searched and how fresh our copy is, says outright when FDA could not be checked, and names what no source here covers (vehicles and car seats, boats, pesticides).
+
+### Share cards
+
+Every opened card can be shared. The link is `/r/<id>?st=CA`; `vercel.json` rewrites it to `api/share.js`, which answers crawlers with Open Graph tags and people with a redirect to `/?r=<id>&st=CA`. The preview image is `api/_lib/og.js` (served as `/api/share?format=png`), a 1200×630 PNG of the verdict rendered with `@vercel/og` from the same wording the card uses (`cardVerdict` in `src/lib/share.js`), so an unfurl in a group chat says "Not reported in California" and not just a product name. Opening the link lands on Home with that recall open, labelled *Shared with you*. The `st` is the sender's state: it answers for a reader the app knows nothing about yet, and a reader with a saved location gets their own state instead.
+
+`@vercel/og` 1.0.3's Node build cannot be imported as shipped (it bundles a CommonJS loader that needs `require` and a `hb.wasm` it does not ship); `api/_lib/og.js` (served as `/api/share?format=png`) works around it and explains when the shim can go. If `/api/share?format=png` ever 500s in production, add `node_modules/harfbuzzjs/hb.wasm` to `includeFiles` — unfurls degrade to the text-only tags from `api/share.js` meanwhile, which are still accurate.
+
+## The national index
+
+Search needs every recall, not the ones scoped to one state, and it needs them faster than three agencies can answer. `public/feeds/index.json` is that: every FDA (food, drug, device), USDA FSIS and CPSC notice of the last 365 days, ended ones included, slimmed to what a card needs — with coverage (`nationwide` / `states` / `unstated`), category, reason and any UPCs worked out once at build time. It is built by `scripts/build-index.mjs`, which the refresh workflow runs after the feed snapshots, so it rides the same GitHub-runner tier as they do and is committed the same way.
+
+It has tiers of its own, in the same spirit as the feeds:
+
+1. **The committed index**, served from the CDN and searched in the browser with MiniSearch (prefix + fuzzy, loaded as its own chunk after first paint; a query of six or more digits searches barcodes only). Memoized per page and cached in `sessionStorage`.
+2. **openFDA, live**, through `/api/lookup`, when the index has no FDA data or no FDA hit for the query — with "Checking FDA directly…" on screen while it runs, and "FDA couldn't be checked" rather than silence if it fails.
+3. **The server's own copy**, read off disk by `src/lib/index-server.js` for the share cards and the push digest, falling back to the deployment's CDN.
+
+An openFDA failure at build time keeps the previous FDA records and turns the workflow run red rather than committing an index with a hole in it. `index.json` records each source's `ok`, `count`, `fetchedAt` and `newest` (newest recall date), and the empty-search state reads them.
+
+**Freshness.** Our fetch time is not the data's date. openFDA stamps every response with `meta.last_updated` (it republishes enforcement weekly), and that is recorded as `sources.fda.lastUpdated` (and `lastUpdatedByKind`) in the index, per FDA source in `/api/recalls`, and in `/api/lookup`. `freshnessOf(index, recallsSources?)` in `src/lib/search-index.js` turns all of it into one `{source, asOf, kind: 'updated'|'fetched', stale}` per agency; thresholds are in `STALE_AFTER_DAYS` (FDA's own date: 10 days; our FDA fetch: 2; FSIS: 2; CPSC: 3, so a weekend is not "stale"). An unknown date is stale, never assumed fresh.
+
+**Early FDA announcements.** A company's press release reaches FDA's [recalls RSS feed](https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/recalls/rss.xml) the day it is issued; the openFDA enforcement record (class, distribution list) can follow weeks later — the weeks when the recall is in the news. The index build reads the last 60 days of that feed (a small dependency-free parser; a failure is recorded in `sources.fdaAnnouncements` and never fails the run) into records with `source: 'FDA announcement'`, `status: 'announced'`, `announcement: true`. Places are read only from sentences about distribution ("distributed to stores in…"), because a release opens with the firm's home town, which is not where the product went. An announcement is dropped once openFDA has an enforcement record from the same firm within 45 days of it.
+
+**Ambiguous state codes.** openFDA's text search ignores case, so `distribution_pattern:"IN"` matches the word "in" — nearly every notice — and Indiana's own recalls were cut off by the page cap. For codes that are ordinary words in notices (IN, OR, ME, OK, HI; DE, LA, AL from firm and brand names; CO for "company"; ID for "identifier" — `AMBIGUOUS_STATE_ABBRS` in `src/lib/verdict.js`) the state query asks for the full name only, and the abbreviation is found by a deeper unscoped pass plus the case-sensitive `statesIn` (which, in all-caps text, only accepts those codes inside a list of states). Every FDA source in `/api/recalls` reports `truncated: true` and `oldest` when openFDA had more matches than were fetched, so the list can say "showing the newest N".
+
+**USDA's "closed" flag is believed after 90 days.** In practice USDA marks most notices not-active within days of issuing them — the committed snapshot once had a three-day-old Class I pork recall flagged closed — and "This recall has ended" is a headline, not a footnote. So a USDA notice is called ended — in the index, the area list, the digest, share cards and push alike — only when the flag is false *and* the notice is over 90 days old (`FSIS_TRUST_CLOSED_DAYS` and `fsisStatus` in `src/lib/sources.js`). The area list also shows USDA's raw flag, as the **Closed** badge with its disclosure, which says only that USDA stopped tracking the notice.
+
+## Follows and alerts
+
+**Follows** ("products I buy") are short phrases — "spinach", "Trader Joe's" — kept in `localStorage` (`rr-follows`, `src/lib/follows.js`) and matched literally against product and firm names: every word must start a word, no fuzzy matching, and never the recall reason, so "milk" does not fire on every undeclared-milk allergen notice. Any card can be followed with one tap; the digest lists matches first.
+
+**Alerts** are web push (`public/sw.js`, `src/lib/push.js`, `api/push.js`, `api/_lib/send-digest.js`), offered only where they can work:
+
+- **What is sent:** a weekly digest of new recalls in your state (Saturday, `0 14 * * 6` UTC), and a push within the day for a new Class I recall in your state or one matching a follow (`30 15 * * *`). A week with nothing new sends nothing, rather than a "0 recalls" push.
+- **What is stored:** the push subscription, the two-letter state and the follow terms (at most 20, of at most 40 characters — the alerts sheet names any it could not include). One Blob file per subscriber, keyed by a hash of the endpoint. Never coordinates. Turning alerts off deletes it; a push service's 410 deletes it too.
+- **iPhone and iPad** only deliver push to a site added to the Home Screen and opened from there, so in a Safari tab the alerts sheet says that instead of offering a button that cannot work. `public/manifest.webmanifest` and the icons are what make "Add to Home Screen" produce an app.
+- **The service worker has no fetch handler**, on purpose: it can never serve a stale page or a stale recall list, which for this app is the worst failure available.
+- An existing subscription is kept in step when the follows or the state change, without prompting. The browser's permission prompt only ever comes from a click on *Turn on alerts* (or the stories' *Get a weekly heads-up*, which calls it directly).
+
+Environment (server-side only, see `.env.example`): `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` (generate once with `npx web-push generate-vapid-keys`; rotating them orphans every subscription), `VAPID_SUBJECT`, and `CRON_SECRET`, which `/api/push?action=digest` requires since it sends pushes (with VAPID keys set and no `CRON_SECRET`, it refuses to run). Subscription endpoints must belong to a browser push service (FCM, Mozilla, Apple, Windows); anything else is refused, so the cron can never be pointed at an arbitrary URL. With either VAPID key unset, push is simply off: `GET /api/push` reports `{ enabled: false }`, the cron returns a no-op message, and the app hides the offer. `PUSH_BLOB_ACCESS=private` is only for a Blob store created private.
 
 ## Running it
 
@@ -85,6 +195,10 @@ Those rules capture with `:path(.*)` and not `:path*`, and the difference is the
 
 Scanned barcodes *are* sent, and the distinction is deliberate: a UPC identifies a product, not a person, and it is the only way to measure whether the coverage problem described below is actually biting in the field. `scan_completed` carries `notices_with_codes` alongside the result for the same reason the interface shows it — a miss against forty notices and a miss against nothing at all are not the same event.
 
+**Search text is sent on the same argument, with a guard.** What goes into a box labelled "Product, brand or barcode" names a product, and "what do people search for and not find" is the index's coverage question just as unmatched scans are the barcode one. But a box is a box, so `searchQueryProp` in `src/lib/analytics.js` drops anything shaped like a ZIP, an email address, a phone number or a street address to `null` before it leaves, and caps the rest at 60 characters. The box searches as you type, so `search_submitted` fires once a query has sat unchanged for 1.2 seconds, with the result count and whether openFDA had to be asked live. Follow terms go through the same guard on `follow_added`. The other Home events carry outcome words and recall ids, which are public notice numbers: `verdict_viewed` (`verdict`, `source`, and `via` search, digest or share link), `share_clicked` (`outcome`: shared, copied or failed — mostly a dismissed share sheet), `story_viewed`, `caught_up`, `push_enabled` / `push_failed` (`reason`).
+
+**Location and scope events.** `location_set` carries `method` (`zip`, `address`, `geo`, `recent`, or `saved` for the silent restore) and the state; `location_failed` carries the method and the error code from `GEO_ERRORS` — never the typed text, never the ZIP. `location_picker_opened` says where it was opened from (`header`, `search_card`, `digest`, `stores_empty`, `alerts`, `scope_switch`, `stories`) and whether a location was already set. `scope_changed` carries `from`, `to` and `via` (`header`, `url`, `location_set`, `forget`, `recalls_chip`, `stores_note`), and `scope` (`near` | `us`) is registered as a super property so every event, autocapture included, can be split by it; `search_submitted` and `verdict_viewed` carry it too, and `recalls_loaded` for the national list has `scope: "us"` and no state.
+
 Session replay is on with `maskAllInputs` and `maskTextSelector: "*"`, which greys out every string in the recording. That is a real cost to how readable a replay is, taken because the flow most worth watching is exactly the flow carrying someone's address. The comment in `src/lib/analytics.js` says precisely what to loosen, and what to mark `ph-no-capture` first, if that trade stops being worth it.
 
 **Preview deploys report too.** `import.meta.env.DEV` is true only under the dev server, so every `vite build` is live the moment the key is scoped to that environment — which is what makes a preview testable, and also what would quietly mix branch deploys, PR previews and whatever automation finds a preview URL into the same funnels as real users. Every event therefore carries `environment`, registered as a super property from `VITE_VERCEL_ENV` (Vercel injects it into Vite builds on its own). Filter on `environment = production` for any number you intend to act on.
@@ -105,6 +219,10 @@ So the scanner refuses to let a miss look like a green tick. The clear state is 
 
 `status` is openFDA's own lifecycle field (Ongoing / Completed / Terminated / Pending), so "resolved" is public data that was being filtered away rather than a gap in the feeds. This endpoint reports it, which turns silence into an answer.
 
+A text query searches product, firm and reason, 100 per kind, and is ranked on the server (`api/_lib/lookup-rank.js`): the phrase in the firm name or the first 80 characters of the product description, then every word starting a word outside an ingredient list, then everything else. A match that only mentions the word in an ingredient list is dropped when anything better exists — so "sugar" finds the sugar recall, not every cookie. It returns the top 40 plus `total`, `dropped`, `truncated` and `lastUpdated`.
+
+`node scripts/check-data.mjs` runs these rules offline against fixtures in `scripts/fixtures/`, including the September 2026 United Sugar recall checked from New York ("Not reported in New York") and from Texas ("Distributed in Texas").
+
 ## How the store matching works (and its limits)
 
 Government recall data is product-centric, not store-centric. Recall notices name the **chains** that received recalled lots (e.g. "distributed to Costco stores in CA, OR, WA"), but no public feed tracks store-level inventory. Yanked therefore:
@@ -124,14 +242,26 @@ One more case matters, because it is the app's whole premise: a notice whose dis
 ```
 index.html                      — shell; applies the stored theme before first paint
 src/index.css                   — design tokens, light/dark, chips, map pins, motion
-src/App.jsx                     — layout, state, filtering, both draggable dividers
-src/components/MapView.jsx      — MapLibre map, markers, selection painting
+src/App.jsx                     — layout, state, filtering, both draggable dividers; Home, deep links, alerts
+src/components/RecallSearch.jsx — Home's search: national index + live openFDA, grouped by verdict
+src/components/VerdictCard.jsx  — one recall answered for one state: evidence, map, share, follow
+src/components/StateMap.jsx     — tile-grid US map of what a notice names (neutral, never red/green)
+src/components/HomeDigest.jsx   — "this week in CA", aisle rail, follows, ways out to the map
+src/components/AisleStories.jsx — the aisle stories viewer (tap, hold, swipe, keyboard)
+src/components/MapView.jsx      — MapLibre map, markers, selection painting (lazy chunk)
 src/components/FilterSheet.jsx  — the one filter surface: sheet on a phone, popover at md+
 src/components/ui/              — button, badge, input
 src/lib/states.js               — US state name/abbreviation tables
 src/lib/retailers.js            — chain dictionary + recall-text matcher (regex, word-bounded)
 src/lib/geo.js                  — browser geolocation, Zippopotam ZIP + Nominatim geocoding, haversine
 src/lib/sources.js              — openFDA / FSIS / CPSC fetchers → one normalized recall shape
+src/lib/verdict.js              — coverage, the five verdicts, and the one "is it in my area" rule
+src/lib/search-index.js         — load + search the national index (MiniSearch), trending, live lookup
+src/lib/index-server.js         — the same index read off disk, for the API functions
+src/lib/digest.js               — the digest's counting and wording, pure and node-runnable
+src/lib/follows.js              — "products I buy" and the last-visit marker, in localStorage
+src/lib/share.js                — share links and the one short-form verdict wording (card, unfurl)
+src/lib/push.js, push-store.js  — web push client; subscription validation + Blob storage
 src/lib/stores.js               — store lookup + dedupe against the chain dictionary
 src/lib/category.js             — what kind of product it is (icon + type filter)
 src/lib/reason.js               — why it was recalled (hazard label + reason filter)
@@ -142,15 +272,21 @@ src/lib/classification.js       — what Class I/II/III and USDA's risk words ac
 src/lib/feed-cache.js           — last-good copies of the feeds, in Vercel Blob
 src/lib/blob.js                 — the Blob token, read from the RR_BLOB_-prefixed name
 src/lib/theme.js, tuning.js     — light/dark, and the DialKit-tunable motion constants
-api/                            — Vercel functions: recalls, stores, per-feed proxies, diagnostics
+api/                            — Vercel functions (11 of the Hobby plan's 12 — see Design notes): recalls, stores, per-feed proxies, diagnostics
 api/lookup.js                   — one product across openFDA, INCLUDING finished recalls
+api/share.js                    — /r/:id unfurls: meta tags + redirect; ?format=png is the 1200×630 verdict card
+api/push.js                     — store / remove a push subscription (state + follows only); ?action=digest runs the crons
+api/_lib/                       — og.js (the card) and send-digest.js (the crons): code, not deployed functions
+public/sw.js, manifest.webmanifest — push-only service worker (no fetch handler) and install manifest
+scripts/build-index.mjs         — build public/feeds/index.json, the national index
 api/refresh-feeds.js            — daily cron: warm the FSIS and CPSC caches off the request path
-scripts/refresh-feeds.mjs       — fetch the feeds from a GitHub runner and commit the snapshot
+scripts/refresh-feeds.mjs       — fetch the feeds from a GitHub runner, build the index, commit both
 public/feeds/                   — the committed snapshots; machine-generated, see its README
 ```
 
 Design notes:
 
+- **Twelve functions, and every file in `api/` is one.** Vercel's Hobby plan refuses a deployment with more than twelve serverless functions, and it counts each file directly under `api/`. So new server work rides on an existing function behind a query parameter — the verdict card is `/api/share?format=png`, the digest crons are `/api/push?action=digest`, the All US list is `/api/recalls?scope=us` (every active notice, no area filter; `400` with a state) — with the code itself in `api/_lib/`, which the underscore keeps from being deployed on its own. Count `ls api/*.js` before adding a file.
 - **Per-source resilience:** each feed is fetched with `Promise.allSettled`; one failure never breaks the page. openFDA's "no results" 404 is treated as an empty set.
 - **Four tiers for USDA and CPSC, because one is not enough.** `https://www.fsis.usda.gov/fsis/api/recall/v/1?format=json` is the documented endpoint, it is correct, and it takes no API key — it is served off the agency's own web host rather than from behind api.data.gov, so a 403 is not asking for a credential. It nonetheless refuses this app's serverless function much of the time, and CPSC's `saferproducts.gov` returns 180 days as one uncompressed document that regularly outruns the request budget. So the data is fetched from four places that fail independently: (1) a live server-side fetch with a few spaced retries; (2) a Vercel Blob copy, warmed daily by `api/refresh-feeds.js` **off** the request path, where a cron can afford to be patient; (3) a direct fetch from the user's own browser, which is a different client on a different network; and (4) a snapshot committed to `public/feeds/` by a GitHub Action. Each tier says how old it is, and the recall list names which one answered.
 - **The fourth tier is the one that matters, and both sides read it.** Tiers 1–3 all ultimately need USDA to answer *this deployment* at some point; if it never does, they are empty together. `.github/workflows/refresh-feeds.yml` runs `scripts/refresh-feeds.mjs` on a GitHub runner four times a day — a different network with a different IP reputation — and commits the result, so the build ships with the data as a static asset needing no Blob store, no environment variable, and no cooperation from USDA at request time. The browser reads that snapshot over the CDN and the server reads its own copy off disk (`src/lib/snapshot.js`, the last tier of `feedWithFallback`) — without the server half, a deployment with refused egress and an unattached Blob store answers `/api/recalls` with "USDA FSIS: unavailable" while the data sits inside it.

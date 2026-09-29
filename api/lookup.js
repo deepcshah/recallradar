@@ -13,10 +13,29 @@
  *
  *   GET /api/lookup?upc=012345678905
  *   GET /api/lookup?q=romaine%20lettuce
+ *
+ * A text query searches product_description, recalling_firm and
+ * reason_for_recall, 100 per kind (openFDA's maximum), and is then ranked
+ * here — see api/_lib/lookup-rank.js — because "sugar" otherwise returns
+ * every product with sugar in its ingredients. When a kind has more matches
+ * than one page, a second firm-only query (always precise) is added so a
+ * firm's recall cannot be crowded out by ingredient mentions.
+ *
+ * Response (all older fields unchanged):
+ *   { query, matches: [...top 40, each with `relevance` 1–3],
+ *     total        relevant matches the 40 were drawn from
+ *     dropped      ingredient-list-only matches left out
+ *     upstreamTotal  openFDA's own match count, summed over kinds
+ *     truncated    true when openFDA had more matches than were fetched
+ *     lastUpdated  newest openFDA meta.last_updated across kinds (YYYY-MM-DD)
+ *     lastUpdatedByKind, activeCount, resolvedCount, partial? }
  */
+import { rankMatches } from "./_lib/lookup-rank.js";
+
 const KINDS = ["food", "drug", "device"];
 const LOOKBACK_DAYS = 1095; // three years: long enough to cover "I saw it on the news"
-const LIMIT = 25;
+const LIMIT = 100; // openFDA's per-request maximum
+const RETURN = 40;
 
 function fmt(d) {
   return d.toISOString().slice(0, 10).replace(/-/g, "");
@@ -34,7 +53,7 @@ async function jfetch(url, timeoutMs = 12000) {
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(url, { signal: ctrl.signal, headers: { Accept: "application/json" } });
-    if (res.status === 404) return { results: [] }; // openFDA's "no matches"
+    if (res.status === 404) return { results: [], meta: { results: { total: 0 } } }; // openFDA's "no matches"
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } finally {
@@ -60,36 +79,56 @@ export default async function handler(req, res) {
 
   const clause = upc
     ? `(${forms.map((f) => `code_info:"${f}"+OR+product_description:"${f}"`).join("+OR+")})`
-    : `(product_description:"${q}"+OR+recalling_firm:"${q}")`;
-  const search = `${clause}+AND+report_date:[${since}+TO+${until}]`;
+    : `(product_description:"${q}"+OR+recalling_firm:"${q}"+OR+reason_for_recall:"${q}")`;
+  const window = `+AND+report_date:[${since}+TO+${until}]`;
+  const urlFor = (kind, c) =>
+    `https://api.fda.gov/${kind}/enforcement.json?search=${(c + window).replace(/ /g, "+")}` +
+    `&sort=report_date:desc&limit=${LIMIT}` + (key ? `&api_key=${key}` : "");
+
+  const toMatch = (kind) => (r) => ({
+    id: `fda-${kind}-${r.recall_number || r.event_id}`,
+    source: { food: "FDA Food", drug: "FDA Drug", device: "FDA Device" }[kind],
+    product: r.product_description || "",
+    firm: r.recalling_firm || "",
+    reason: r.reason_for_recall || "",
+    classification: r.classification || "",
+    // The whole point of this endpoint.
+    status: r.status || "Unknown",
+    terminationDate: r.termination_date || "",
+    reportDate: r.report_date || "",
+    distribution: r.distribution_pattern || "",
+    codeInfo: r.code_info || "",
+  });
 
   const jobs = KINDS.map(async (kind) => {
-    const url =
-      `https://api.fda.gov/${kind}/enforcement.json?search=${search.replace(/ /g, "+")}` +
-      `&sort=report_date:desc&limit=${LIMIT}` + (key ? `&api_key=${key}` : "");
-    const data = await jfetch(url);
-    return ((data && data.results) || []).map((r) => ({
-      id: `fda-${kind}-${r.recall_number || r.event_id}`,
-      source: { food: "FDA Food", drug: "FDA Drug", device: "FDA Device" }[kind],
-      product: r.product_description || "",
-      firm: r.recalling_firm || "",
-      reason: r.reason_for_recall || "",
-      classification: r.classification || "",
-      // The whole point of this endpoint.
-      status: r.status || "Unknown",
-      terminationDate: r.termination_date || "",
-      reportDate: r.report_date || "",
-      distribution: r.distribution_pattern || "",
-      codeInfo: r.code_info || "",
-    }));
+    const data = await jfetch(urlFor(kind, clause));
+    const results = (data && data.results) || [];
+    const total = (data && data.meta && data.meta.results && data.meta.results.total) || results.length;
+    const lastUpdated = (data && data.meta && data.meta.last_updated) || null;
+    /* More matches than one page: add the firm-only query, which cannot be
+     * flooded by ingredient lists. Best-effort — the first page stands alone. */
+    if (!upc && total > results.length) {
+      try {
+        const firm = await jfetch(urlFor(kind, `recalling_firm:"${q}"`));
+        results.push(...((firm && firm.results) || []));
+      } catch (_) { /* keep the first page */ }
+    }
+    return { matches: results.map(toMatch(kind)), total, fetched: results.length, lastUpdated };
   });
 
   const settled = await Promise.allSettled(jobs);
-  const matches = [];
+  const all = [];
   const failed = [];
+  const lastUpdatedByKind = {};
+  let upstreamTotal = 0;
+  let truncated = false;
   settled.forEach((s, i) => {
-    if (s.status === "fulfilled") matches.push(...s.value);
-    else failed.push(KINDS[i]);
+    if (s.status === "fulfilled") {
+      all.push(...s.value.matches);
+      upstreamTotal += s.value.total;
+      if (s.value.total > s.value.fetched) truncated = true;
+      if (s.value.lastUpdated) lastUpdatedByKind[KINDS[i]] = s.value.lastUpdated;
+    } else failed.push(KINDS[i]);
   });
 
   // Every source failing is an outage, not an answer — say so rather than
@@ -98,15 +137,27 @@ export default async function handler(req, res) {
     return res.status(502).json({ error: "openFDA is unreachable right now — try again shortly." });
   }
 
-  matches.sort((a, b) => String(b.reportDate).localeCompare(String(a.reportDate)));
-  const active = matches.filter((m) => /ongoing|pending/i.test(m.status));
+  // The firm-only query overlaps the first; ids are stable.
+  const seen = new Set();
+  const unique = all.filter((m) => !seen.has(m.id) && seen.add(m.id));
+  const { ranked, dropped } = upc
+    ? { ranked: unique.sort((a, b) => String(b.reportDate).localeCompare(String(a.reportDate))).map((m) => ({ ...m, relevance: 3 })), dropped: 0 }
+    : rankMatches(unique, q);
+  const active = ranked.filter((m) => /ongoing|pending/i.test(m.status));
+  const lastUpdated = Object.values(lastUpdatedByKind).sort().pop() || null;
 
   res.setHeader("Cache-Control", "public, s-maxage=1800, stale-while-revalidate=86400");
   return res.status(200).json({
     query: upc ? { upc } : { q },
-    matches: matches.slice(0, 40),
+    matches: ranked.slice(0, RETURN),
+    total: ranked.length,
+    dropped,
+    upstreamTotal,
+    truncated,
+    lastUpdated,
+    lastUpdatedByKind,
     activeCount: active.length,
-    resolvedCount: matches.length - active.length,
+    resolvedCount: ranked.length - active.length,
     partial: failed.length ? failed : undefined,
   });
 }

@@ -1312,3 +1312,38 @@ button:disabled,
   gap: 0.25rem;
   padding-right: 0.375rem;
 }
+
+/* ───────────────────── anchored popover (ResponsiveSurface) ──────────────
+ * The md+ shape of the location picker. It grows out of the control that
+ * opened it — top-left origin, because it hangs left-aligned under it — and
+ * leaves faster than it arrived. Presence (mount through the exit) is the
+ * same useSheetPresence the sheets use; SHEET_EXIT_MS covers the 120ms. */
+.popover-panel {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+  transform-origin: top left;
+  transition: opacity 120ms ease, transform 120ms cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.popover-panel.is-shown {
+  opacity: 1;
+  transform: none;
+  transition-duration: 160ms;
+}
+
+/* ScopeSwitch: the raised pill slides between the two options. */
+.scope-pill {
+  transition: transform 180ms cubic-bezier(0.2, 0.7, 0.3, 1), width 180ms cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+
+/* DialKit (dev/preview only) sits under every sheet (z-75) and popover
+ * (z-70), and top-right at lg, clear of the tab bar, footer and map controls. */
+.dialkit-root { z-index: 60 !important; }
+/* The authoring puck sits bottom-right, lifted above the desktop footer
+ * strip. Top-right it covered the header's theme/More buttons; bottom-left
+ * the phone's Home tab, the footer and the map's radius control. Bottom-right
+ * at lg is page margin on Home and a scrolling list in Stores & recalls. */
+.dialkit-panel[data-position="bottom-right"] { bottom: 56px !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .popover-panel, .scope-pill { transition: none !important; }
+}

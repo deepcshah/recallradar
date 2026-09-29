@@ -25,6 +25,17 @@
  * this app can learn — it is the only measure of whether the barcode
  * coverage problem described in lib/upc.js is actually biting.
  *
+ * Search text IS sent too, on the same argument, with one guard. The home
+ * search box is labelled "Product, brand or barcode", and what people type
+ * there — "romaine", "pork sausage", a UPC — names a product, not a person.
+ * It is also the only way to learn what people come looking for and do not
+ * find, which is the index's coverage problem in the same way unmatched
+ * scans are the barcode one. The guard is `searchQueryProp` below: a box is
+ * still a box, and anything shaped like a ZIP, an email address, a phone
+ * number or a street address is dropped to `null` before it leaves. Follow
+ * terms ("products I buy") are the same kind of string and go through the
+ * same guard.
+ *
  * SESSION REPLAY is on with text and inputs masked (see `session_recording`
  * below), which keeps a typed ZIP and a resolved city out of the recording
  * at the cost of making replays read as grey boxes. The comment there says
@@ -128,7 +139,7 @@ export function initAnalytics() {
       });
       /* A super property, not a per-call one: it has to ride on autocapture
        * and $pageview too, and neither goes through track(). */
-      posthog.register({ environment: VERCEL_ENV });
+      posthog.register({ environment: VERCEL_ENV, ...superProps });
       ph = posthog;
       for (const [event, props] of pending.splice(0)) posthog.capture(event, props);
     })
@@ -139,6 +150,18 @@ export function initAnalytics() {
       failed = true;
       pending.length = 0;
     });
+}
+
+/* Super properties set before PostHog has loaded (the scope is known on the
+ * first render, the library arrives a few hundred ms later). */
+const superProps = {};
+
+/** Register a property on every later event, autocapture included. Only
+ *  coarse values belong here — `scope` is "near" | "us", never a place. */
+export function registerSuper(props) {
+  Object.assign(superProps, props);
+  if (!ENABLED || failed || !ph) return;
+  try { ph.register(props); } catch (_) { /* never break the page */ }
 }
 
 /** Send an event. A no-op when PostHog is not configured or not enabled. */
@@ -171,4 +194,28 @@ export function geoFailureReason(err) {
   if (/timeout|timed out/.test(m)) return "timeout";
   if (/unavailable|position/.test(m)) return "position_unavailable";
   return "error";
+}
+
+/* What a typed product query may send, per the header: the text, trimmed,
+ * lower-cased and capped — or null when it looks like it is about the person
+ * typing rather than the product. Deliberately blunt; a false positive costs
+ * one row of a report, a false negative puts someone's address in it.
+ *
+ *   - exactly five digits, or ZIP+4          → a ZIP, not a product
+ *   - an @                                   → an email address
+ *   - 10–11 digits once separators go, typed with separators → a phone number
+ *     (a bare 12–14 digit run is a barcode and is kept)
+ *   - a number followed by a street word     → an address
+ */
+const STREET_RE = /\b\d+\s+\w+.*\b(st|street|ave|avenue|rd|road|blvd|dr|drive|ln|lane|ct|court|way|hwy|pl|place|apt|suite)\b/i;
+
+export function searchQueryProp(query) {
+  const q = String(query || "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!q) return null;
+  if (/^\d{5}(-\d{4})?$/.test(q)) return null;
+  if (q.includes("@")) return null;
+  const digits = q.replace(/\D/g, "");
+  if (/[-().\s]/.test(q) && /^[\d\s().+-]+$/.test(q) && digits.length >= 10 && digits.length <= 11) return null;
+  if (STREET_RE.test(q)) return null;
+  return q.slice(0, 60);
 }

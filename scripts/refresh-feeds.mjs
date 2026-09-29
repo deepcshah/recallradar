@@ -30,8 +30,19 @@
  * over the top of a good one. The previous snapshot keeps serving and the run
  * goes red, which is the signal worth having.
  *
+ * ── AND THEN THE NATIONAL INDEX ──────────────────────────────────────────
+ * Once the snapshots are on disk, the same run rebuilds public/feeds/index.json
+ * (scripts/build-index.mjs): the location-free search index over all three
+ * agencies, which also fetches a year of openFDA enforcement reports. It runs
+ * after the feeds rather than beside them so it indexes exactly what was just
+ * committed, and it runs even when a feed failed — it reads whatever snapshot
+ * is on disk, which is the last good one. An openFDA failure carries the
+ * previous FDA records over, marks them stale in the file, and turns this
+ * run red like any other unhealthy feed.
+ *
  * Usage:  node scripts/refresh-feeds.mjs
- * Exit 0 only when every feed fetched, passed its checks, and is on disk.
+ * Exit 0 only when every feed fetched, passed its checks, and is on disk, and
+ * the index was rebuilt with fresh openFDA data.
  */
 import { writeFile, mkdir, readFile, appendFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -39,6 +50,7 @@ import { fileURLToPath } from "node:url";
 
 import { slimFsis, slimCpsc, fsisIsActive, CPSC_LOOKBACK_DAYS } from "../src/lib/sources.js";
 import { FEED_HEADERS, FSIS_ENDPOINTS, FSIS_HEADER_SETS, cpscUrl, fetchFirstOk } from "../src/lib/feeds.js";
+import { buildIndex } from "./build-index.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT_DIR = resolve(ROOT, "public/feeds");
@@ -287,6 +299,29 @@ async function main() {
     const changed = await write(feed.name, notices, shape, prev);
     console.log(`  ${feed.name}: ${changed ? `wrote ${notices.length} notices` : `unchanged (${notices.length} notices) — not rewriting`}`);
     results.push({ ...base, ok: true, changed, count: notices.length, rawCount: shape.rawCount, problems: [], shape });
+  }
+
+  /* The index step. Its row in the report uses the same columns as a feed:
+   * "kept" is the record count, and a problem (openFDA failed or collapsed,
+   * a snapshot missing, over the size budget) is printed in the note. Only an
+   * FDA refresh failure or a crash turns the run red — a size warning is
+   * worth reading, not worth paging anyone over. */
+  console.log("index:");
+  try {
+    const prevIndex = await readFile(resolve(OUT_DIR, "index.json"), "utf8").then(JSON.parse).catch(() => null);
+    const { index, changed, fdaOk, problems } = await buildIndex();
+    for (const p of problems) console.log(`  index: ${p}`);
+    results.push({
+      name: "index", label: "National index", ok: fdaOk, changed,
+      count: index.recalls.length, rawCount: index.recalls.length,
+      previousCount: prevIndex && Array.isArray(prevIndex.recalls) ? prevIndex.recalls.length : null,
+      problems: [], error: fdaOk ? (problems[0] || "") : `openFDA not refreshed, previous records kept — ${problems[0] || "unknown"}`,
+      shape: { sources: index.sources },
+    });
+  } catch (err) {
+    const error = String((err && err.message) || err);
+    console.log(`  index: FAILED — ${error}`);
+    results.push({ name: "index", label: "National index", ok: false, problems: [], error, shape: null, previousCount: null });
   }
 
   await report(results);
