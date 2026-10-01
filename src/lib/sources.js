@@ -165,6 +165,24 @@ function isoDay(d) {
 // Pure data -> recalls transforms, shared verbatim by api/recalls.js.
 // `loc` may be null (the national index builds without a reader).
 
+/** A stable, unique id for one openFDA enforcement record.
+ *
+ * `recall_number` is the natural key, but openFDA publishes some records with
+ * the literal string "N/A" in it — in the 2026-09-23 data, a Heinz mayonnaise
+ * and a Sun Pharma cream among them. Every such record got the same id
+ * ("fda-food-N/A"), so de-duplication kept the first and silently dropped the
+ * rest, and a shared link to any of them opened the wrong recall. Without a
+ * real recall number the id is built from the event id plus a short hash of
+ * the product text: stable across refreshes, distinct within an event. */
+export function fdaId(kind, r) {
+  const num = String((r && r.recall_number) || "").trim();
+  if (num && !/^n\/?a$/i.test(num)) return `fda-${kind}-${num}`;
+  const text = `${(r && r.product_description) || ""}|${(r && r.code_info) || ""}`;
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) >>> 0;
+  return `fda-${kind}-e${(r && r.event_id) || "0"}-${h.toString(36)}`;
+}
+
 export function normalizeFda(kind, results, loc) {
   const label = { food: "FDA Food", drug: "FDA Drug", device: "FDA Device" }[kind];
   return (results || [])
@@ -179,7 +197,7 @@ export function normalizeFda(kind, results, loc) {
       const status = fdaStatus(r);
       const endDate = status === "ended" ? isoDay(parseFdaDate(r.termination_date)) : undefined;
       return {
-        id: `fda-${kind}-${r.recall_number || r.event_id || Math.random().toString(36).slice(2)}`,
+        id: fdaId(kind, r),
         source: label,
         product: r.product_description || "(no product description)",
         firm: r.recalling_firm || "",

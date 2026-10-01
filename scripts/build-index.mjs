@@ -50,7 +50,7 @@ import { writeFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { fsisStatus, fsisGeography, fmtFdaDate, LOOKBACK_DAYS, statesIn, fdaLastUpdated } from "../src/lib/sources.js";
+import { fsisStatus, fsisGeography, fmtFdaDate, LOOKBACK_DAYS, statesIn, fdaLastUpdated, fdaId } from "../src/lib/sources.js";
 import { categoryFor } from "../src/lib/category.js";
 import { reasonFor } from "../src/lib/reason.js";
 import { upcsIn } from "../src/lib/upc.js";
@@ -142,7 +142,7 @@ function finish(rec, upcText) {
 export function fdaToIndex(kind, r, caps = CAP_TIERS[0]) {
   const status = /ongoing|pending/i.test(r.status || "") ? "active" : "ended";
   const rec = {
-    id: `fda-${kind}-${r.recall_number || r.event_id}`,
+    id: fdaId(kind, r),
     source: FDA_LABEL[kind],
     product: cap(r.product_description || "(no product description)", caps.text),
     firm: cap(r.recalling_firm, caps.firm),
