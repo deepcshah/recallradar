@@ -24,7 +24,12 @@
  * both import it (api/_lib/lookup-rank.js re-exports it for the server).
  */
 
-const INGREDIENTS_RE = /\bingredients?\s*:/i;
+/* Where the ingredient list starts. Not only "Ingredients:" — real openFDA
+ * text also writes it without the colon (H-1309-2026: "INGREDIENTS Organic
+ * Gluten Free Oats … Coconut Sugar"), and missing that made a granola rank as
+ * being about sugar. Everything from the first "ingredient(s)" on is treated
+ * as the list; what a notice names its product comes before it. */
+const INGREDIENTS_RE = /\bingredients?\b/i;
 
 function esc(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

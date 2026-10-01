@@ -61,6 +61,32 @@ async function jfetch(url, timeoutMs = 12000) {
   }
 }
 
+/* openFDA's "no matches" is a 404 with no meta, so a miss carries no
+ * last_updated — and "nothing matched" is only an answer if you know how old
+ * the data was. One unfiltered request returns it; it changes weekly, so it is
+ * kept for an hour per warm instance. Best-effort: null when it fails. */
+let lastUpdatedProbe = { at: 0, value: null };
+async function openFdaLastUpdated(key) {
+  if (Date.now() - lastUpdatedProbe.at < 3600000) return lastUpdatedProbe.value;
+  try {
+    const data = await jfetch(`https://api.fda.gov/food/enforcement.json?limit=1${key ? `&api_key=${key}` : ""}`, 8000);
+    lastUpdatedProbe = { at: Date.now(), value: (data && data.meta && data.meta.last_updated) || null };
+  } catch (_) {
+    return null; // not cached: worth asking again next time
+  }
+  return lastUpdatedProbe.value;
+}
+
+/* The phrase clause misses when the words are not adjacent in that order —
+ * "acme sugar" against a firm filed as "Acme Sugars Corporation", or
+ * "brown sugar powdered" against "powdered and light brown sugar". This is
+ * the fallback: every word must appear, each in any of the three fields. */
+function wordsClause(q) {
+  const ws = q.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 2).slice(0, 6);
+  if (ws.length < 2) return null;
+  return ws.map((w) => `(product_description:${w}+OR+recalling_firm:${w}+OR+reason_for_recall:${w})`).join("+AND+");
+}
+
 export default async function handler(req, res) {
   const upc = String(req.query.upc || "").replace(/\D/g, "").slice(0, 14);
   const q = phrase(req.query.q || "");
@@ -100,8 +126,8 @@ export default async function handler(req, res) {
     codeInfo: r.code_info || "",
   });
 
-  const jobs = KINDS.map(async (kind) => {
-    const data = await jfetch(urlFor(kind, clause));
+  const runKind = (c) => async (kind) => {
+    const data = await jfetch(urlFor(kind, c));
     const results = (data && data.results) || [];
     const total = (data && data.meta && data.meta.results && data.meta.results.total) || results.length;
     const lastUpdated = (data && data.meta && data.meta.last_updated) || null;
@@ -114,9 +140,16 @@ export default async function handler(req, res) {
       } catch (_) { /* keep the first page */ }
     }
     return { matches: results.map(toMatch(kind)), total, fetched: results.length, lastUpdated };
-  });
+  };
 
-  const settled = await Promise.allSettled(jobs);
+  let settled = await Promise.allSettled(KINDS.map(runKind(clause)));
+  let matchedOn = upc ? "barcode" : "phrase";
+  const nothing = (ss) => ss.every((s) => s.status === "fulfilled" && s.value.total === 0);
+  const loose = upc ? null : wordsClause(q);
+  if (loose && nothing(settled)) {
+    settled = await Promise.allSettled(KINDS.map(runKind(`(${loose})`)));
+    matchedOn = "words";
+  }
   const all = [];
   const failed = [];
   const lastUpdatedByKind = {};
@@ -144,11 +177,12 @@ export default async function handler(req, res) {
     ? { ranked: unique.sort((a, b) => String(b.reportDate).localeCompare(String(a.reportDate))).map((m) => ({ ...m, relevance: 3 })), dropped: 0 }
     : rankMatches(unique, q);
   const active = ranked.filter((m) => /ongoing|pending/i.test(m.status));
-  const lastUpdated = Object.values(lastUpdatedByKind).sort().pop() || null;
+  const lastUpdated = Object.values(lastUpdatedByKind).sort().pop() || (await openFdaLastUpdated(key));
 
   res.setHeader("Cache-Control", "public, s-maxage=1800, stale-while-revalidate=86400");
   return res.status(200).json({
     query: upc ? { upc } : { q },
+    matchedOn,
     matches: ranked.slice(0, RETURN),
     total: ranked.length,
     dropped,
