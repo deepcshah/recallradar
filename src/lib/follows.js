@@ -139,3 +139,107 @@ export function markVisit() {
   writeJSON(LAST_VISIT_KEY, new Date().toISOString());
   return prev;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * FOLLOWED RECALLS — "notify me about updates" on one specific notice
+ *
+ * Stored beside the terms, in this browser only (`rr-follow-recalls`):
+ *
+ *   [{ id, title, snap, at }]
+ *
+ * `title` is the product line as the reader saw it (public notice text, kept
+ * so the Alerts list can still name a recall that has since left the index);
+ * `snap` is recall-watch.js recallSnapshot() at the moment it was followed —
+ * or at the moment the reader last marked its update as read — and is what
+ * the in-app inbox diffs against. The ids (never the titles) go to the server
+ * only when an alert channel is on; the server takes its own snapshot.
+ * ───────────────────────────────────────────────────────────────────────── */
+const RECALLS_KEY = "rr-follow-recalls";
+const ALERTS_SEEN_KEY = "rr-alerts-seen";
+/** Matches the server's cap (push-store.js MAX_RECALLS). */
+export const MAX_FOLLOWED_RECALLS = 50;
+
+function cleanEntry(e) {
+  if (!e || typeof e !== "object" || typeof e.id !== "string" || !e.id || e.id.length > 100) return null;
+  return {
+    id: e.id,
+    title: String(e.title || "").slice(0, 160),
+    snap: e.snap && typeof e.snap === "object" ? e.snap : null,
+    at: typeof e.at === "string" ? e.at : null,
+  };
+}
+
+/** [{ id, title, snap, at }], oldest first. */
+export function getFollowedRecalls() {
+  const v = readJSON(RECALLS_KEY, []);
+  return Array.isArray(v) ? v.map(cleanEntry).filter(Boolean) : [];
+}
+
+export function getFollowedRecallIds() {
+  return getFollowedRecalls().map((e) => e.id);
+}
+
+export function isFollowingRecall(id) {
+  return getFollowedRecalls().some((e) => e.id === id);
+}
+
+/** Dispatched for changes that matter to the Alerts inbox but not to the
+ *  server (a snapshot acknowledged, the inbox marked read), so they don't
+ *  trigger a channel sync the way FOLLOWS_EVENT does. */
+export const ALERTS_EVENT = "rr-alerts-change";
+
+function announceAlerts() {
+  try { window.dispatchEvent(new CustomEvent(ALERTS_EVENT)); } catch (_) { /* no window */ }
+}
+
+function saveRecalls(list, { sync = true } = {}) {
+  const next = list.slice(-MAX_FOLLOWED_RECALLS);
+  writeJSON(RECALLS_KEY, next);
+  if (sync) announce(getFollows());
+  announceAlerts();
+  return next;
+}
+
+/** Follow one recall. `snap` is recallSnapshot() of the best copy the caller
+ *  has (the index record when there is one). Returns { ok, list, full }:
+ *  `full` when the cap is reached — the caller says so rather than silently
+ *  dropping the oldest. */
+export function followRecall({ id, title, snap }) {
+  const list = getFollowedRecalls();
+  if (!id || list.some((e) => e.id === id)) return { ok: true, list, full: false };
+  if (list.length >= MAX_FOLLOWED_RECALLS) return { ok: false, list, full: true };
+  const next = saveRecalls([...list, cleanEntry({ id, title, snap, at: new Date().toISOString() })]);
+  return { ok: true, list: next, full: false };
+}
+
+export function unfollowRecall(id) {
+  const list = getFollowedRecalls();
+  const next = list.filter((e) => e.id !== id);
+  if (next.length !== list.length) saveRecalls(next);
+  return next;
+}
+
+/** After an update has been read: store the new snapshot as the baseline. */
+export function acknowledgeRecall(id, snap) {
+  const list = getFollowedRecalls();
+  let changed = false;
+  const next = list.map((e) => {
+    if (e.id !== id || !snap) return e;
+    changed = true;
+    return { ...e, snap };
+  });
+  if (changed) saveRecalls(next, { sync: false });
+  return next;
+}
+
+/** When the reader last marked the Alerts inbox as read (ISO), or null. */
+export function getAlertsSeen() {
+  const v = readJSON(ALERTS_SEEN_KEY, null);
+  return typeof v === "string" && Number.isFinite(Date.parse(v)) ? v : null;
+}
+
+export function markAlertsSeen(when = new Date().toISOString()) {
+  writeJSON(ALERTS_SEEN_KEY, when);
+  announceAlerts();
+  return when;
+}

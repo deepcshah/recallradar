@@ -21,6 +21,9 @@ import ScanSheet from "@/components/ScanSheet";
 import RecallSearch from "@/components/RecallSearch";
 import HomeDigest from "@/components/HomeDigest";
 import VerdictCard from "@/components/VerdictCard";
+import AlertsPanel from "@/components/AlertsPanel";
+import WatchButton from "@/components/WatchButton";
+import { useIsMd } from "@/components/ui/responsive-surface";
 import { Sheet, useSheetPresence } from "@/components/ui/sheet";
 import {
   Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
@@ -33,10 +36,13 @@ import { loadIndex, freshnessOf, recentForUs } from "@/lib/search-index";
 import { coverageLine } from "@/lib/coverage-line";
 import { cleanState } from "@/lib/share";
 import { ABBR_TO_NAME } from "@/lib/states";
-import { FOLLOWS_EVENT, getFollows, getLastVisit, markVisit } from "@/lib/follows";
 import {
-  getPushState, needsInstallForPush, pushAvailable, pushSupported, subscribePush, syncPush, unsubscribePush,
+  FOLLOWS_EVENT, ALERTS_EVENT, getFollows, getLastVisit, markVisit, getFollowedRecalls, getAlertsSeen,
+} from "@/lib/follows";
+import {
+  getPushState, needsInstallForPush, pushAvailable, pushSupported, subscribePush, unsubscribePush,
 } from "@/lib/push";
+import { alertChannels, channelPayload, computeInbox, syncChannels, PREFS_EVENT } from "@/lib/alerts";
 import { findStores, STORE_CAPS, DEFAULT_STORE_CAP } from "@/lib/stores";
 import { byId, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
 import { categoryFor } from "@/lib/category";
@@ -812,6 +818,13 @@ export default function App() {
   const [sheetRecall, setSheetRecall] = useState(null);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [push, setPush] = useState({ state: "unknown", busy: false, msg: null, dropped: [] });
+  /* Which delivery channels this deployment can actually use, per channel
+   * with a reason when off — the Alerts panel says "not available yet"
+   * rather than hiding. Null until GET /api/push answers. */
+  const [channels, setChannels] = useState(null);
+  /* Bumped on any follow / followed-recall / inbox change (this tab or
+   * another), so the inbox recomputes without a shared store. */
+  const [followsRev, setFollowsRev] = useState(0);
   const [lastVisit] = useState(sessionVisitBaseline);
   /* Offered where it can work, or where one step would make it work (an
    * iPhone in a Safari tab: add to Home Screen first). Nowhere else — a
@@ -1300,11 +1313,30 @@ export default function App() {
       /* The reader's OWN state, never verdictState: that can be the sender's
        * state from a shared link (?st=), and a subscription must not be moved
        * to Texas because a friend in Texas sent a link. */
-      if (ownState && pushSupported()) syncPush({ stateAbbr: ownState, follows: next }).catch(() => {});
+      /* Every channel that is on (push, email) is told — silently, never
+       * prompting, and not at all for channels that are off. */
+      syncChannels({ stateAbbr: ownState }).catch(() => {});
     };
+    const onPrefs = () => syncChannels({ stateAbbr: ownState }).catch(() => {});
     window.addEventListener(FOLLOWS_EVENT, onChange);
-    return () => window.removeEventListener(FOLLOWS_EVENT, onChange);
+    window.addEventListener(PREFS_EVENT, onPrefs);
+    return () => {
+      window.removeEventListener(FOLLOWS_EVENT, onChange);
+      window.removeEventListener(PREFS_EVENT, onPrefs);
+    };
   }, [ownState]);
+
+  useEffect(() => {
+    const bump = () => setFollowsRev((n) => n + 1);
+    window.addEventListener(FOLLOWS_EVENT, bump);
+    window.addEventListener(ALERTS_EVENT, bump);
+    window.addEventListener("storage", bump);
+    return () => {
+      window.removeEventListener(FOLLOWS_EVENT, bump);
+      window.removeEventListener(ALERTS_EVENT, bump);
+      window.removeEventListener("storage", bump);
+    };
+  }, []);
 
   /* A new state is a different weekly digest: tell an existing subscription.
    * Only on a CHANGE of state — the restore on every page load is the same
@@ -1316,8 +1348,8 @@ export default function App() {
     if (!st) return;
     const prev = syncedStateRef.current;
     syncedStateRef.current = st;
-    if (!prev || prev === st || !pushSupported()) return;
-    syncPush({ stateAbbr: st, follows: getFollows() }).catch(() => {});
+    if (!prev || prev === st) return;
+    syncChannels({ stateAbbr: st }).catch(() => {});
   }, [loc]);
 
   /* ── alerts ──
@@ -1337,7 +1369,8 @@ export default function App() {
   const enablePush = useCallback(async () => {
     const stateAbbr = loc && loc.stateAbbr;
     setPush((p) => ({ ...p, busy: true, msg: null, dropped: [] }));
-    const out = await subscribePush({ stateAbbr, follows: getFollows() });
+    const { follows, recalls, prefs } = channelPayload();
+    const out = await subscribePush({ stateAbbr, follows, recalls, prefs });
     if (out.ok) {
       track("push_enabled", { state: out.stateAbbr || stateAbbr || null, follows: (out.follows || []).length });
       setPush({ state: "subscribed", busy: false, msg: null, dropped: out.dropped || [] });
@@ -1356,10 +1389,41 @@ export default function App() {
     refreshPushState();
   }, [refreshPushState]);
 
+  const refreshChannels = useCallback(() => {
+    alertChannels().then(setChannels).catch(() => {});
+  }, []);
+  useEffect(() => { refreshChannels(); }, [refreshChannels]);
+
   const openAlerts = useCallback(() => {
     setAlertsOpen(true);
     refreshPushState();
-  }, [refreshPushState]);
+    refreshChannels();
+  }, [refreshPushState, refreshChannels]);
+
+  /* ── the Alerts inbox ──
+   * Computed here, in the browser, from the national index plus the live
+   * lists this page already loaded (the index copy wins on an id both have,
+   * as in the recall sheet). No channel needed: this is what the bell's
+   * count and the panel's "New for you" read. */
+  const isMd = useIsMd();
+  const { inbox, recordsById } = useMemo(() => {
+    if (!index || !Array.isArray(index.recalls)) return { inbox: null, recordsById: null };
+    const records = [...index.recalls, ...recalls, ...(national.recalls || [])];
+    const map = new Map();
+    for (const r of records) if (r && r.id && !map.has(r.id)) map.set(r.id, r);
+    return {
+      inbox: computeInbox({
+        records: [...map.values()],
+        terms: getFollows(),
+        followed: getFollowedRecalls(),
+        since: getAlertsSeen() || lastVisit,
+        stateAbbr: ownState,
+      }),
+      recordsById: map,
+    };
+    // followsRev: re-read localStorage after any follow / read-marker change.
+  }, [index, recalls, national, ownState, lastVisit, followsRev]); // eslint-disable-line react-hooks/exhaustive-deps
+  const unreadAlerts = (inbox && inbox.count) || 0;
 
   const enablePushFromStories = useCallback(() => {
     setAlertsOpen(true);
@@ -2076,6 +2140,27 @@ export default function App() {
           >
             <MoreHorizontal />
           </Button>
+          {/* Alerts: a header item from md up (the popover hangs from it), the
+              bottom bar's job below lg. Between md and lg both show and both
+              open the same popover, anchored here. */}
+          <Tooltip content={unreadAlerts ? `Alerts — ${unreadAlerts} new for what you follow` : "Alerts — what you follow, and how you're told"}>
+            <Button
+              id="btn-alerts" variant="secondary" size="sm"
+              className={"relative hidden h-9 shrink-0 px-3 md:inline-flex " + (alertsOpen ? "border-line-strong bg-panel-3" : "")}
+              onClick={() => (alertsOpen ? setAlertsOpen(false) : openAlerts())}
+              aria-haspopup="dialog"
+              aria-expanded={alertsOpen}
+              aria-controls="alerts-panel"
+              aria-label={unreadAlerts ? `Alerts, ${unreadAlerts} new` : "Alerts"}
+            >
+              <Bell /><span className="hidden xl:inline">Alerts</span>
+              {unreadAlerts > 0 && (
+                <span className="tnum absolute -right-1.5 -top-1.5 grid h-[18px] min-w-[18px] place-items-center rounded-full border-2 border-panel bg-paper px-1 text-[10px] font-bold text-panel">
+                  {unreadAlerts > 99 ? "99+" : unreadAlerts}
+                </span>
+              )}
+            </Button>
+          </Tooltip>
           <Tooltip content={theme === "system" ? "Following your system theme — click for light" : `${theme[0].toUpperCase()}${theme.slice(1)} theme — click to change`}>
             <Button
               id="btn-theme" variant="secondary" size="icon" className="hidden h-9 w-9 shrink-0 lg:ml-0 lg:inline-flex"
@@ -2194,15 +2279,15 @@ export default function App() {
             onStorySeen={(id) => track("story_viewed", { recall_id: id })}
             onCaughtUp={() => track("caught_up", { state: verdictState })}
           />
-          {pushOffered && (
+          {(pushOffered || (channels && channels.email.enabled)) && (
             <div className="flex items-center gap-3 rounded-2xl border border-line bg-panel px-4 py-3">
               <span className="grid size-9 shrink-0 place-items-center rounded-full border border-line bg-panel-2">
                 <Bell className="size-4 text-fog" aria-hidden="true" />
               </span>
               <p className="min-w-0 flex-1 text-[13px] leading-snug text-fog">
                 <span className="font-semibold text-paper">A weekly heads-up</span>
-                {" "}for {loc?.stateAbbr || "your state"}, and an alert straight away for a serious recall there
-                or one matching a product you follow.
+                {" "}for {loc?.stateAbbr || "your state"}, and an alert straight away for a serious recall there,
+                one matching a product you follow, or an update to a recall you follow — by notification or email.
               </p>
               <Button variant="secondary" size="sm" className="shrink-0 pointer-coarse:h-10" onClick={openAlerts}>
                 {push.state === "subscribed" ? "Alerts on" : "Set up"}
@@ -2951,6 +3036,7 @@ export default function App() {
                              href={r.url} target="_blank" rel="noopener noreferrer">
                             Official Notice <ExternalLink className="size-3" />
                           </a>
+                          <WatchButton recall={r} compact />
                           <details className="recall-details min-w-0 flex-1">
                             <summary className="inline-flex min-h-8 items-center tnum text-[11px] text-fog hover:text-mint">Details</summary>
                             <dl className="mt-1.5 flex flex-col gap-1 text-[11px] text-fog">
@@ -3079,22 +3165,31 @@ export default function App() {
                destination wore the icon of a control, two rows above an actual
                Filters button wearing very nearly the same one. */
             { id: "recalls", label: "Recalls", icon: ClipboardList, count: loc || usMode ? filtered.length : null },
+            /* Alerts is a destination, not a tab: like Scan it opens a
+               surface over wherever you are, so the list behind it keeps its
+               place. The badge counts what's new for your follows. */
+            { id: "alerts", label: "Alerts", icon: Bell, badge: unreadAlerts },
             { id: "scan", label: "Scan", icon: ScanLine },
-          ].map(({ id, label, icon: Icon, count }) => {
-            const on = id !== "scan" && tab === id;
+          ].map(({ id, label, icon: Icon, count, badge }) => {
+            const on = id === "alerts" ? alertsOpen : id !== "scan" && tab === id;
             const busyCount = id === "recalls" ? listBusy : scanning;
             const shown = count != null && !busyCount ? fmtCount(count) : null;
             const spoken = id === "recalls" && shown != null
               ? `Recalls, ${shown} ${usMode && !selectedStore ? "across the US" : `in ${loc?.stateAbbr || "your area"}`}`
-              : id === "near" && shown != null ? `Stores, ${shown}` : undefined;
+              : id === "near" && shown != null ? `Stores, ${shown}`
+              : id === "alerts" ? (badge ? `Alerts, ${badge} new` : "Alerts") : undefined;
             return (
               <button
                 key={id}
+                id={`tab-${id}`}
                 type="button"
-                aria-current={on ? "page" : undefined}
+                aria-current={on && id !== "alerts" ? "page" : undefined}
+                aria-expanded={id === "alerts" ? alertsOpen : undefined}
+                aria-haspopup={id === "alerts" ? "dialog" : undefined}
                 aria-label={spoken}
                 onClick={() => {
                   if (id === "scan") { setScanOpen(true); return; }
+                  if (id === "alerts") { alertsOpen ? setAlertsOpen(false) : openAlerts(); return; }
                   setTab(id);
                   if (id !== "home" && view === "map") setView("split"); // don't land on a hidden list
                 }}
@@ -3106,6 +3201,12 @@ export default function App() {
                       one thing you cannot see from the other screen. */}
                   {id === "recalls" && selectedStore && (
                     <span className="absolute -right-1.5 -top-0.5 size-1.5 rounded-full bg-mint" />
+                  )}
+                  {id === "alerts" && badge > 0 && (
+                    <span aria-hidden="true"
+                          className="tnum absolute -right-2.5 -top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-paper px-1 text-[9px] font-bold leading-none text-panel">
+                      {badge > 99 ? "99+" : badge}
+                    </span>
                   )}
                 </span>
                 <span className="text-[10px] font-semibold tracking-wide">
@@ -3149,73 +3250,26 @@ export default function App() {
       </Sheet>
 
       {/* ---- alerts ----
-          Every outcome of asking is said here in words, including the ones
-          that are not failures of ours: an iPhone that needs the Home Screen
-          step first, a browser that cannot do it, a permission that was
-          refused. And the privacy line is said before the button, not after
-          it: what leaves this browser is the state and the follow terms. */}
-      <Sheet open={alertsOpen} onClose={() => setAlertsOpen(false)} title="Recall alerts">
-        <div className="flex flex-col gap-3 px-4 py-4 text-[13px] leading-relaxed text-fog">
-          <p>
-            <span className="font-semibold text-paper">Once a week</span>, the new recalls for{" "}
-            {loc?.stateAbbr || "your state"}. <span className="font-semibold text-paper">Straight away</span>, a
-            serious (Class I) recall there, or one matching a product you follow.
-          </p>
-          {usMode && loc?.stateAbbr && (
-            <p className="text-[12px] text-subtle">
-              Alerts are for your state ({loc.stateAbbr}), whichever view you're browsing.
-            </p>
-          )}
-          <p className="text-[12px] text-subtle">
-            Only your state and the products you follow are sent to our server — never your address or
-            coordinates. Turning alerts off deletes them.
-          </p>
-          {push.state === "needs-install" ? (
-            <div className="rounded-xl border border-line bg-panel-2 px-3.5 py-3">
-              <p className="font-semibold text-paper">On iPhone and iPad, one step first</p>
-              <p className="mt-1">
-                Apple only delivers alerts to sites added to the Home Screen. Tap{" "}
-                <span className="font-semibold text-paper">Share</span>, then{" "}
-                <span className="font-semibold text-paper">Add to Home Screen</span>, open Yanked from
-                there, and turn alerts on.
-              </p>
-            </div>
-          ) : !loc?.stateAbbr ? (
-            <Button className="h-11 w-full" onClick={() => { setAlertsOpen(false); openLocationPicker("for alerts", "alerts"); }}>
-              <MapPin /> Set a location first
-            </Button>
-          ) : push.state === "subscribed" ? (
-            <>
-              <p className="flex items-center gap-2 rounded-xl border border-line bg-panel-2 px-3.5 py-3 font-semibold text-paper">
-                <Check className="size-4 shrink-0 text-mint" /> Alerts are on for {loc.stateAbbr}.
-              </p>
-              <Button variant="outline" className="h-11 w-full" disabled={push.busy} onClick={disablePush}>
-                {push.busy ? <Loader2 className="animate-spin" /> : <BellOff />} Turn off alerts
-              </Button>
-            </>
-          ) : push.state === "unsupported" ? (
-            <p className="rounded-xl border border-line bg-panel-2 px-3.5 py-3">
-              This browser can't receive notifications from websites.
-            </p>
-          ) : push.state === "denied" ? (
-            <p className="rounded-xl border border-line bg-panel-2 px-3.5 py-3">
-              Notifications are blocked for this site. You can allow them in your browser's site settings,
-              then come back here.
-            </p>
-          ) : (
-            <Button className="h-11 w-full" disabled={push.busy || push.state === "unknown"} onClick={enablePush}>
-              {push.busy ? <Loader2 className="animate-spin" /> : <Bell />} Turn on alerts
-            </Button>
-          )}
-          {push.msg && <p role="alert" className="text-[12px] font-semibold text-alert">{push.msg}</p>}
-          {push.dropped.length > 0 && (
-            <p className="text-[12px] text-subtle">
-              Alerts can watch up to 20 products of 40 characters each, so these aren't included:{" "}
-              {push.dropped.map((t) => `“${t}”`).join(", ")}.
-            </p>
-          )}
-        </div>
-      </Sheet>
+          One surface (AlertsPanel on ResponsiveSurface, like the location
+          picker): the inbox for what you follow, the follows themselves, and
+          delivery — each channel saying "not available yet" when this
+          deployment can't send it, rather than vanishing. */}
+      <AlertsPanel
+        open={alertsOpen}
+        onClose={() => setAlertsOpen(false)}
+        anchorId={isMd ? "btn-alerts" : "tab-alerts"}
+        loc={loc}
+        inbox={inbox}
+        byId={recordsById}
+        terms={getFollows()}
+        followed={getFollowedRecalls()}
+        channels={channels}
+        push={push}
+        onEnablePush={enablePush}
+        onDisablePush={disablePush}
+        onOpenRecall={(r) => { setAlertsOpen(false); openRecallSheet(r); }}
+        onRequestLocation={() => openLocationPicker("for alerts", "alerts")}
+      />
 
       {/* ---- theme, sources, about ---- */}
       <Sheet open={moreOpen} onClose={() => setMoreOpen(false)} title="Yanked">
@@ -3249,12 +3303,10 @@ export default function App() {
           </div>
 
           <div className="px-4 py-3">
-            {pushOffered && (
-              <Button variant="secondary" className="mb-2 h-11 w-full"
-                      onClick={() => { setMoreOpen(false); openAlerts(); }}>
-                <Bell /> Recall alerts
-              </Button>
-            )}
+            <Button variant="secondary" className="mb-2 h-11 w-full"
+                    onClick={() => { setMoreOpen(false); openAlerts(); }}>
+              <Bell /> Alerts{unreadAlerts ? ` · ${unreadAlerts} new` : ""}
+            </Button>
             <Button variant="secondary" className="h-11 w-full"
                     onClick={() => { setMoreOpen(false); setAboutOpen(true); }}>
               <Info /> About this data

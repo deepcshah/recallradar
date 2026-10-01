@@ -3,9 +3,10 @@
  *
  * The server half is api/push.js (stores the subscription) and
  * api/_lib/send-digest.js (the crons that send). What leaves this browser when
- * someone opts in is the push subscription itself, the two-letter state, and
- * their follow terms — never coordinates, a ZIP, or a store. Same line as
- * analytics (see the README).
+ * someone opts in is the push subscription itself, the two-letter state,
+ * their follow terms, the ids of recalls they follow and their two delivery
+ * preferences — never coordinates, a ZIP, or a store. Same line as analytics
+ * (see the README).
  *
  * Three platform facts shape the API:
  *
@@ -113,7 +114,7 @@ async function registration() {
  * rather than clips (see src/lib/push-store.js); follows.js allows longer.
  * So send what fits, and say what didn't instead of truncating a term into
  * something the reader never typed. */
-function fitFollows(follows) {
+export function fitFollows(follows) {
   const all = (Array.isArray(follows) ? follows : []).map((t) => String(t).replace(/\s+/g, " ").trim()).filter(Boolean);
   const sent = all.filter((t) => t.length <= 40).slice(0, 20);
   return { sent, dropped: all.filter((t) => !sent.includes(t)) };
@@ -156,10 +157,10 @@ async function send(method, body) {
 /** Opt in, or update what an existing subscription follows. Call from a click
  *  handler: this is the one function that may show the permission prompt.
  *
- *  @param {{ stateAbbr: string, follows?: string[] }} prefs
+ *  @param {{ stateAbbr: string, follows?: string[], recalls?: string[], prefs?: {weekly, urgent} }} opts
  *  @returns {Promise<{ok:true, stateAbbr, follows} | {ok:false, reason, message}>}
  */
-export async function subscribePush({ stateAbbr, follows = [] } = {}) {
+export async function subscribePush({ stateAbbr, follows = [], recalls = [], prefs } = {}) {
   if (needsInstallForPush()) {
     return fail("needs-install", "On iPhone and iPad, add Yanked to your Home Screen (Share → Add to Home Screen), open it from there, then turn on alerts.");
   }
@@ -198,6 +199,8 @@ export async function subscribePush({ stateAbbr, follows = [] } = {}) {
       subscription: sub.toJSON(),
       stateAbbr: String(stateAbbr).toUpperCase(),
       follows: fit.sent,
+      recalls: (Array.isArray(recalls) ? recalls : []).slice(-50),
+      ...(prefs ? { prefs: { weekly: prefs.weekly !== false, urgent: prefs.urgent !== false } } : null),
     });
     if (!res.ok) {
       return fail("server", (json && (json.error || json.reason)) || `Couldn't save your alert settings (HTTP ${res.status}).`);
@@ -212,10 +215,10 @@ export async function subscribePush({ stateAbbr, follows = [] } = {}) {
 
 /** Keep the server's copy of state/follows in step after the reader changes
  *  them — only if they're already subscribed, and never prompting. */
-export async function syncPush({ stateAbbr, follows = [] } = {}) {
+export async function syncPush({ stateAbbr, follows = [], recalls = [], prefs } = {}) {
   const sub = await currentSubscription();
   if (!sub || !stateAbbr || Notification.permission !== "granted") return { ok: false, reason: "not-subscribed" };
-  return subscribePush({ stateAbbr, follows });
+  return subscribePush({ stateAbbr, follows, recalls, prefs });
 }
 
 /** Opt out: remove the server copy, then the browser subscription. */
