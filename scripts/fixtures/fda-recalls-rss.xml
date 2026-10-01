@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Test fixture for scripts/check-data.mjs: shaped like FDA's recalls press-release feed. Items are invented except the first, which is modelled on the United Sugar recall. -->
+<!-- Test fixture for scripts/check-data.mjs, shaped like FDA's recalls press-release feed so the parser can be tested. EVERY item is fictional ("Example … Co.") and must stay that way: it exercises parsing, not the data. Real-data checks live in scripts/check-live-fda.mjs. -->
 <rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xml:base="https://www.fda.gov/">
   <channel>
     <title>Recalls</title>
@@ -7,31 +7,31 @@
     <description>Recalls, Market Withdrawals, &amp; Safety Alerts</description>
     <language>en</language>
     <item>
-      <title>United Sugar Producers &amp; Refiners Recalls Light Brown and Powdered Sugar Because of Undeclared Wheat</title>
-      <link>https://www.fda.gov/safety/recalls-market-withdrawals-safety-alerts/united-sugar-producers-refiners-recalls-light-brown-and-powdered-sugar-because-undeclared-wheat</link>
-      <description><![CDATA[<p>United Sugar Producers &amp; Refiners, of Edina, Minnesota, is voluntarily recalling light brown and powdered sugar sold under the United, Crystal and Good &amp; Gather brands because it may contain undeclared wheat.</p>]]></description>
+      <title>Example Sweeteners Co. Recalls Light Brown and Powdered Sugar Because of Undeclared Wheat</title>
+      <link>https://www.fda.gov/safety/recalls-market-withdrawals-safety-alerts/example-sweeteners-co-recalls-light-brown-and-powdered-sugar-because-undeclared-wheat</link>
+      <description><![CDATA[<p>Example Sweeteners Co., of Exampleton, Minnesota, is voluntarily recalling light brown and powdered sugar sold under the Example &amp; Sample brand because it may contain undeclared wheat.</p>]]></description>
       <pubDate>Fri, 21 Aug 2026 18:02:00 EDT</pubDate>
       <dc:creator>FDA</dc:creator>
       <guid isPermaLink="false">recall-001</guid>
     </item>
     <item>
-      <title>Hudson Valley Greens Recalls Enoki Mushrooms Because of Possible Health Risk</title>
-      <link>https://www.fda.gov/safety/recalls-market-withdrawals-safety-alerts/hudson-valley-greens-recalls-enoki-mushrooms-because-possible-health-risk</link>
-      <description>Hudson Valley Greens, of Kingston, New York, is recalling 200-gram packages of enoki mushrooms because they have the potential to be contaminated with &lt;em&gt;Listeria monocytogenes&lt;/em&gt;. The company&#8217;s investigation is ongoing.</description>
+      <title>Example Valley Greens Recalls Enoki Mushrooms Because of Possible Health Risk</title>
+      <link>https://www.fda.gov/safety/recalls-market-withdrawals-safety-alerts/example-valley-greens-recalls-enoki-mushrooms-because-possible-health-risk</link>
+      <description>Example Valley Greens, of Kingston, New York, is recalling 200-gram packages of enoki mushrooms because they have the potential to be contaminated with &lt;em&gt;Listeria monocytogenes&lt;/em&gt;. The company&#8217;s investigation is ongoing.</description>
       <pubDate>Thu, 24 Sep 2026 17:40:00 EDT</pubDate>
       <guid isPermaLink="false">recall-002</guid>
     </item>
     <item>
-      <title><![CDATA[Garden State Bakery Issues Allergy Alert on Undeclared Peanut in "Morning Glory" Muffins]]></title>
-      <link>https://www.fda.gov/safety/recalls-market-withdrawals-safety-alerts/garden-state-bakery-issues-allergy-alert-undeclared-peanut-morning-glory-muffins</link>
-      <description><![CDATA[Garden State Bakery, of Newark, New Jersey, is recalling Morning Glory Muffins, 4-pack, UPC 0 41220 12345 6. The muffins were distributed to retail stores in New York, New Jersey and Connecticut. No illnesses have been reported &amp; the problem was found during a routine inspection.]]></description>
+      <title><![CDATA[Example Bakery Co. Issues Allergy Alert on Undeclared Peanut in "Morning Glory" Muffins]]></title>
+      <link>https://www.fda.gov/safety/recalls-market-withdrawals-safety-alerts/example-bakery-co-issues-allergy-alert-undeclared-peanut-morning-glory-muffins</link>
+      <description><![CDATA[Example Bakery Co., of Newark, New Jersey, is recalling Morning Glory Muffins, 4-pack, UPC 0 00000 00000 0. The muffins were distributed to retail stores in New York, New Jersey and Connecticut. No illnesses have been reported &amp; the problem was found during a routine inspection.]]></description>
       <pubDate>Fri, 25 Sep 2026 09:15:00 EDT</pubDate>
       <guid isPermaLink="false">recall-003</guid>
     </item>
     <item>
-      <title>Old Mill Recalls Oat Bars Because of Possible Salmonella</title>
-      <link>https://www.fda.gov/safety/recalls-market-withdrawals-safety-alerts/old-mill-recalls-oat-bars</link>
-      <description>Old Mill is recalling oat bars sold nationwide.</description>
+      <title>Example Mill Co. Recalls Oat Bars Because of Possible Salmonella</title>
+      <link>https://www.fda.gov/safety/recalls-market-withdrawals-safety-alerts/example-mill-co-recalls-oat-bars</link>
+      <description>Example Mill Co. is recalling oat bars sold nationwide.</description>
       <pubDate>Mon, 01 Jun 2026 10:00:00 EDT</pubDate>
       <guid isPermaLink="false">recall-004</guid>
     </item>

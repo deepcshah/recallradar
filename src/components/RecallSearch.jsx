@@ -141,7 +141,12 @@ function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
   let fdaLine;
   if (fdaInIndex) fdaLine = freshness(s.fda);
   else if (live.status === "pending") fdaLine = "not in today's index · checking openFDA directly…";
-  else if (live.status === "done") fdaLine = "not in today's index · checked openFDA directly just now";
+  else if (live.status === "done") {
+    const asOf = live.records && live.records.lastUpdated;
+    fdaLine = asOf
+      ? `not in today's index · checked openFDA directly: its data runs to ${fmtAsOf(asOf)}`
+      : "not in today's index · checked openFDA directly just now";
+  }
   else if (live.status === "idle") fdaLine = `not in today's index · type ${LIVE_MIN_CHARS}+ letters to check openFDA directly`;
   else fdaLine = "not in today's index, and openFDA couldn't be reached — not checked";
 
@@ -186,6 +191,17 @@ function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
             {fda && !fda.asOf && (
               <p className="text-[12px] leading-snug text-subtle">
                 FDA couldn't be checked from our copy. We asked FDA directly: {asked}.
+              </p>
+            )}
+            {/* openFDA publishes a recall in the weekly enforcement report
+                after FDA classifies it, so a recall in this week's news can
+                be missing from data that is otherwise current. Say so with
+                FDA's own date, or the empty result reads as an answer. */}
+            {live.status === "done" && live.records && live.records.lastUpdated && (
+              <p className="text-[12px] leading-snug text-subtle">
+                FDA's recall data runs to {fmtAsOf(live.records.lastUpdated)}. FDA adds a recall to it
+                in the weekly report after classifying it, so one in the news since then may not be
+                here yet — the official notice is on fda.gov.
               </p>
             )}
           </div>

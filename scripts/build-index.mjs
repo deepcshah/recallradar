@@ -428,8 +428,8 @@ export function firmTokens(name) {
 }
 
 /** Same firm: at least 75% of the shorter name's tokens appear in the longer
- *  one ("United Sugar Producers & Refiners" ~ "... Refiners Cooperative"),
- *  so one shared generic-ish word ("United") is not enough — and neither is
+ *  one ("Example Sweeteners Producers & Refiners" ~ "... Refiners Cooperative"),
+ *  so one shared generic-ish word ("Example") is not enough — and neither is
  *  a shared place name: "Hudson Valley Greens" is not "Hudson Valley
  *  Creamery" (2 of 3). A false match here HIDES a recall (the announcement
  *  is dropped as a duplicate), so the rule errs towards keeping both. */
@@ -438,6 +438,10 @@ export function sameFirm(a, b) {
   const B = firmTokens(b);
   if (!A.length || !B.length) return false;
   const [short, long] = A.length <= B.length ? [A, new Set(B)] : [B, new Set(A)];
+  /* A name that reduces to one distinctive word ("United Foods" -> united)
+   * would otherwise match every firm sharing that word at 1/1 = 100%. One
+   * word only identifies a firm when it is all the other name has, too. */
+  if (short.length === 1 && long.size > 1) return false;
   const shared = short.filter((w) => long.has(w)).length;
   return shared > 0 && shared / short.length >= 0.75;
 }
@@ -713,7 +717,9 @@ export async function buildIndex({ offline = false, fdaRaw = null, fdaRss = null
   }
 
   const count = (pred) => recalls.filter(pred).length;
-  const newest = (pred) => recalls.filter(pred).reduce((m, r) => (String(r.date) > m ? String(r.date) : m), "") || null;
+  /* Newest by publish date where there is one (FDA's report date): the start
+   * date is weeks older and would make a current feed look stale. */
+  const newest = (pred) => recalls.filter(pred).reduce((m, r) => { const d = String(r.posted || r.date); return d > m ? d : m; }, "") || null;
   const isFda = (r) => String(r.source).startsWith("FDA") && r.source !== ANNOUNCE_SOURCE;
   const fdaCount = count(isFda);
   const index = {

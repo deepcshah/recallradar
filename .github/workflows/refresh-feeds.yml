@@ -40,6 +40,8 @@ on:
     paths:
       - "scripts/refresh-feeds.mjs"
       - "scripts/build-index.mjs"
+      - "scripts/check-live-fda.mjs"
+      - "scripts/watchlist.json"
       - "src/lib/**"
       - ".github/workflows/refresh-feeds.yml"
 
@@ -75,6 +77,17 @@ jobs:
         env:
           OPENFDA_KEY: ${{ secrets.OPENFDA_KEY }}
         run: node scripts/refresh-feeds.mjs
+
+      # Live, against the real API: how current openFDA is, whether the index
+      # got its FDA records, and whether anything on scripts/watchlist.json
+      # has been published yet. Writes to the job summary; informational, so
+      # it never turns the run red ("not published yet" is FDA's timing).
+      - name: Check live FDA coverage
+        if: always()
+        continue-on-error: true
+        env:
+          OPENFDA_KEY: ${{ secrets.OPENFDA_KEY }}
+        run: node scripts/check-live-fda.mjs
 
       # Always, because a failed run is the one you actually need this for:
       # the report says what USDA returned and how it was shaped, which is the
