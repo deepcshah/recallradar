@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 
-import { normalizeFda, fdaSearchQuery, fdaDistributionClause, needsUnscopedDepth } from "../src/lib/sources.js";
+import { normalizeFda, fdaSearchQuery, fdaDistributionClause, needsUnscopedDepth, fdaId } from "../src/lib/sources.js";
 import { verdictFor, isInArea, statesIn, VERDICTS } from "../src/lib/verdict.js";
 import { prepareSearch, searchIndex, freshnessOf, recentFor, lookupMatchToRecord } from "../src/lib/search-index.js";
 import { buildIndex, parseRss, announcementToIndex, dropAnnouncedDuplicates, sameFirm } from "./build-index.mjs";
@@ -85,6 +85,16 @@ check("a 15-state list with NY twice: deduped, includes NY and TX, not IN", () =
   const [c] = normalizeFda("food", [candy], TX);
   assert.equal(new Set(c.states).size, c.states.length);
   assert.ok(c.states.includes("NY") && c.states.includes("TX") && !c.states.includes("IN"));
+});
+
+check("fdaId: a real recall number is the id; 'N/A' records get distinct, stable ids", () => {
+  assert.equal(fdaId("food", sprouts), "fda-food-H-1339-2026");
+  // synthetic inputs (logic only): two records of one event, both "N/A"
+  const a = { recall_number: "N/A", event_id: "1", product_description: "Example product A" };
+  const b = { ...a, product_description: "Example product B" };
+  assert.notEqual(fdaId("food", a), fdaId("food", b));
+  assert.equal(fdaId("food", a), fdaId("food", { ...a }));
+  assert.ok(!fdaId("food", a).includes("N/A"));
 });
 
 // ─────────────────────────────────────────── 2. build-index

@@ -1,7 +1,8 @@
-/* Web push subscriptions.
+/* Alert subscriptions: web push here, email in api/_lib/email-channel.js.
  *
- *   GET    /api/push   -> { enabled:true, publicKey } | { enabled:false, reason }
- *   POST   /api/push   { subscription, stateAbbr, follows }  -> store / update
+ *   GET    /api/push   -> { enabled, publicKey?, reason?,
+ *                           channels: { push: {enabled, reason?}, email: {enabled, reason?} } }
+ *   POST   /api/push   { subscription, stateAbbr, follows, recalls?, prefs? }  -> store / update
  *   POST   /api/push   { subscription, replaces }            -> rotate (from sw.js)
  *   DELETE /api/push   { endpoint }  (or ?endpoint=)         -> remove
  *
@@ -15,13 +16,22 @@
  * Validation runs before anything touches storage, and is strict: see
  * src/lib/push-store.js for what a body may contain and why anything else is
  * refused. The response never echoes the endpoint back.
+ *
+ * Also dispatched from here, because Vercel Hobby deploys at most twelve
+ * functions and every file directly under api/ is one:
+ *   ?action=digest            the crons (api/_lib/send-digest.js)
+ *   ?channel=email&action=…   email alerts (api/_lib/email-channel.js)
  */
 import {
   validateSubscribeBody, cleanSubscription, endpointKey, pushStore, vapidConfig,
 } from "../src/lib/push-store.js";
 import digestHandler from "./_lib/send-digest.js";
+import emailHandler from "./_lib/email-channel.js";
+import { emailConfig } from "./_lib/email-store.js";
+import { baselineSnapshots } from "./_lib/alerts-engine.js";
+import { readIndex } from "../src/lib/index-server.js";
 
-const MAX_BODY_CHARS = 4096;
+const MAX_BODY_CHARS = 8192; // 50 recall ids of up to 80 chars, 20 terms, a subscription
 
 function parseBody(req) {
   let b = req.body;
@@ -41,6 +51,8 @@ function unavailable() {
   const store = pushStore();
   if (!vapid) return "VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY are not set on this deployment.";
   if (!store.configured()) return "No Vercel Blob store is attached, so there is nowhere to keep subscriptions.";
+  // Subscribing to something the cron can never send would be a broken promise.
+  if (!String(process.env.CRON_SECRET || "").trim()) return "CRON_SECRET is not set, so the scheduled alerts can't run.";
   return null;
 }
 
@@ -49,14 +61,24 @@ function unavailable() {
  * every file directly under api/ is one. The cron code is api/_lib/send-digest.js,
  * which does its own CRON_SECRET check before anything is sent. */
 export default async function handler(req, res) {
-  if ((req.query || {}).action === "digest") return digestHandler(req, res);
+  const q = req.query || {};
+  if (q.action === "digest") return digestHandler(req, res);
+  if (q.channel === "email") return emailHandler(req, res);
   res.setHeader("Cache-Control", "no-store");
   const method = String(req.method || "GET").toUpperCase();
 
   if (method === "GET") {
+    /* Both channels' availability, each with its reason when off, so the app
+     * can say "not available yet" per channel instead of hiding alerts
+     * altogether. `enabled`/`publicKey` at the top level are push's, as before. */
     const why = unavailable();
-    if (why) return res.status(200).json({ enabled: false, reason: why });
-    return res.status(200).json({ enabled: true, publicKey: vapidConfig().publicKey });
+    const mail = emailConfig();
+    const channels = {
+      push: why ? { enabled: false, reason: why } : { enabled: true },
+      email: mail.ok ? { enabled: true } : { enabled: false, reason: mail.reason },
+    };
+    if (why) return res.status(200).json({ enabled: false, reason: why, channels });
+    return res.status(200).json({ enabled: true, publicKey: vapidConfig().publicKey, channels });
   }
 
   if (method !== "POST" && method !== "DELETE") {
@@ -94,7 +116,7 @@ export default async function handler(req, res) {
   if (why) return res.status(503).json({ enabled: false, error: why });
 
   const { subscription, replaces } = v.value;
-  let { stateAbbr, follows } = v.value;
+  let { stateAbbr, follows, recalls, prefs } = v.value;
   const store = pushStore();
   const path = endpointKey(subscription.endpoint);
 
@@ -111,11 +133,20 @@ export default async function handler(req, res) {
     const prev = existing || carried || {};
     stateAbbr = stateAbbr || prev.stateAbbr;
     follows = follows || prev.follows || [];
+    recalls = recalls || prev.recalls || [];
+    prefs = prefs || prev.prefs || { weekly: true, urgent: true };
+    /* Snapshots are the SERVER's reading of the index, never the client's:
+     * what the cron diffs against must not be something a request can set. */
+    const index = await readIndex().catch(() => null);
+    const snapshots = baselineSnapshots(recalls, index, prev.snapshots || {});
     const now = new Date().toISOString();
     await store.write(path, {
       subscription,
       stateAbbr,
       follows,
+      recalls,
+      snapshots,
+      prefs,
       createdAt: prev.createdAt || now,
       updatedAt: now,
       // Keep the dedupe history across updates and rotations, or changing a
@@ -125,7 +156,7 @@ export default async function handler(req, res) {
     if (replaces && carried && endpointKey(replaces) !== path) {
       await store.remove(endpointKey(replaces)).catch(() => {});
     }
-    return res.status(existing ? 200 : 201).json({ ok: true, stateAbbr, follows });
+    return res.status(existing ? 200 : 201).json({ ok: true, stateAbbr, follows, recalls, prefs });
   } catch (err) {
     return res.status(502).json({ error: `Could not save: ${String((err && err.message) || err).slice(0, 160)}` });
   }
