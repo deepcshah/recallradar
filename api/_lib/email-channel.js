@@ -30,10 +30,11 @@
 import {
   emailConfig, emailStore, validateEmailSubscribe, validateEmailManage, emailKey, pathFor, newToken, hashToken,
   tokenMatches, unsubscribeToken, unsubscribeMatches, confirmSendAllowed, isKey, isToken, CONFIRM_TTL_MS,
+  validateRestoreRequest, validateRestore, manageHashesOf, RESTORE_TTL_MS, MAX_MANAGE_TOKENS,
 } from "./email-store.js";
 import { sendEmail } from "./resend.js";
 import { baselineSnapshots, escapeHtml } from "./alerts-engine.js";
-import { readIndex } from "../../src/lib/index-server.js";
+import { readIndex, findRecall } from "../../src/lib/index-server.js";
 import { ABBR_TO_NAME } from "../../src/lib/states.js";
 
 const MAX_BODY_CHARS = 8192; // 50 recall ids of up to 80 chars, 20 terms, a subscription
@@ -129,6 +130,8 @@ async function handleSubscribe(req, res, cfg, now) {
     confirmed: Boolean(record && record.confirmed),
     ...(record && record.confirmedAt ? { confirmedAt: record.confirmedAt } : null),
     manageHash: (record && record.manageHash) || null,
+    // Devices added by restores keep working while a new request is pending.
+    manageHashes: (record && record.manageHashes) || [],
     unsubSalt: (record && record.unsubSalt) || newToken(),
     // The new settings wait here until the address owner confirms them.
     pending: {
@@ -269,7 +272,7 @@ async function authorized(body, update) {
   let record;
   try { record = await store.read(path); } catch (_) { record = null; }
   if (!record) return { status: 200, none: true, value: v.value, path };
-  const okLive = record.manageHash && tokenMatches(v.value.manage, record.manageHash);
+  const okLive = manageHashesOf(record).some((h) => tokenMatches(v.value.manage, h));
   const okPending = record.pending && tokenMatches(v.value.manage, record.pending.manageHash);
   if (!okLive && !okPending) return { status: 200, none: true, value: v.value, path };
   return { record, value: v.value, path, live: okLive };
@@ -325,6 +328,116 @@ async function handleManage(req, res, action, now) {
   return res.status(200).json({ ok: true, status: a.live && a.record.confirmed ? "confirmed" : "pending" });
 }
 
+/* ── Restoring follows to a browser that lost them ──────────────────────────
+ *
+ * Follows, followed recalls and the manage token all live in the browser's
+ * storage, which Safari clears after seven days without a visit (unless the
+ * site is on the Home Screen) and any browser can clear on request. For
+ * someone with email alerts, the server still holds the follows — but the
+ * browser no longer holds the token that proves it may read them. The inbox
+ * is the one credential they still have, so:
+ *
+ *   1. restore-request {email}: if a CONFIRMED subscription exists, email a
+ *      link to /?restore=<id>.<token>. Same 202 whether or not it exists, so
+ *      this cannot be used to find out who subscribes. Shares the
+ *      confirmation-email rate limit.
+ *   2. restore {id, token}: the app POSTs this only when the person presses
+ *      "Restore" (as with confirm, a mail scanner opening the link must not
+ *      spend it). Single use, 30 minutes. Returns the follows and a NEW manage
+ *      token for this browser, added beside the others (up to 5 devices).
+ */
+async function handleRestoreRequest(req, res, cfg, now) {
+  const parsed = parseJson(req);
+  if (parsed.tooLarge) return res.status(413).json({ error: "Body too large." });
+  if (parsed.invalid) return res.status(400).json({ error: "Body must be JSON." });
+  const v = validateRestoreRequest(parsed.body);
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  const same = () => res.status(202).json({
+    ok: true,
+    status: "sent-if-subscribed",
+    message: "If that address has confirmed email alerts, a restore link is on its way. It works once, for 30 minutes.",
+  });
+  const store = emailStore();
+  const key = emailKey(v.value.email, cfg.secret);
+  const path = pathFor(key);
+  let record;
+  try { record = await store.read(path); } catch (_) { record = null; }
+  if (!record || !record.confirmed) return same();
+  const gate = confirmSendAllowed(record, now);
+  if (!gate.ok) return same(); // quietly: a 429 here would confirm the address exists
+
+  const token = newToken();
+  const next = {
+    ...record,
+    restore: { tokenHash: hashToken(token), expiresAt: new Date(now + RESTORE_TTL_MS).toISOString() },
+    sends: gate.sends,
+    updatedAt: new Date(now).toISOString(),
+  };
+  try { await store.write(path, next); } catch (_) { return same(); }
+
+  const links = linksFor(cfg, key, next);
+  const restoreUrl = `${cfg.baseUrl}/?restore=${key}.${encodeURIComponent(token)}`;
+  const lines = [
+    "Someone — hopefully you — asked to restore your Yanked follows on a device.",
+    "Open the link on the phone or computer where you want them back, then press Restore. It works once, for 30 minutes. If this wasn't you, ignore this email; nothing changes.",
+  ];
+  await sendEmail({
+    apiKey: cfg.apiKey,
+    from: cfg.from,
+    to: record.email,
+    subject: "Restore your Yanked follows",
+    text: `${lines.join("\n\n")}\n\nRestore: ${restoreUrl}\n\nUnsubscribe: ${links.unsubscribeUrl}\n`,
+    html: `<!doctype html><html><body style="font-family:-apple-system,Segoe UI,Inter,Helvetica,Arial,sans-serif;color:#1a1a1a;background:#f1f1f1;margin:0">
+<div style="max-width:520px;margin:0 auto;padding:24px 16px"><div style="background:#fff;border:1px solid #e3e3e3;border-radius:12px;padding:20px">
+<h1 style="margin:0 0 12px;font-size:20px">Restore your follows</h1>
+${lines.map((l) => `<p style="margin:0 0 12px;font-size:15px;line-height:1.5;color:#3a3a3a">${escapeHtml(l)}</p>`).join("")}
+<p style="margin:16px 0"><a href="${escapeHtml(restoreUrl)}" style="display:inline-block;background:#1f7a4c;color:#fff;font-weight:600;text-decoration:none;padding:12px 18px;border-radius:10px">Restore on this device</a></p>
+<p style="margin:0;font-size:12px;color:#6d6d6d"><a href="${escapeHtml(links.unsubscribeUrl)}" style="color:#1f7a4c">Unsubscribe</a></p>
+</div></div></body></html>`,
+    headers: unsubscribeHeaders(links.unsubscribeUrl),
+  });
+  // Sent or not, the answer is the same (see above); a failed send is retried
+  // by asking again once the rate limit allows.
+  return same();
+}
+
+async function handleRestore(req, res, now) {
+  const parsed = parseJson(req);
+  if (parsed.tooLarge) return res.status(413).json({ error: "Body too large." });
+  if (parsed.invalid) return res.status(400).json({ error: "Body must be JSON." });
+  const v = validateRestore(parsed.body);
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  const expired = () => res.status(410).json({ error: "This restore link has expired or was already used. Ask for a new one from Alerts." });
+  const store = emailStore();
+  const path = pathFor(v.value.id);
+  let record;
+  try { record = await store.read(path); } catch (_) { record = null; }
+  const r = record && record.confirmed && record.restore;
+  if (!r || !(Date.parse(r.expiresAt) > now) || !tokenMatches(v.value.token, r.tokenHash)) return expired();
+
+  const manage = newToken();
+  const hashes = [...manageHashesOf(record), hashToken(manage)].slice(-MAX_MANAGE_TOKENS);
+  const next = { ...record, restore: null, manageHash: null, manageHashes: hashes, updatedAt: new Date(now).toISOString() };
+  try { await store.write(path, next); } catch (err) {
+    return res.status(502).json({ error: "Couldn't restore just now. Try the link again in a minute." });
+  }
+  const index = await readIndex().catch(() => null);
+  const recalls = (record.recalls || []).map((id) => {
+    const hit = index ? findRecall(index, id) : null;
+    return { id, title: hit ? String(hit.product || "").slice(0, 120) : "" };
+  });
+  return res.status(200).json({
+    ok: true,
+    email: record.email,
+    id: v.value.id,
+    manage,
+    stateAbbr: record.stateAbbr || null,
+    follows: record.follows || [],
+    recalls,
+    prefs: record.prefs || null,
+  });
+}
+
 export default async function emailHandler(req, res, now = Date.now()) {
   res.setHeader("Cache-Control", "no-store");
   const action = String((req.query || {}).action || "");
@@ -344,5 +457,7 @@ export default async function emailHandler(req, res, now = Date.now()) {
   }
   if (action === "subscribe") return handleSubscribe(req, res, cfg, now);
   if (action === "update" || action === "status" || action === "remove") return handleManage(req, res, action, now);
-  return res.status(400).json({ error: "Unknown action. Use subscribe, confirm, unsubscribe, update, status or remove." });
+  if (action === "restore-request") return handleRestoreRequest(req, res, cfg, now);
+  if (action === "restore") return handleRestore(req, res, now);
+  return res.status(400).json({ error: "Unknown action. Use subscribe, confirm, unsubscribe, update, status, remove, restore-request or restore." });
 }

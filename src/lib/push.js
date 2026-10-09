@@ -62,6 +62,13 @@ function isStandalone() {
 /** True on iPhone/iPad in a Safari tab: push exists on the platform, but only
  *  once the site is added to the Home Screen and opened from there. The UI
  *  should say that instead of offering a button that cannot work. */
+/** Safari on iPhone/iPad, in a tab rather than from the Home Screen: where
+ *  WebKit clears a site's storage after seven days without a visit. Added to
+ *  the Home Screen, the site keeps its data (and can get push). */
+export function needsInstallToKeepData() {
+  return isIOS() && !isStandalone();
+}
+
 export function needsInstallForPush() {
   return isIOS() && !isStandalone() && !pushSupported();
 }

@@ -18,7 +18,7 @@
  * can be shown as-is, never throw.
  * ───────────────────────────────────────────────────────────────────────── */
 import { pushAvailable, syncPush, fitFollows } from "./push.js";
-import { getFollows, getFollowedRecallIds, followMatches } from "./follows.js";
+import { getFollows, getFollowedRecallIds, followMatches, addFollow, followRecall } from "./follows.js";
 import { diffRecall, followRelevant } from "./recall-watch.js";
 import { newsDay } from "./digest.js";
 
@@ -111,6 +111,51 @@ async function post(action, body) {
   let json = null;
   try { json = await res.json(); } catch (_) { /* empty */ }
   return { res, json };
+}
+
+/* ── Restore from email ──────────────────────────────────────────────────
+ * When this browser has lost its follows (see requestPersistentStorage in
+ * follows.js), the person's inbox is the credential they still hold. Asking
+ * sends a single-use link to /?restore=<id>.<token>; redeeming it — only on
+ * a button press — merges the server's copy into this browser and gives this
+ * browser its own manage token. */
+export async function requestRestore(email) {
+  const address = String(email || "").trim();
+  if (!address) return { ok: false, message: "Enter the email address your alerts go to." };
+  const { res, json } = await post("restore-request", { email: address });
+  if (!res) return { ok: false, message: "Couldn't reach the alerts service. Check your connection and try again." };
+  if (!res.ok || !json || !json.ok) return { ok: false, message: (json && (json.error || json.message)) || `Couldn't send a restore link (HTTP ${res.status}).` };
+  return { ok: true, message: json.message };
+}
+
+/** The ?restore=<id>.<token> on this page's URL, or null. */
+export function restoreParamFromUrl(search) {
+  try {
+    const v = new URLSearchParams(search ?? window.location.search).get("restore") || "";
+    const m = /^([a-f0-9]{64})\.([A-Za-z0-9_-]{43})$/.exec(v);
+    return m ? { id: m[1], token: m[2] } : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Redeem a restore link: merge follows, followed recalls and preferences
+ *  into this browser (nothing here is removed), and keep the subscription.
+ *  Returns { ok, stateAbbr, terms, recalls } or { ok:false, message }. */
+export async function redeemRestore({ id, token }) {
+  const { res, json } = await post("restore", { id, token });
+  if (!res) return { ok: false, message: "Couldn't reach the alerts service. Check your connection and try again." };
+  if (!res.ok || !json || !json.ok) return { ok: false, message: (json && json.error) || `Couldn't restore (HTTP ${res.status}).` };
+  saveEmailSub({ address: String(json.email || "").toLowerCase(), id: json.id, manage: json.manage, status: "confirmed" });
+  const terms = Array.isArray(json.follows) ? json.follows : [];
+  const recalls = Array.isArray(json.recalls) ? json.recalls : [];
+  for (const t of terms) addFollow(t);
+  /* No snapshot: the next inbox computation takes today's state as the
+   * baseline, so a restore can never announce an "update" that is really
+   * just the restore. */
+  for (const r of recalls) if (r && r.id) followRecall({ id: r.id, title: r.title || "", snap: null });
+  if (json.prefs) setAlertPrefs(json.prefs);
+  return { ok: true, stateAbbr: json.stateAbbr || null, terms: terms.length, recalls: recalls.length };
 }
 
 /** Ask for email alerts: the server emails a confirmation link. */

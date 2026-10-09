@@ -10,7 +10,9 @@ import {
 } from "@/lib/follows";
 import {
   getAlertPrefs, setAlertPrefs, getEmailSub, subscribeEmail, refreshEmailStatus, removeEmail, PREFS_EVENT, EMAIL_EVENT,
+  requestRestore, redeemRestore,
 } from "@/lib/alerts";
+import { needsInstallToKeepData } from "@/lib/push";
 import { changeLabel, describeChange } from "@/lib/recall-watch";
 import { isAnnounced } from "@/lib/verdict";
 import { plainHeadline, dayOf } from "@/lib/digest";
@@ -311,9 +313,145 @@ function PushChannel({ available, reason, push, stateAbbr, onEnable, onDisable, 
  * @param {Function} props.onRequestLocation
  * @param {object}   [props.byId]          Map id → record, to name followed recalls
  */
+/* ── Keeping follows ─────────────────────────────────────────────────────
+ * Follows live in this browser's storage, which can be cleared — by Safari on
+ * iPhone after seven days without a visit (unless the site is on the Home
+ * Screen), or by the reader. Three pieces, all honest about that:
+ *   RestoreLink    a link from the "Restore your follows" email, redeemed only
+ *                  on a button press (a mail scanner opening it can't spend it)
+ *   RestoreRequest "email me a restore link", for anyone without email alerts
+ *                  on this device — prominent when nothing is followed here
+ *   KeepNudge      on iPhone Safari, once something is followed: the Home
+ *                  Screen is what keeps it */
+function RestoreLink({ link, onRestored }) {
+  const [state, setState] = useState({ status: "idle", message: "" });
+  const go = async () => {
+    setState({ status: "busy", message: "" });
+    const out = await redeemRestore(link);
+    if (!out.ok) { setState({ status: "error", message: out.message }); track("alerts_restore", { result: "error" }); return; }
+    const bits = [out.terms && `${out.terms} product${out.terms === 1 ? "" : "s"} and brand${out.terms === 1 ? "" : "s"}`,
+      out.recalls && `${out.recalls} recall${out.recalls === 1 ? "" : "s"}`].filter(Boolean);
+    setState({ status: "done", message: bits.length ? `Restored ${bits.join(" and ")}.` : "Restored. Nothing was followed on the subscription." });
+    track("alerts_restore", { result: "ok", terms: out.terms, recalls: out.recalls });
+    onRestored(out);
+  };
+  return (
+    <div className="mx-4 mt-3 rounded-xl border border-mint-line bg-mint-soft px-3.5 py-3">
+      <p className="text-[13px] font-semibold text-paper">Restore your follows on this device</p>
+      {state.status === "done" ? (
+        <p className="mt-1 flex items-start gap-1.5 text-[12px] leading-snug text-paper" role="status">
+          <Check className="mt-0.5 size-3.5 shrink-0 text-mint" aria-hidden="true" /> {state.message} Email alerts stay on.
+        </p>
+      ) : (
+        <>
+          <p className="mt-1 text-[12px] leading-snug text-fog">
+            From the link we emailed you. This adds what your email alerts follow to this browser; nothing here is removed.
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <Button size="sm" onClick={go} disabled={state.status === "busy"}>
+              {state.status === "busy" ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : null} Restore
+            </Button>
+          </div>
+          {state.status === "error" && (
+            <p className="mt-2 flex items-start gap-1.5 text-[12px] leading-snug text-paper" role="alert">
+              <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" /> {state.message}
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function RestoreRequest({ prominent }) {
+  const [open, setOpen] = useState(prominent);
+  const [email, setEmail] = useState("");
+  const [state, setState] = useState({ status: "idle", message: "" });
+  const send = async (e) => {
+    e.preventDefault();
+    setState({ status: "busy", message: "" });
+    const out = await requestRestore(email);
+    setState({ status: out.ok ? "sent" : "error", message: out.message || "" });
+    track("alerts_restore_requested", { result: out.ok ? "ok" : "error" });
+  };
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} className="tap mt-3 text-[12px] font-semibold text-mint hover:underline">
+        Follows missing? Restore from email
+      </button>
+    );
+  }
+  return (
+    <div className={cn("mt-3 rounded-xl border border-line px-3.5 py-3", prominent ? "bg-panel-2" : "bg-transparent")}>
+      <p className="text-[13px] font-semibold text-paper">Followed things here before?</p>
+      <p className="mt-1 text-[12px] leading-snug text-fog">
+        Browsers can clear what a site saved — Safari on iPhone does after 7 days without a visit. If you had email
+        alerts on, we'll email you a link that brings your follows back to this device.
+      </p>
+      {state.status === "sent" ? (
+        <p className="mt-2 flex items-start gap-1.5 text-[12px] leading-snug text-paper" role="status">
+          <Mail className="mt-0.5 size-3.5 shrink-0 text-mint" aria-hidden="true" /> {state.message}
+        </p>
+      ) : (
+        <form onSubmit={send} className="mt-2 flex items-center gap-1.5">
+          <label htmlFor="rr-restore-email" className="sr-only">Email address your alerts go to</label>
+          <input id="rr-restore-email" type="email" inputMode="email" autoComplete="email" required
+                 value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com"
+                 className="h-9 min-w-0 flex-1 rounded-lg border border-line bg-panel px-3 text-[13px] text-paper placeholder:text-subtle focus:border-line-strong focus:outline-none" />
+          <Button size="sm" type="submit" variant="secondary" disabled={state.status === "busy"}>
+            {state.status === "busy" ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : <Mail className="size-3.5" aria-hidden="true" />}
+            Email me a link
+          </Button>
+        </form>
+      )}
+      {state.status === "error" && (
+        <p className="mt-2 flex items-start gap-1.5 text-[12px] leading-snug text-paper" role="alert">
+          <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" /> {state.message}
+        </p>
+      )}
+      <p className="mt-2 text-[11px] leading-snug text-subtle">
+        Without email alerts there's no copy anywhere but this browser, so there's nothing to restore.
+      </p>
+    </div>
+  );
+}
+
+const NUDGE_KEY = "rr-keep-nudge-dismissed";
+function KeepNudge() {
+  const [show, setShow] = useState(() => {
+    if (!needsInstallToKeepData()) return false;
+    try { return !localStorage.getItem(NUDGE_KEY); } catch (_) { return true; }
+  });
+  if (!show) return null;
+  const dismiss = () => {
+    try { localStorage.setItem(NUDGE_KEY, "1"); } catch (_) { /* shown again next time */ }
+    setShow(false);
+    track("keep_nudge_dismissed", {});
+  };
+  return (
+    <div className="mb-3 rounded-xl border border-line bg-panel-2 px-3.5 py-3">
+      <div className="flex items-start gap-2">
+        <Smartphone className="mt-0.5 size-4 shrink-0 text-paper" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <p className="text-[13px] font-semibold text-paper">Keep these on your iPhone</p>
+          <p className="mt-1 text-[12px] leading-snug text-fog">
+            Safari clears what websites save after 7 days without a visit. Add Yanked to your Home Screen —
+            Share, then <span className="font-semibold text-paper">Add to Home Screen</span> — to keep your follows,
+            and to get notifications.
+          </p>
+        </div>
+        <button type="button" onClick={dismiss} aria-label="Dismiss"
+                className="-mr-1 -mt-1 grid size-8 shrink-0 place-items-center rounded-lg text-subtle hover:bg-panel-3 hover:text-paper">
+          <X className="size-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function AlertsPanel({
   open, onClose, anchorId, loc, inbox, terms, followed, channels, push, onEnablePush, onDisablePush,
-  onOpenRecall, onRequestLocation, byId,
+  onOpenRecall, onRequestLocation, byId, restoreLink = null, onRestored = () => {},
 }) {
   const st = (loc && loc.stateAbbr) || null;
   const [prefs, setPrefs] = useState(getAlertPrefs);
@@ -329,7 +467,16 @@ export default function AlertsPanel({
   const matches = (inbox && inbox.matches) || [];
   const unread = (inbox && inbox.count) || 0;
   const anyFollow = terms.length > 0 || followed.length > 0;
-  const emailOn = useMemo(() => Boolean(getEmailSub()), [open]); // eslint-disable-line react-hooks/exhaustive-deps
+  /* Re-read on open and whenever the email subscription changes in this
+   * browser (subscribe, confirm, restore, off) — a restore happens with the
+   * panel already open. */
+  const [emailRev, setEmailRev] = useState(0);
+  useEffect(() => {
+    const bump = () => setEmailRev((n) => n + 1);
+    window.addEventListener(EMAIL_EVENT, bump);
+    return () => window.removeEventListener(EMAIL_EVENT, bump);
+  }, []);
+  const emailOn = useMemo(() => Boolean(getEmailSub()), [open, emailRev]); // eslint-disable-line react-hooks/exhaustive-deps
   const anyChannel = push.state === "subscribed" || emailOn;
 
   const markAllRead = () => {
@@ -381,6 +528,8 @@ export default function AlertsPanel({
         </div>
       )}
     >
+      {restoreLink && <RestoreLink link={restoreLink} onRestored={onRestored} />}
+
       {/* ── new for you ── */}
       <Section
         title="New for you"
@@ -468,6 +617,7 @@ export default function AlertsPanel({
 
       {/* ── what you follow ── */}
       <Section title="You follow">
+        {anyFollow && <KeepNudge />}
         <p className="mb-1 text-[12px] font-semibold text-fog">Recalls</p>
         {followed.length === 0 ? (
           <p className="text-[12px] leading-snug text-subtle">
@@ -535,6 +685,7 @@ export default function AlertsPanel({
             <Plus className="size-3.5" aria-hidden="true" /> Follow
           </button>
         </form>
+        {!emailOn && <RestoreRequest prominent={!anyFollow} />}
       </Section>
 
       {/* ── delivery ── */}

@@ -264,7 +264,7 @@ await check("POST confirm confirms, applies the pending settings, snapshots foll
   assert.deepEqual(r.snapshots[R1.id].st, ["MN", "WI"]);
   // Only the documented fields are stored.
   const allowed = new Set(["email", "stateAbbr", "follows", "recalls", "snapshots", "prefs", "confirmed", "confirmedAt",
-    "manageHash", "unsubSalt", "pending", "sends", "lastSentIds", "createdAt", "updatedAt"]);
+    "manageHash", "manageHashes", "restore", "unsubSalt", "pending", "sends", "lastSentIds", "createdAt", "updatedAt"]);
   for (const k of Object.keys(r)) assert.ok(allowed.has(k), `unexpected stored field ${k}`);
   // single use
   const again = await call(emailHandler, { method: "POST", query: { channel: "email", action: "confirm", id: ids.id, t: ids.t } }, NOW);
@@ -287,6 +287,104 @@ await check("someone re-subscribing a confirmed address can't take it over or de
   const rm = await call(emailHandler, { method: "POST", query: { channel: "email", action: "remove" }, body: { id: res.body.id, manage: res.body.manage } }, NOW);
   assert.equal(rm.body.status, "none");
   assert.ok(emailMem.data.has(es.pathFor(ids.id)), "confirmed record survives a pending token's remove");
+});
+
+// ─────────────────────────────────────────── 3b. restore follows to a wiped browser
+console.log("\n3b. email: restore follows to a browser that lost them (Resend and Blob MOCKED)");
+const restoreParams = (text) => {
+  const m = /\/\?restore=([a-f0-9]{64})\.([A-Za-z0-9_-]{43})/.exec(text);
+  return m ? { id: m[1], token: m[2] } : null;
+};
+const T1 = NOW + 20 * 60000;
+let restoreLink;
+await check("restore-request for an address with no subscription: same 202, no email sent", async () => {
+  const before = sent.length;
+  const res = await call(emailHandler, { method: "POST", query: { channel: "email", action: "restore-request" },
+    body: { email: "nobody@example.test" } }, T1);
+  assert.equal(res.statusCode, 202);
+  assert.equal(res.body.status, "sent-if-subscribed");
+  assert.equal(sent.length, before);
+});
+await check("restore-request for a confirmed address: same 202, emails a single-use link, stores only its hash", async () => {
+  const before = sent.length;
+  const res = await call(emailHandler, { method: "POST", query: { channel: "email", action: "restore-request" },
+    body: { email: ADDR } }, T1);
+  assert.equal(res.statusCode, 202);
+  assert.equal(res.body.status, "sent-if-subscribed");
+  assert.equal(sent.length, before + 1);
+  const mail = sent[sent.length - 1].body;
+  assert.deepEqual(mail.to, [ADDR]);
+  restoreLink = restoreParams(mail.text);
+  assert.ok(restoreLink && restoreLink.id === ids.id, "restore link in the text part");
+  assert.ok(mail.headers["List-Unsubscribe"]);
+  const stored = emailMem.data.get(es.pathFor(ids.id));
+  assert.ok(!stored.includes(restoreLink.token), "plaintext restore token is not stored");
+});
+await check("restore-request shares the confirmation rate limit, and says nothing different when limited", async () => {
+  const before = sent.length;
+  const res = await call(emailHandler, { method: "POST", query: { channel: "email", action: "restore-request" },
+    body: { email: ADDR } }, T1 + 30000);
+  assert.equal(res.statusCode, 202);
+  assert.equal(res.body.status, "sent-if-subscribed");
+  assert.equal(sent.length, before);
+});
+await check("restore with a wrong token: 410, nothing handed out", async () => {
+  const res = await call(emailHandler, { method: "POST", query: { channel: "email", action: "restore" },
+    body: { id: ids.id, token: es.newToken() } }, T1);
+  assert.equal(res.statusCode, 410);
+  assert.equal(res.body.follows, undefined);
+});
+let restoredManage;
+await check("restore returns the follows and a NEW manage token; the old browser's token still works", async () => {
+  const res = await call(emailHandler, { method: "POST", query: { channel: "email", action: "restore" },
+    body: { id: restoreLink.id, token: restoreLink.token } }, T1 + 60000);
+  assert.equal(res.statusCode, 200, JSON.stringify(res.body));
+  assert.equal(res.body.email, ADDR);
+  assert.deepEqual(res.body.follows, ["spinach", "example greens"]);
+  assert.deepEqual(res.body.recalls.map((r) => r.id), [R1.id, ANN.id]);
+  assert.ok(res.body.recalls[0].title.length > 0, "title from the (synthetic) index");
+  assert.equal(res.body.stateAbbr, "CA");
+  restoredManage = res.body.manage;
+  assert.notEqual(restoredManage, manage);
+  for (const m of [restoredManage, manage]) {
+    const st = await call(emailHandler, { method: "POST", query: { channel: "email", action: "status" }, body: { id: ids.id, manage: m } }, T1);
+    assert.equal(st.body.status, "confirmed");
+  }
+  const stored = emailMem.data.get(es.pathFor(ids.id));
+  assert.ok(!stored.includes(restoredManage), "plaintext manage token is not stored");
+});
+await check("a new subscribe request for the address keeps the restored device's access", async () => {
+  const before = await call(emailHandler, { method: "POST", query: { channel: "email", action: "subscribe" },
+    body: { email: ADDR, stateAbbr: "TX" } }, NOW + DAY + 5 * 60000);
+  assert.equal(before.statusCode, 202);
+  const st = await call(emailHandler, { method: "POST", query: { channel: "email", action: "status" }, body: { id: ids.id, manage: restoredManage } }, NOW + DAY + 6 * 60000);
+  assert.equal(st.body.status, "confirmed");
+});
+await check("a restore link works once", async () => {
+  const res = await call(emailHandler, { method: "POST", query: { channel: "email", action: "restore" },
+    body: { id: restoreLink.id, token: restoreLink.token } }, T1 + 90000);
+  assert.equal(res.statusCode, 410);
+});
+await check("a restore link expires after 30 minutes", async () => {
+  const T2 = NOW + DAY + 60 * 60000; // past the day's confirmation-email budget
+  const req = await call(emailHandler, { method: "POST", query: { channel: "email", action: "restore-request" }, body: { email: ADDR } }, T2);
+  assert.equal(req.statusCode, 202);
+  const link = restoreParams(sent[sent.length - 1].body.text);
+  assert.ok(link);
+  const late = await call(emailHandler, { method: "POST", query: { channel: "email", action: "restore" },
+    body: { id: link.id, token: link.token } }, T2 + es.RESTORE_TTL_MS + 1000);
+  assert.equal(late.statusCode, 410);
+});
+await check("at most 5 devices: the oldest manage token drops off", () => {
+  const rec = { manageHash: "a".repeat(64), manageHashes: ["b", "c", "d", "e", "f"].map((c) => c.repeat(64)) };
+  const kept = [...es.manageHashesOf(rec), "0".repeat(64)].slice(-es.MAX_MANAGE_TOKENS);
+  assert.equal(kept.length, 5);
+  assert.ok(!kept.includes("a".repeat(64)));
+});
+await check("restore bodies: unknown fields and malformed tokens refused", () => {
+  assert.equal(es.validateRestoreRequest({ email: ADDR, follows: [] }).ok, false);
+  assert.equal(es.validateRestore({ id: ids.id, token: "short" }).ok, false);
+  assert.equal(es.validateRestore({ id: "x", token: es.newToken() }).ok, false);
 });
 
 // ─────────────────────────────────────────── 4. diff engine

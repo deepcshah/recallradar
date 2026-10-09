@@ -214,6 +214,14 @@ What is sent (`api/_lib/alerts-engine.js`, the one engine both channels use; `ap
 
 **`CRON_SECRET`** is required as soon as either channel is configured (VAPID keys or `RESEND_API_KEY` set): without it `/api/push?action=digest` answers 503 and sends nothing, because it would otherwise let anyone fire alerts at every subscriber, and its `?dry=1` preview shows subscribers' states and follow terms (never addresses or endpoints). Both channels also report "not available yet" until it is set. With neither channel configured, the cron is a harmless no-op that says so.
 
+### When the browser forgets
+
+Follows, followed recalls, the read marker and the email manage token all live in this browser's `localStorage`. Browsers clear it — on request, under storage pressure, and Safari on iPhone **after seven days without a visit** unless the site was added to the Home Screen. For an app people open now and then, that is the common case, not the edge one. Three things answer it, none of them pretending the data is safer than it is:
+
+- **Ask to keep it.** The first follow of any kind calls `navigator.storage.persist()` (`requestPersistentStorage` in `src/lib/follows.js`) and records the answer. Chrome and Firefox honour it, deciding from engagement — a site with no history is usually told no. WebKit's seven-day rule is separate, so on iPhone this is not enough on its own.
+- **Say what keeps it on iPhone.** Once something is followed, Safari on iPhone outside the Home Screen shows one dismissible card: Add to Home Screen keeps follows and is also what makes push possible there.
+- **Restore from email.** The server already holds an email subscriber's follows, but a wiped browser has lost the token that proves it may read them — the inbox is the credential that's left. *Email me a link* (`?channel=email&action=restore-request`) sends a single-use, 30-minute link to `/?restore=<id>.<token>`; the answer is the same whether or not the address subscribes, and it shares the confirmation-email rate limit. Opening the link shows a **Restore** button and spends nothing; pressing it (`action=restore`) merges the server's follows into this browser (nothing local is removed) and gives this browser its own manage token, beside up to four others. Restored recalls come back without a snapshot, so the inbox takes today's state as the baseline instead of announcing the restore as an "update". Without email alerts there is no copy anywhere but the browser, and the panel says so.
+
 ### Owner setup
 
 Nothing below is needed for the in-app inbox; each channel is switched on independently.

@@ -17,6 +17,8 @@
  *     prefs: { weekly, urgent },
  *     confirmed: bool, confirmedAt,
  *     manageHash,                SHA-256 of the browser's manage token
+ *     manageHashes: [hash, …],   more browsers, added by restores (≤5)
+ *     restore: { tokenHash, expiresAt } | null,   a pending restore link
  *     unsubSalt,                 random; see UNSUBSCRIBE below
  *     pending: { tokenHash, manageHash, stateAbbr, follows, recalls, prefs,
  *                expiresAt } | null,
@@ -59,6 +61,14 @@ export const PENDING_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_SENDS_PER_DAY = 3;
 /** …and never two within this long. */
 export const MIN_SEND_GAP_MS = 2 * 60 * 1000;
+/* A restore link (see handleRestoreRequest in email-channel.js) is short-lived
+ * and single-use: it hands the person a fresh manage token for their
+ * subscription, so it should not outlive the moment they asked for it. */
+export const RESTORE_TTL_MS = 30 * 60 * 1000;
+/* Devices that can manage one subscription at once: each restore adds one, the
+ * oldest falls off. A browser whose token falls off sees "none" and can
+ * restore again. */
+export const MAX_MANAGE_TOKENS = 5;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // ------------------------------------------------------------ configuration
@@ -162,6 +172,33 @@ export function validateEmailSubscribe(body) {
   const rest = checkPrefsAndLists(body, { partial: false });
   if (!rest.ok) return rest;
   return { ok: true, value: { email, ...rest.value } };
+}
+
+const RESTORE_REQUEST_KEYS = new Set(["email"]);
+const RESTORE_KEYS = new Set(["id", "token"]);
+
+/** { email } — asking for a restore link. */
+export function validateRestoreRequest(body) {
+  const why = onlyKeys(body, RESTORE_REQUEST_KEYS);
+  if (why) return bad(why);
+  const email = cleanEmail(body.email);
+  if (!email) return bad("That doesn't look like an email address.");
+  return { ok: true, value: { email } };
+}
+
+/** { id, token } — redeeming one. */
+export function validateRestore(body) {
+  const why = onlyKeys(body, RESTORE_KEYS);
+  if (why) return bad(why);
+  if (!isKey(body.id) || !isToken(body.token)) return bad("This restore link looks incomplete. Ask for a new one.");
+  return { ok: true, value: { id: body.id, token: body.token } };
+}
+
+/** Every manage-token hash that may act on a confirmed record: the original
+ *  plus any added by restores, newest last. */
+export function manageHashesOf(record) {
+  const list = Array.isArray(record && record.manageHashes) ? record.manageHashes.filter((h) => typeof h === "string") : [];
+  return record && record.manageHash && !list.includes(record.manageHash) ? [record.manageHash, ...list] : list;
 }
 
 const KEY_RE = /^[a-f0-9]{64}$/;

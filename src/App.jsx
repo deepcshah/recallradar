@@ -42,7 +42,7 @@ import {
 import {
   getPushState, needsInstallForPush, pushAvailable, pushSupported, subscribePush, unsubscribePush,
 } from "@/lib/push";
-import { alertChannels, channelPayload, computeInbox, syncChannels, PREFS_EVENT } from "@/lib/alerts";
+import { alertChannels, channelPayload, computeInbox, syncChannels, restoreParamFromUrl, PREFS_EVENT } from "@/lib/alerts";
 import { findStores, STORE_CAPS, DEFAULT_STORE_CAP } from "@/lib/stores";
 import { byId, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
 import { categoryFor } from "@/lib/category";
@@ -231,6 +231,9 @@ function readDeepLink() {
   }
 }
 const DEEP_LINK = readDeepLink();
+/* A "Restore your follows" link from email (/?restore=<id>.<token>): opens
+ * Alerts with a Restore button. Read once, like DEEP_LINK. */
+const RESTORE_LINK = restoreParamFromUrl();
 
 /* "Since your last visit" needs the PREVIOUS visit, fixed for the whole of
  * this one. It is read once per tab (sessionStorage, so a reload does not
@@ -1399,6 +1402,18 @@ export default function App() {
     refreshPushState();
     refreshChannels();
   }, [refreshPushState, refreshChannels]);
+
+  // Arriving from a restore link: open Alerts on the Restore button.
+  useEffect(() => { if (RESTORE_LINK) openAlerts(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const onRestored = useCallback(() => {
+    // The link is spent: take it off the URL so a reload doesn't offer it again.
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.delete("restore");
+      window.history.replaceState(null, "", u.pathname + u.search + u.hash);
+    } catch (_) { /* cosmetic */ }
+    refreshChannels();
+  }, [refreshChannels]);
 
   /* ── the Alerts inbox ──
    * Computed here, in the browser, from the national index plus the live
@@ -3269,6 +3284,8 @@ export default function App() {
         onDisablePush={disablePush}
         onOpenRecall={(r) => { setAlertsOpen(false); openRecallSheet(r); }}
         onRequestLocation={() => openLocationPicker("for alerts", "alerts")}
+        restoreLink={RESTORE_LINK}
+        onRestored={onRestored}
       />
 
       {/* ---- theme, sources, about ---- */}

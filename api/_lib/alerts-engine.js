@@ -388,6 +388,7 @@ export function emailFor(plan, { baseUrl, unsubscribeUrl }) {
     caveat, "", why,
     `Unsubscribe (one click): ${unsubscribeUrl}`,
     `Change what you follow: ${baseUrl}/`,
+    `Follows missing on a device? Open ${baseUrl}/ → Alerts → Restore from email.`,
   ].join("\n");
 
   const h = escapeHtml;
@@ -407,7 +408,8 @@ ${s.more ? `<p style="margin:8px 0 0;font-size:12px;color:#6d6d6d">${h(s.more)}<
 </div>`).join("")}
 <p style="font-size:12px;line-height:1.5;color:#616161">${h(caveat)}</p>
 <p style="font-size:12px;line-height:1.5;color:#616161">${h(why)}<br>
-<a href="${h(unsubscribeUrl)}" style="color:#1f7a4c">Unsubscribe</a> (one click) · <a href="${h(baseUrl)}/" style="color:#1f7a4c">Change what you follow</a></p>
+<a href="${h(unsubscribeUrl)}" style="color:#1f7a4c">Unsubscribe</a> (one click) · <a href="${h(baseUrl)}/" style="color:#1f7a4c">Change what you follow</a><br>
+Follows missing on a device? Open Yanked → Alerts → Restore from email.</p>
 </div></body></html>`;
   return { subject, html, text };
 }

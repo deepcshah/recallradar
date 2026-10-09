@@ -85,6 +85,7 @@ export function addFollow(term) {
   const next = [...list, t].slice(-MAX_FOLLOWS);
   writeJSON(FOLLOWS_KEY, next);
   announce(next);
+  requestPersistentStorage();
   return next;
 }
 
@@ -204,11 +205,37 @@ function saveRecalls(list, { sync = true } = {}) {
  *  has (the index record when there is one). Returns { ok, list, full }:
  *  `full` when the cap is reached — the caller says so rather than silently
  *  dropping the oldest. */
+/* ── Keeping it ─────────────────────────────────────────────────────────
+ * Everything in this file lives in localStorage, which a browser may clear:
+ * on its own under storage pressure, on the reader's request, and — Safari on
+ * iPhone — after seven days without a visit unless the site is on the Home
+ * Screen. The first time someone follows anything, ask the browser to treat
+ * this site's storage as persistent. Chrome and Firefox honour it (Chrome
+ * decides silently, from engagement); WebKit's seven-day rule is separate,
+ * which is why the Alerts panel also suggests the Home Screen on iPhone and
+ * offers a restore from email. The answer is recorded so it is asked once. */
+const PERSIST_KEY = "rr-storage-persist";
+export async function requestPersistentStorage() {
+  if (readJSON(PERSIST_KEY, null)) return readJSON(PERSIST_KEY, null);
+  let result = "unsupported";
+  try {
+    const s = typeof navigator !== "undefined" && navigator.storage;
+    if (s && typeof s.persist === "function") {
+      result = (await (s.persisted ? s.persisted() : false)) || (await s.persist()) ? "granted" : "denied";
+    }
+  } catch (_) {
+    result = "unsupported";
+  }
+  writeJSON(PERSIST_KEY, result);
+  return result;
+}
+
 export function followRecall({ id, title, snap }) {
   const list = getFollowedRecalls();
   if (!id || list.some((e) => e.id === id)) return { ok: true, list, full: false };
   if (list.length >= MAX_FOLLOWED_RECALLS) return { ok: false, list, full: true };
   const next = saveRecalls([...list, cleanEntry({ id, title, snap, at: new Date().toISOString() })]);
+  requestPersistentStorage();
   return { ok: true, list: next, full: false };
 }
 
