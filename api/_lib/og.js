@@ -40,7 +40,7 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readIndex, findRecall } from "../../src/lib/index-server.js";
+import { resolveRecall } from "./resolve-recall.js";
 import { cardVerdict } from "../../src/lib/share.js";
 import { coverageOf } from "../../src/lib/verdict.js";
 
@@ -296,8 +296,7 @@ export default async function handler(req, res) {
 
   let record = null;
   if (id) {
-    const index = await readIndex();
-    record = findRecall(index, id);
+    ({ record } = await resolveRecall(id));
   }
 
   let png;

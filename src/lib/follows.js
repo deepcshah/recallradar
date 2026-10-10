@@ -85,6 +85,7 @@ export function addFollow(term) {
   const next = [...list, t].slice(-MAX_FOLLOWS);
   writeJSON(FOLLOWS_KEY, next);
   announce(next);
+  requestPersistentStorage();
   return next;
 }
 
@@ -138,4 +139,134 @@ export function markVisit() {
   const prev = getLastVisit();
   writeJSON(LAST_VISIT_KEY, new Date().toISOString());
   return prev;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * FOLLOWED RECALLS — "notify me about updates" on one specific notice
+ *
+ * Stored beside the terms, in this browser only (`rr-follow-recalls`):
+ *
+ *   [{ id, title, snap, at }]
+ *
+ * `title` is the product line as the reader saw it (public notice text, kept
+ * so the Alerts list can still name a recall that has since left the index);
+ * `snap` is recall-watch.js recallSnapshot() at the moment it was followed —
+ * or at the moment the reader last marked its update as read — and is what
+ * the in-app inbox diffs against. The ids (never the titles) go to the server
+ * only when an alert channel is on; the server takes its own snapshot.
+ * ───────────────────────────────────────────────────────────────────────── */
+const RECALLS_KEY = "rr-follow-recalls";
+const ALERTS_SEEN_KEY = "rr-alerts-seen";
+/** Matches the server's cap (push-store.js MAX_RECALLS). */
+export const MAX_FOLLOWED_RECALLS = 50;
+
+function cleanEntry(e) {
+  if (!e || typeof e !== "object" || typeof e.id !== "string" || !e.id || e.id.length > 100) return null;
+  return {
+    id: e.id,
+    title: String(e.title || "").slice(0, 160),
+    snap: e.snap && typeof e.snap === "object" ? e.snap : null,
+    at: typeof e.at === "string" ? e.at : null,
+  };
+}
+
+/** [{ id, title, snap, at }], oldest first. */
+export function getFollowedRecalls() {
+  const v = readJSON(RECALLS_KEY, []);
+  return Array.isArray(v) ? v.map(cleanEntry).filter(Boolean) : [];
+}
+
+export function getFollowedRecallIds() {
+  return getFollowedRecalls().map((e) => e.id);
+}
+
+export function isFollowingRecall(id) {
+  return getFollowedRecalls().some((e) => e.id === id);
+}
+
+/** Dispatched for changes that matter to the Alerts inbox but not to the
+ *  server (a snapshot acknowledged, the inbox marked read), so they don't
+ *  trigger a channel sync the way FOLLOWS_EVENT does. */
+export const ALERTS_EVENT = "rr-alerts-change";
+
+function announceAlerts() {
+  try { window.dispatchEvent(new CustomEvent(ALERTS_EVENT)); } catch (_) { /* no window */ }
+}
+
+function saveRecalls(list, { sync = true } = {}) {
+  const next = list.slice(-MAX_FOLLOWED_RECALLS);
+  writeJSON(RECALLS_KEY, next);
+  if (sync) announce(getFollows());
+  announceAlerts();
+  return next;
+}
+
+/** Follow one recall. `snap` is recallSnapshot() of the best copy the caller
+ *  has (the index record when there is one). Returns { ok, list, full }:
+ *  `full` when the cap is reached — the caller says so rather than silently
+ *  dropping the oldest. */
+/* ── Keeping it ─────────────────────────────────────────────────────────
+ * Everything in this file lives in localStorage, which a browser may clear:
+ * on its own under storage pressure, on the reader's request, and — Safari on
+ * iPhone — after seven days without a visit unless the site is on the Home
+ * Screen. The first time someone follows anything, ask the browser to treat
+ * this site's storage as persistent. Chrome and Firefox honour it (Chrome
+ * decides silently, from engagement); WebKit's seven-day rule is separate,
+ * which is why the Alerts panel also suggests the Home Screen on iPhone and
+ * offers a restore from email. The answer is recorded so it is asked once. */
+const PERSIST_KEY = "rr-storage-persist";
+export async function requestPersistentStorage() {
+  if (readJSON(PERSIST_KEY, null)) return readJSON(PERSIST_KEY, null);
+  let result = "unsupported";
+  try {
+    const s = typeof navigator !== "undefined" && navigator.storage;
+    if (s && typeof s.persist === "function") {
+      result = (await (s.persisted ? s.persisted() : false)) || (await s.persist()) ? "granted" : "denied";
+    }
+  } catch (_) {
+    result = "unsupported";
+  }
+  writeJSON(PERSIST_KEY, result);
+  return result;
+}
+
+export function followRecall({ id, title, snap }) {
+  const list = getFollowedRecalls();
+  if (!id || list.some((e) => e.id === id)) return { ok: true, list, full: false };
+  if (list.length >= MAX_FOLLOWED_RECALLS) return { ok: false, list, full: true };
+  const next = saveRecalls([...list, cleanEntry({ id, title, snap, at: new Date().toISOString() })]);
+  requestPersistentStorage();
+  return { ok: true, list: next, full: false };
+}
+
+export function unfollowRecall(id) {
+  const list = getFollowedRecalls();
+  const next = list.filter((e) => e.id !== id);
+  if (next.length !== list.length) saveRecalls(next);
+  return next;
+}
+
+/** After an update has been read: store the new snapshot as the baseline. */
+export function acknowledgeRecall(id, snap) {
+  const list = getFollowedRecalls();
+  let changed = false;
+  const next = list.map((e) => {
+    if (e.id !== id || !snap) return e;
+    changed = true;
+    return { ...e, snap };
+  });
+  if (changed) saveRecalls(next, { sync: false });
+  return next;
+}
+
+/** When the reader last marked the Alerts inbox as read (ISO), or null. */
+export function getAlertsSeen() {
+  const v = readJSON(ALERTS_SEEN_KEY, null);
+  return typeof v === "string" && Number.isFinite(Date.parse(v)) ? v : null;
+}
+
+export function markAlertsSeen(when = new Date().toISOString()) {
+  writeJSON(ALERTS_SEEN_KEY, when);
+  announceAlerts();
+  return when;
 }

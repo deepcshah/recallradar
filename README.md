@@ -19,8 +19,8 @@ Live at [yanked.app](https://yanked.app). Yanked is a responsive, single-page we
 
 The whole information architecture switches once, at `lg`:
 
-- **Below 1024** — a single column with a bottom bar (Home · Stores · Recalls · Scan), the location button and scope switch in the header, and one overflow control for theme, alerts, sources and About. This is the phone architecture, and it is also the right one for an iPad in portrait: at 820px the two-column layout gave a 404px map beside a 416px panel and served neither.
-- **1024 and up** — Home is a centred column; a two-way switch beside the name (Home · Stores & recalls) opens the map and panel side by side, with a draggable boundary between them. Scan is the header's primary action.
+- **Below 1024** — a single column with a bottom bar (Home · Stores · Recalls · Alerts · Scan), the location button and scope switch in the header, and one overflow control for theme, sources and About. Alerts and Scan open a surface over wherever you are rather than switching view. This is the phone architecture, and it is also the right one for an iPad in portrait: at 820px the two-column layout gave a 404px map beside a 416px panel and served neither.
+- **1024 and up** — Home is a centred column; a two-way switch beside the name (Home · Stores & recalls) opens the map and panel side by side, with a draggable boundary between them. Scan is the header's primary action; **Alerts** (a bell with the unread count) sits beside it — from 768px up, so an iPad in portrait gets the anchored popover too.
 
 Touch-target sizing is keyed to `pointer: coarse`, not to width — an iPad is 820px wide *and* finger-driven, so viewport width is the wrong question to ask.
 
@@ -90,7 +90,7 @@ So the badge is a disclosure, not a label (`src/lib/classification.js`, `InfoTip
 
 `Tooltip` (hover-only, `aria-describedby`, supplements a control that already names itself) and `InfoTip` (hover **and** tap, a disclosure on a term) are separate components on one placement engine, because the trigger has to change with the behaviour. Where an agency assigns no class at all — CPSC never does — the badge says "not classified" rather than inventing the "Medium risk" it used to print.
 
-The recall data comes from free, key-less public APIs. Your location is remembered in your own browser (`localStorage`, so a return visit opens straight onto it; the location picker has *Forget this location*, which also clears recent places), and it leaves the browser only as query parameters to those APIs and to the store lookup — analytics gets the two-letter state and nothing finer, and alerts store the state and your follow terms, never coordinates.
+The recall data comes from free, key-less public APIs. Your location is remembered in your own browser (`localStorage`, so a return visit opens straight onto it; the location picker has *Forget this location*, which also clears recent places), and it leaves the browser only as query parameters to those APIs and to the store lookup — analytics gets the two-letter state and nothing finer, and alerts (only if you turn a channel on) store the state, your follows and — for email — your address, never coordinates. See *Alerts* below.
 
 ## Home, and the question people arrive with
 
@@ -98,7 +98,7 @@ The map-first app answered "what reached the shops around me?". People mostly ar
 
 1. **Search** (`src/components/RecallSearch.jsx`) — the national index (below), searched as you type, every hit answered for your state and grouped by that answer. No location needed: without one, each card says where the notice sent the product ("Sent to IL, IN, IA …") and offers *Check your state*, which opens the location picker. Every collapsed card shows that coverage line, with or without a location.
 2. **The digest** (`src/components/HomeDigest.jsx`) — "This week in CA: 13 new recalls · 2 serious", counted from your last visit (the marker moves when the page is hidden or closed, never on arrival, so a reload does not reset it), the most serious one a tap away, an aisle rail of story-style cards (`AisleStories.jsx`), and your follows. It follows the global scope (Near me · `ST` or All US), reads the live list for that scope when there is one and falls back to the index — never mixing the two — and ends with the freshness line saying what it read. "New" means new *as news*: an FDA notice counts from the later of its own date and the day FDA published it (`posted`, openFDA's `report_date`; `newsDay` in `digest.js`), because FDA posts enforcement notices weeks after the firm starts the recall — H-1339-2026 (sprouts, MN and WI) was initiated Aug 22 and published Sep 23, and dated by initiation alone it would have been a month old the day it appeared. Cards lead with the publish date ("Posted Sep 23 · started Aug 22"). The push digest uses the same rule, and neither counts a company announcement FDA hasn't classified as a new recall.
-3. **Alerts**, where the browser can deliver them (see *Follows and alerts*).
+3. **A way into Alerts** — a short card that opens the Alerts surface (see *Alerts* below).
 
 The map, store list and full recall list are the power-user views now: demoted, not removed, and unchanged. They are mounted the first time one is opened and kept mounted after, so going Home and back keeps the selection, the scroll and the camera; the store lookup (one Mapbox request per chain) and MapLibre itself (about 800kB, now its own chunk) are not paid for until then. The area recall list is still fetched as soon as there is a location, because the digest and the scanner read it.
 
@@ -149,21 +149,97 @@ An openFDA failure at build time keeps the previous FDA records and turns the wo
 
 **USDA's "closed" flag is believed after 90 days.** In practice USDA marks most notices not-active within days of issuing them — the committed snapshot once had a three-day-old Class I pork recall flagged closed — and "This recall has ended" is a headline, not a footnote. So a USDA notice is called ended — in the index, the area list, the digest, share cards and push alike — only when the flag is false *and* the notice is over 90 days old (`FSIS_TRUST_CLOSED_DAYS` and `fsisStatus` in `src/lib/sources.js`). The area list also shows USDA's raw flag, as the **Closed** badge with its disclosure, which says only that USDA stopped tracking the notice.
 
-## Follows and alerts
+## Alerts
 
-**Follows** ("products I buy") are short phrases — "spinach", "Trader Joe's" — kept in `localStorage` (`rr-follows`, `src/lib/follows.js`) and matched literally against product and firm names: every word must start a word, no fuzzy matching, and never the recall reason, so "milk" does not fire on every undeclared-milk allergen notice. Any card can be followed with one tap; the digest lists matches first.
+People asked the obvious question: "what happens if I follow something?" It used to be: a chip on Home, and a push notification nobody could get because push was switched off in production. Alerts is now a destination of its own — **Alerts** in the bottom bar on a phone, the bell in the header from 768px up — opening one surface (`src/components/AlertsPanel.jsx` on `ui/responsive-surface.jsx`, the same popover-or-sheet the location picker uses). Top to bottom:
 
-**Alerts** are web push (`public/sw.js`, `src/lib/push.js`, `api/push.js`, `api/_lib/send-digest.js`), offered only where they can work:
+```
+Alerts                                   What you follow, and what's new for it · NY
+NEW FOR YOU                                                         Mark all read
+  🔔 [Closed by the agency]  Listeria in … — The agency has closed this recall. …
+  New for "cheese"   [Class I] Salmonella in Spicy Pimento Cheese Dip   Sep 23
+YOU FOLLOW
+  Recalls             🔔 Salmonella in Spicy Jalapeno Jarlsberg Dip        ✕
+  Products & brands   [cheese ✕]   [ Add a product or brand ] [+ FOLLOW]
+DELIVERY
+  Notifications on this device   Not available yet. This site hasn't switched it on.
+  Email                          [ you@example.com ] [Email me]
+  Weekly digest for NY                                                  (on)
+  Serious recalls in NY, straight away                                  (on)
+```
 
-- **What is sent:** a weekly digest of new recalls in your state (Saturday, `0 14 * * 6` UTC), and a push within the day for a new Class I recall in your state or one matching a follow (`30 15 * * *`). A week with nothing new sends nothing, rather than a "0 recalls" push.
-- **What is stored:** the push subscription, the two-letter state and the follow terms (at most 20, of at most 40 characters — the alerts sheet names any it could not include). One Blob file per subscriber, keyed by a hash of the endpoint. Never coordinates. Turning alerts off deletes it; a push service's 410 deletes it too.
-- **iPhone and iPad** only deliver push to a site added to the Home Screen and opened from there, so in a Safari tab the alerts sheet says that instead of offering a button that cannot work. `public/manifest.webmanifest` and the icons are what make "Add to Home Screen" produce an app.
-- **The service worker has no fetch handler**, on purpose: it can never serve a stale page or a stale recall list, which for this app is the worst failure available.
-- An existing subscription is kept in step when the follows or the state change, without prompting. The browser's permission prompt only ever comes from a click on *Turn on alerts* (or the stories' *Get a weekly heads-up*, which calls it directly).
+### Two kinds of follow
 
-Environment (server-side only, see `.env.example`): `VAPID_PUBLIC_KEY` and `VAPID_PRIVATE_KEY` (generate once with `npx web-push generate-vapid-keys`; rotating them orphans every subscription), `VAPID_SUBJECT`, and `CRON_SECRET`, which `/api/push?action=digest` requires since it sends pushes (with VAPID keys set and no `CRON_SECRET`, it refuses to run). Subscription endpoints must belong to a browser push service (FCM, Mozilla, Apple, Windows); anything else is refused, so the cron can never be pointed at an arbitrary URL. With either VAPID key unset, push is simply off: `GET /api/push` reports `{ enabled: false }`, the cron returns a no-op message, and the app hides the offer. `PUSH_BLOB_ACCESS=private` is only for a Blob store created private.
+- **Products and brands** (follow *terms*): short phrases — "spinach", "Trader Joe's" — kept in `localStorage` (`rr-follows`, `src/lib/follows.js`) and matched literally against product and firm names: every word must start a word, no fuzzy matching, and never the recall reason, so "milk" does not fire on every undeclared-milk allergen notice. A match counts when the notice reaches your state, or names no geography at all (a brand you buy, recalled with no distribution published, is exactly what a follow is for); a notice naming only other states does not (`followRelevant` in `src/lib/recall-watch.js`, shared by the app and the cron).
+- **One specific recall** — *Notify me about updates* on every opened card (`VerdictCard`) and *Notify me* on every card in the Recalls list (`src/components/WatchButton.jsx`). Kept in `rr-follow-recalls` (at most 50) as the id, the product line as you saw it, and a **snapshot** of the public fields worth watching (`recallSnapshot` in `src/lib/recall-watch.js`), taken from the national index's copy where there is one. An **update** is:
+  - **status** — the agency closed it (reported as closed, with "recalled product can still be in homes", never as good news), or reopened it;
+  - **distribution** — states *added*, or widened to nationwide. A state *disappearing* is deliberately not announced: an index rebuild re-reads the distribution text, and "TX was removed" from a parser change would be a false all-clear;
+  - **classification** — e.g. Class II → Class I;
+  - **classified by FDA** — a followed company announcement (press release) whose enforcement record has appeared: same firm (`sameFirm`, now in `src/lib/firm.js`, the rule the index build uses to drop the announcement), FDA, within 45 days.
 
-## Running it
+### The inbox works with nothing switched on
+
+"New for you" is computed **in the browser** (`computeInbox` in `src/lib/alerts.js`) from the national index plus whatever live lists the page already loaded (the index's copy wins on an id both have): updates to followed recalls, then new recalls matching a term since you last pressed *Mark all read* (or since your last visit, or the last 14 days on a first visit). Its count is the badge on the bell and the tab. No account, no channel, no request. Empty, it says what was checked and since when — "Nothing new for what you follow since Sep 17 — in the notices we read" — never that anything is safe.
+
+### Delivery: web push and email, one engine
+
+Both channels are optional and independent, and each says **"Not available yet"** when this deployment can't send it (GET `/api/push` reports `channels: { push, email }`, each with a reason) instead of disappearing.
+
+| | Web push | Email |
+| --- | --- | --- |
+| Turned on by | *Turn on notifications* (the only thing that prompts for permission) | typing an address and *Email me*, then clicking the link in the confirmation email |
+| Server needs | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, Blob, `CRON_SECRET` | `RESEND_API_KEY`, `ALERTS_FROM`, `ALERTS_SECRET`, Blob, `CRON_SECRET` |
+| Stored at | `push/subs/<sha256(endpoint)>.json` | `alerts/email/<HMAC(ALERTS_SECRET, address)>.json` |
+| Off | *Turn off on this device*, or a 404/410 from the push service | one-click unsubscribe in every email, *Turn off email* in the app |
+
+What is sent (`api/_lib/alerts-engine.js`, the one engine both channels use; `api/_lib/send-digest.js` walks the subscribers):
+
+- **Weekly digest** of new recalls in your state — Saturdays, `0 14 * * 6` UTC, if *Weekly digest* is on. A week with nothing new sends nothing, rather than a "0 recalls" message that would read as an all-clear.
+- **Daily** (`30 15 * * *`): a new serious (Class I / high-risk) recall in your state if *Serious recalls … straight away* is on; a new recall matching a followed term; an update to a followed recall. Follow matches and updates go to any channel that's on — that is what following is.
+- One push or one email per subscriber per run: specific when there is one thing to say, a summary otherwise.
+- **Dedupe** per subscriber record: `lastSentIds` holds every recall id already sent and `u:<id>:<snapshot hash>` per reported update. Snapshots advance only after a successful send, so a failure is retried next run. Emails also carry an `Idempotency-Key` (subscriber, day, content).
+- iPhone and iPad deliver web push only to a site added to the Home Screen; in a Safari tab the panel says so. Email works everywhere.
+- **The service worker has no fetch handler**, on purpose: it can never serve a stale page or a stale recall list.
+
+**Email specifics** (`api/_lib/email-channel.js`, `api/_lib/email-store.js`, `api/_lib/resend.js`; dispatched as `/api/push?channel=email&action=…` because the Hobby plan allows twelve functions):
+
+- **Double opt-in.** `subscribe` stores a *pending* request and emails a confirmation link (48 hours, single use). The link's GET shows a page with one *Confirm* button that POSTs — mail scanners (Outlook Safe Links, corporate gateways) fetch every link in a message, and a GET that confirmed would opt people in unseen. Nothing but the confirmation is sent before that. Unconfirmed requests are deleted by the daily cron after a week. The response is identical whether or not the address was already subscribed.
+- **Rate limit**: at most 3 confirmation emails per address per day, never two within 2 minutes (429 with `Retry-After`).
+- **Unsubscribe**: every email has a one-click link in the body (a GET that unsubscribes immediately — the cost of a scanner doing it is an email you stop getting) and `List-Unsubscribe` / `List-Unsubscribe-Post: List-Unsubscribe=One-Click` headers (RFC 8058; the POST unsubscribes). Unsubscribing **deletes the record**, address and all.
+- **Tokens.** Confirmation and *manage* tokens are 32 random bytes; only their SHA-256 is stored, compared in constant time. The *manage* token stays in the browser that subscribed (`rr-alerts-email`) so it can keep follows in step, and only becomes valid once the address owner confirms — subscribing someone else's address gets you nothing, and a pending request can never delete a confirmed subscription. The unsubscribe token is *derived* — `HMAC(ALERTS_SECRET, key + per-record random salt)` — not stored, because every email the cron sends must carry a working link and a stored hash can't be put in an email; a leaked Blob store therefore yields no working links.
+- **Links** point at `ALERTS_BASE_URL` (else `VERCEL_PROJECT_PRODUCTION_URL`, else `https://yanked.app`), never at the request's `Host` header, which a forged request could point elsewhere with the confirmation token in it.
+- Sends are sequential with a 600ms gap (Resend's default limit is 2 requests/second). That is fine for hundreds of subscribers, not tens of thousands — a larger list wants Resend's batch endpoint and a queue.
+
+**Push specifics**: subscription endpoints must belong to a browser push service (FCM, Mozilla, Apple, Windows); anything else is refused, so the cron can never be pointed at an arbitrary URL. An existing subscription is kept in step when follows, followed recalls, preferences or the state change, without prompting; `pushsubscriptionchange` in `public/sw.js` carries everything over to a rotated endpoint.
+
+**`CRON_SECRET`** is required as soon as either channel is configured (VAPID keys or `RESEND_API_KEY` set): without it `/api/push?action=digest` answers 503 and sends nothing, because it would otherwise let anyone fire alerts at every subscriber, and its `?dry=1` preview shows subscribers' states and follow terms (never addresses or endpoints). Both channels also report "not available yet" until it is set. With neither channel configured, the cron is a harmless no-op that says so.
+
+### When the browser forgets
+
+Follows, followed recalls, the read marker and the email manage token all live in this browser's `localStorage`. Browsers clear it — on request, under storage pressure, and Safari on iPhone **after seven days without a visit** unless the site was added to the Home Screen. For an app people open now and then, that is the common case, not the edge one. Three things answer it, none of them pretending the data is safer than it is:
+
+- **Ask to keep it.** The first follow of any kind calls `navigator.storage.persist()` (`requestPersistentStorage` in `src/lib/follows.js`) and records the answer. Chrome and Firefox honour it, deciding from engagement — a site with no history is usually told no. WebKit's seven-day rule is separate, so on iPhone this is not enough on its own.
+- **Say what keeps it on iPhone.** Once something is followed, Safari on iPhone outside the Home Screen shows one dismissible card: Add to Home Screen keeps follows and is also what makes push possible there.
+- **Restore from email.** The server already holds an email subscriber's follows, but a wiped browser has lost the token that proves it may read them — the inbox is the credential that's left. *Email me a link* (`?channel=email&action=restore-request`) sends a single-use, 30-minute link to `/?restore=<id>.<token>`; the answer is the same whether or not the address subscribes, and it shares the confirmation-email rate limit. Opening the link shows a **Restore** button and spends nothing; pressing it (`action=restore`) merges the server's follows into this browser (nothing local is removed) and gives this browser its own manage token, beside up to four others. Restored recalls come back without a snapshot, so the inbox takes today's state as the baseline instead of announcing the restore as an "update". Without email alerts there is no copy anywhere but the browser, and the panel says so.
+
+### Owner setup
+
+Nothing below is needed for the in-app inbox; each channel is switched on independently.
+
+1. **Blob** — a Vercel Blob store is attached already (`RR_BLOB_READ_WRITE_TOKEN`; see *The Blob token is read from a prefixed name*). It is **public**, because the feed caches are written public, so it cannot hold email addresses. **Email alerts need a second store, created *private* in Vercel**, connected with its token in `ALERTS_BLOB_READ_WRITE_TOKEN` (`src/lib/blob.js`). With that set, every alert record — push and email — is read and written there with private access. Without it, push keeps using the main store and email reports itself unavailable; `emailConfig` refuses to run on a public store, so this cannot be skipped by accident.
+2. **`CRON_SECRET`** — any long random string (`openssl rand -hex 32`) in Vercel → Settings → Environment Variables (Production). Vercel cron sends it automatically.
+3. **Web push** — `npx web-push generate-vapid-keys` once; set `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` and `VAPID_SUBJECT` (`mailto:` an address you read). Never rotate casually: every subscription is bound to the public key.
+4. **Email via Resend**
+   1. Create a Resend account; **Domains → Add domain** — use a sending subdomain such as `alerts.yanked.app` (or `yanked.app`).
+   2. Add the DNS records Resend shows at your DNS host: the **DKIM** TXT record (`resend._domainkey…`), and for the bounce subdomain (`send.…`) the **SPF** TXT record (`v=spf1 include:amazonses.com ~all`) and **MX** record. Wait for Resend to show the domain *Verified*.
+   3. Add a **DMARC** record if the domain has none: TXT at `_dmarc.yanked.app`, e.g. `v=DMARC1; p=none; rua=mailto:you@yanked.app` (Gmail and Yahoo require DMARC for bulk senders).
+   4. **API Keys → Create** with *Sending access* only, restricted to that domain → `RESEND_API_KEY`.
+   5. Set `ALERTS_FROM` to an address on the verified domain, e.g. `Yanked <alerts@yanked.app>`.
+   6. Set `ALERTS_SECRET` to a random string of at least 32 characters (`openssl rand -hex 32`). **Never rotate it**: it keys every email record's filename and every unsubscribe link; a new secret orphans all subscribers.
+   7. Optionally `ALERTS_BASE_URL=https://yanked.app` (defaults to the production domain).
+5. **Redeploy**, then check: `GET /api/push` should report `channels.email.enabled: true` (and push, if configured); `curl -H "Authorization: Bearer $CRON_SECRET" "https://yanked.app/api/push?action=digest&mode=urgent&dry=1"` previews a run without sending. Subscribe your own address from the app, confirm, and use the unsubscribe link once to see the whole loop.
+
+## Running it## Running it
 
 A Vite app with Vercel serverless functions under `api/`:
 
@@ -193,9 +269,11 @@ Those rules capture with `:path(.*)` and not `:path*`, and the difference is the
 
 **What is never sent.** This app knows where its user is standing, and that is the most sensitive thing it holds. No coordinates leave the browser at any precision, and neither does the ZIP or address typed into the box, the city geocoding resolved it to, or the name or address of any nearby store. What goes instead is the two-letter state — the granularity the recall feeds are themselves scoped to, and the coarsest thing that still answers "is this working outside California?" Everything else is a count or an outcome word.
 
+**An email address leaves the browser in exactly one case**: you type it into Alerts and press *Email me*. It goes to `/api/push?channel=email&action=subscribe` and from there to Resend, to send the confirmation. It is never sent to analytics (the alert events carry the state and outcome words only), never put in a URL, and never echoed back in a cron preview. The server stores, per address, in one Vercel Blob file named by an HMAC of the address: the address; the state; your follow terms (≤20) and followed recall ids (≤50); a snapshot of each followed recall's public fields (status, states, class); your two preferences; the ids already sent; the hashes of the confirmation and manage tokens; a random salt; the times confirmation emails were sent (for the rate limit); and created/updated/confirmed timestamps. Nothing else — no IP address, no user agent, no name, no location finer than the state. An unconfirmed request is deleted after a week; unsubscribing or *Turn off email* deletes the file. Web push stores the same minus the address and tokens, plus the push subscription. With no channel on, follows and the inbox never leave the browser.
+
 Scanned barcodes *are* sent, and the distinction is deliberate: a UPC identifies a product, not a person, and it is the only way to measure whether the coverage problem described below is actually biting in the field. `scan_completed` carries `notices_with_codes` alongside the result for the same reason the interface shows it — a miss against forty notices and a miss against nothing at all are not the same event.
 
-**Search text is sent on the same argument, with a guard.** What goes into a box labelled "Product, brand or barcode" names a product, and "what do people search for and not find" is the index's coverage question just as unmatched scans are the barcode one. But a box is a box, so `searchQueryProp` in `src/lib/analytics.js` drops anything shaped like a ZIP, an email address, a phone number or a street address to `null` before it leaves, and caps the rest at 60 characters. The box searches as you type, so `search_submitted` fires once a query has sat unchanged for 1.2 seconds, with the result count and whether openFDA had to be asked live. Follow terms go through the same guard on `follow_added`. The other Home events carry outcome words and recall ids, which are public notice numbers: `verdict_viewed` (`verdict`, `source`, and `via` search, digest or share link), `share_clicked` (`outcome`: shared, copied or failed — mostly a dismissed share sheet), `story_viewed`, `caught_up`, `push_enabled` / `push_failed` (`reason`).
+**Search text is sent on the same argument, with a guard.** What goes into a box labelled "Product, brand or barcode" names a product, and "what do people search for and not find" is the index's coverage question just as unmatched scans are the barcode one. But a box is a box, so `searchQueryProp` in `src/lib/analytics.js` drops anything shaped like a ZIP, an email address, a phone number or a street address to `null` before it leaves, and caps the rest at 60 characters. The box searches as you type, so `search_submitted` fires once a query has sat unchanged for 1.2 seconds, with the result count and whether openFDA had to be asked live. Follow terms go through the same guard on `follow_added`. The other Home events carry outcome words and recall ids, which are public notice numbers: `verdict_viewed` (`verdict`, `source`, and `via` search, digest or share link), `share_clicked` (`outcome`: shared, copied or failed — mostly a dismissed share sheet), `story_viewed`, `caught_up`, `push_enabled` / `push_failed` (`reason`), `recall_followed` / `recall_unfollowed` (`recall_id`), `email_alerts_requested` (`state`), `email_alerts_failed`, `email_alerts_off`, `alerts_marked_read` (`count`) — never the email address.
 
 **Location and scope events.** `location_set` carries `method` (`zip`, `address`, `geo`, `recent`, or `saved` for the silent restore) and the state; `location_failed` carries the method and the error code from `GEO_ERRORS` — never the typed text, never the ZIP. `location_picker_opened` says where it was opened from (`header`, `search_card`, `digest`, `stores_empty`, `alerts`, `scope_switch`, `stories`) and whether a location was already set. `scope_changed` carries `from`, `to` and `via` (`header`, `url`, `location_set`, `forget`, `recalls_chip`, `stores_note`), and `scope` (`near` | `us`) is registered as a super property so every event, autocapture included, can be split by it; `search_submitted` and `verdict_viewed` carry it too, and `recalls_loaded` for the national list has `scope: "us"` and no state.
 
@@ -224,6 +302,8 @@ A text query searches product, firm and reason, 100 per kind, and is ranked on t
 ### Two kinds of check, and why they are kept apart
 
 `node scripts/check-data.mjs` tests **logic** offline — geography, verdicts, ranking, freshness, parsing. The openFDA records it runs on are real, copied verbatim from api.fda.gov responses (the fixture's `_provenance` says which); the RSS fixture is fictional "Example … Co." items, because it tests a parser and its names say so. It cannot tell you whether a recall is in the data, and it must never be made to look as if it could: an earlier version asserted against a hand-written record of the United Sugar recall, passed, and was reported as proof the app handled that recall — while production, reading the real openFDA, had no such record, because openFDA had not published it yet.
+
+`node scripts/check-alerts.mjs` tests the **alerts logic** offline, on synthetic records that say so ("Example … Co.", ids like `fda-food-TEST-0001`): email and recall-id validation, token hashing and verification, subscribe → confirm → unsubscribe (GET and the RFC 8058 POST), the rate limit, the recall diff engine (closed, states added, nationwide, reclassified, announcement classified), the planner's dedupe, the in-app inbox, and both channels through the cron handler. Resend is a mocked `fetch`, Blob an in-memory map, web-push's `sendNotification` a recorder, and the index a synthetic one — so it proves the logic, and nothing about whether Resend, Blob or a push service accepts the requests for real.
 
 `node scripts/check-live-fda.mjs` tests **data**, live, and runs in the refresh workflow, where api.fda.gov is reachable. Its job-summary section says how current openFDA is (its own `last_updated` and newest report date), whether the index got FDA records, and whether each query in `scripts/watchlist.json` matches anything yet. That file is where a recall seen in the news goes — as an openFDA query, never as a record — so "is it in the data yet?" has an answer on every run.
 
@@ -265,7 +345,12 @@ src/lib/verdict.js              — coverage, the five verdicts, and the one "is
 src/lib/search-index.js         — load + search the national index (MiniSearch), trending, live lookup
 src/lib/index-server.js         — the same index read off disk, for the API functions
 src/lib/digest.js               — the digest's counting and wording, pure and node-runnable
-src/lib/follows.js              — "products I buy" and the last-visit marker, in localStorage
+src/lib/follows.js              — follow terms, followed recalls, the last-visit and inbox-read markers, in localStorage
+src/lib/recall-watch.js         — recall snapshots and the update diff (status, states, class, announcement → classified)
+src/lib/alerts.js               — alert preferences, the email client, channel sync, the in-app inbox
+src/lib/firm.js                 — sameFirm: the one rule for "this announcement became that enforcement record"
+src/components/AlertsPanel.jsx  — the Alerts surface: inbox, follows, delivery
+src/components/WatchButton.jsx  — "Notify me about updates" on one recall
 src/lib/share.js                — share links and the one short-form verdict wording (card, unfurl)
 src/lib/push.js, push-store.js  — web push client; subscription validation + Blob storage
 src/lib/stores.js               — store lookup + dedupe against the chain dictionary
@@ -281,8 +366,9 @@ src/lib/theme.js, tuning.js     — light/dark, and the DialKit-tunable motion c
 api/                            — Vercel functions (11 of the Hobby plan's 12 — see Design notes): recalls, stores, per-feed proxies, diagnostics
 api/lookup.js                   — one product across openFDA, INCLUDING finished recalls
 api/share.js                    — /r/:id unfurls: meta tags + redirect; ?format=png is the 1200×630 verdict card
-api/push.js                     — store / remove a push subscription (state + follows only); ?action=digest runs the crons
-api/_lib/                       — og.js (the card) and send-digest.js (the crons): code, not deployed functions
+api/push.js                     — push subscriptions + channel availability; ?action=digest runs the crons; ?channel=email&action=… is email
+api/_lib/                       — code, not deployed functions: og.js (the card), send-digest.js (the crons), alerts-engine.js
+                                  (what to send, push and email renderers), email-channel.js / email-store.js / resend.js (email)
 public/sw.js, manifest.webmanifest — push-only service worker (no fetch handler) and install manifest
 scripts/build-index.mjs         — build public/feeds/index.json, the national index
 api/refresh-feeds.js            — daily cron: warm the FSIS and CPSC caches off the request path
@@ -292,7 +378,7 @@ public/feeds/                   — the committed snapshots; machine-generated, 
 
 Design notes:
 
-- **Twelve functions, and every file in `api/` is one.** Vercel's Hobby plan refuses a deployment with more than twelve serverless functions, and it counts each file directly under `api/`. So new server work rides on an existing function behind a query parameter — the verdict card is `/api/share?format=png`, the digest crons are `/api/push?action=digest`, the All US list is `/api/recalls?scope=us` (every active notice, no area filter; `400` with a state) — with the code itself in `api/_lib/`, which the underscore keeps from being deployed on its own. Count `ls api/*.js` before adding a file.
+- **Twelve functions, and every file in `api/` is one.** Vercel's Hobby plan refuses a deployment with more than twelve serverless functions, and it counts each file directly under `api/`. So new server work rides on an existing function behind a query parameter — the verdict card is `/api/share?format=png`, the alert crons are `/api/push?action=digest` and email alerts `/api/push?channel=email&action=…`, the All US list is `/api/recalls?scope=us` (every active notice, no area filter; `400` with a state) — with the code itself in `api/_lib/`, which the underscore keeps from being deployed on its own. Count `ls api/*.js` before adding a file.
 - **Per-source resilience:** each feed is fetched with `Promise.allSettled`; one failure never breaks the page. openFDA's "no results" 404 is treated as an empty set.
 - **Four tiers for USDA and CPSC, because one is not enough.** `https://www.fsis.usda.gov/fsis/api/recall/v/1?format=json` is the documented endpoint, it is correct, and it takes no API key — it is served off the agency's own web host rather than from behind api.data.gov, so a 403 is not asking for a credential. It nonetheless refuses this app's serverless function much of the time, and CPSC's `saferproducts.gov` returns 180 days as one uncompressed document that regularly outruns the request budget. So the data is fetched from four places that fail independently: (1) a live server-side fetch with a few spaced retries; (2) a Vercel Blob copy, warmed daily by `api/refresh-feeds.js` **off** the request path, where a cron can afford to be patient; (3) a direct fetch from the user's own browser, which is a different client on a different network; and (4) a snapshot committed to `public/feeds/` by a GitHub Action. Each tier says how old it is, and the recall list names which one answered.
 - **The fourth tier is the one that matters, and both sides read it.** Tiers 1–3 all ultimately need USDA to answer *this deployment* at some point; if it never does, they are empty together. `.github/workflows/refresh-feeds.yml` runs `scripts/refresh-feeds.mjs` on a GitHub runner four times a day — a different network with a different IP reputation — and commits the result, so the build ships with the data as a static asset needing no Blob store, no environment variable, and no cooperation from USDA at request time. The browser reads that snapshot over the CDN and the server reads its own copy off disk (`src/lib/snapshot.js`, the last tier of `feedWithFallback`) — without the server half, a deployment with refused egress and an unattached Blob store answers `/api/recalls` with "USDA FSIS: unavailable" while the data sits inside it.

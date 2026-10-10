@@ -363,10 +363,27 @@ export default function RecallSearch({
 
   const chips = useMemo(() => (index ? trending(index, TRENDING_N) : []), [index]);
 
-  const pinned = useMemo(() => {
+  const inIndex = useMemo(() => {
     if (!initialRecallId || !index) return null;
     return index.recalls.find((r) => r.id === initialRecallId) || null;
   }, [index, initialRecallId]);
+
+  /* A shared id the browser's index lacks — it can lag a refresh, and an FDA
+   * id can be answered from openFDA directly — is asked of /api/share before
+   * the card says it couldn't be found. */
+  const [fetched, setFetched] = useState({ id: null, status: "idle", record: null });
+  useEffect(() => {
+    if (!initialRecallId || !index || inIndex || fetched.id === initialRecallId) return;
+    let alive = true;
+    setFetched({ id: initialRecallId, status: "pending", record: null });
+    fetch(`/api/share?format=json&id=${encodeURIComponent(initialRecallId)}`, { headers: { Accept: "application/json" } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b) => { if (alive) setFetched({ id: initialRecallId, status: "done", record: (b && b.record) || null }); })
+      .catch(() => { if (alive) setFetched({ id: initialRecallId, status: "done", record: null }); });
+    return () => { alive = false; };
+  }, [initialRecallId, index, inIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pinned = inIndex || (fetched.id === initialRecallId ? fetched.record : null);
+  const pinnedPending = !inIndex && fetched.id === initialRecallId && fetched.status === "pending";
 
   /* The callback runs outside the state updater: StrictMode calls updaters
    * twice, and onOpenRecall is typically analytics or a URL change. */
@@ -456,10 +473,15 @@ export default function RecallSearch({
             freshness={freshness}
             className="fade-item"
           />
+        ) : pinnedPending || fetched.id !== initialRecallId ? (
+          <p className="flex items-center gap-2 rounded-xl border border-dashed border-line px-3.5 py-3 text-[13px] text-fog">
+            <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" /> Opening the shared recall…
+          </p>
         ) : (
           <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-[13px] leading-relaxed text-fog">
-            The shared recall isn't in our index of {lookbackPhrase(index.lookbackDays)} — it may be
-            older, or its notice may have been withdrawn. Try searching for the product by name.
+            We couldn't find the recall in this link ({initialRecallId}) in our index of{" "}
+            {lookbackPhrase(index.lookbackDays)} or at FDA — it may be older, or its notice may have been
+            withdrawn. Try searching for the product by name.
           </p>
         )
       )}

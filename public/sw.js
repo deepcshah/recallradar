@@ -26,8 +26,12 @@
  * worth caching is /feeds/index.json, network-first with the fetched-at time
  * surfaced in the UI — never the HTML, never /api/*.
  *
- * Push payloads are JSON written by api/_lib/send-digest.js:
+ * Push payloads are JSON written by api/_lib/alerts-engine.js (pushPayloadFor),
+ * the same engine that writes the alert emails:
  *   { title, body, url, tag?, recallId? }
+ * Tags: "yanked-digest" (weekly, replaces an unread older one),
+ * "yanked-<id>" (one new recall), "yanked-u-<id>" (an update to a followed
+ * recall), "yanked-urgent" (a summary).
  * `url` is always same-origin ("/" or "/?r=<id>&st=<ST>"); anything else is
  * ignored in favour of "/" so a payload can never open a foreign page.
  */
@@ -91,7 +95,8 @@ self.addEventListener("notificationclick", (event) => {
 });
 
 /* The push service can rotate a subscription (expiry, key rotation). The
- * worker cannot read localStorage, where the reader's state and follows live,
+ * worker cannot read localStorage, where the reader's state, follows,
+ * followed recalls and preferences live,
  * so it re-subscribes and asks the server to carry the stored preferences
  * over from the old endpoint to the new one. If that fails, the next app
  * open re-syncs through src/lib/push.js. */

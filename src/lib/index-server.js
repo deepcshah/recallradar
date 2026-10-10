@@ -77,3 +77,11 @@ export function findRecall(index, id) {
   }
   return map.get(String(id)) || null;
 }
+
+/** Test hook: serve `index` from readIndex() until called again with null.
+ *  scripts/check-alerts.mjs uses it to run the alert crons against a
+ *  SYNTHETIC index (obviously fake "Example … Co." records), so a logic test
+ *  can never be mistaken for a claim about what is in the real data. */
+export function setIndexForTests(index) {
+  memo = index ? { at: Number.MAX_SAFE_INTEGER / 2, index } : null;
+}

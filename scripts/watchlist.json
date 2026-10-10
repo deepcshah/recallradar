@@ -1,17 +1,10 @@
 {
-  "_about": "Recalls someone saw in the news and wants to know the moment openFDA (and our index) has them. Each `search` is a real openFDA enforcement query, run live by scripts/check-live-fda.mjs on every refresh; the job summary says found / not yet. Remove an entry once it is found and in the index. Never put a recall record here — only the query.",
-  "entries": [
+  "_about": "Recalls someone saw in the news and wants to know the moment openFDA (and our index) has them. Each `search` is a real openFDA enforcement query, run live by scripts/check-live-fda.mjs on every refresh; the job summary says found / not yet. Remove an entry once it is found and in the index. Never put a recall record here \u2014 only the query.",
+  "entries": [],
+  "found": [
     {
-      "label": "United Sugar Producers & Refiners — light brown and powdered sugar, undeclared wheat (FDA Class II, classified 2026-09-21; in the news Sep 21–26)",
-      "added": "2026-10-01",
-      "kind": "food",
-      "search": "recalling_firm:united+AND+recalling_firm:sugar"
-    },
-    {
-      "label": "Same recall, by product — any light brown or powdered sugar published since Sep 1",
-      "added": "2026-10-01",
-      "kind": "food",
-      "search": "(product_description:\"brown+sugar\"+OR+product_description:\"powdered+sugar\")+AND+report_date:[20260901+TO+20261231]"
+      "label": "United Sugar Producers and Refiners \u2014 light brown and powdered sugar (watched from 2026-10-01)",
+      "found": "openFDA report of 2026-09-30, in the index built 2026-10-08: H-1391-2026 and H-1392-2026, distributed IA, IL, IN, KS, MN, OH, PA, TX."
     }
   ]
 }

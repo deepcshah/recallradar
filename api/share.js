@@ -25,7 +25,7 @@
  * titles come from three agencies' free text, and an attribute is exactly
  * where an unescaped quote stops being cosmetic.
  */
-import { readIndex, findRecall } from "../src/lib/index-server.js";
+import { resolveRecall } from "./_lib/resolve-recall.js";
 import { cardVerdict, cleanState } from "../src/lib/share.js";
 import { VERDICTS } from "../src/lib/verdict.js";
 import ogHandler from "./_lib/og.js";
@@ -112,10 +112,16 @@ export default async function handler(req, res) {
   const st = cleanState(q.st);
   const origin = originOf(req);
 
-  let record = null;
-  if (id) {
-    const index = await readIndex();
-    record = findRecall(index, id);
+  const { record, from, index } = id ? await resolveRecall(id) : { record: null, from: null, index: null };
+
+  /* `?format=json`: the same lookup for the app itself, which only holds the
+   * national index in the browser and so cannot open a shared id the index
+   * lacks without asking. */
+  if (q.format === "json") {
+    res.setHeader("Cache-Control", record ? "public, max-age=300, s-maxage=3600" : "public, max-age=60, s-maxage=300");
+    return record
+      ? res.status(200).json({ record, from, index })
+      : res.status(404).json({ error: "not found", index: index || "unavailable — this function could not read public/feeds/index.json" });
   }
 
   let body;
@@ -143,13 +149,18 @@ export default async function handler(req, res) {
       target,
     });
   } else {
+    /* Not found here is not "go to the homepage": that dropped people on a
+     * page with no trace of what was shared with them. Forward the id anyway;
+     * the app says plainly that it couldn't find that recall, and offers a
+     * search. */
+    const target = id ? `/?${new URLSearchParams({ r: id, ...(st ? { st } : {}) })}` : "/";
     body = page({
       title: "Yanked — recalls near you",
       description:
         "Which FDA, USDA and CPSC recalls reached your state, and which stores near you are named in the notices.",
       image: `${origin}/api/share?format=png`,
       url: `${origin}/`,
-      target: "/",
+      target,
     });
   }
 
