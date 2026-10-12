@@ -4,15 +4,14 @@ import { cn } from "@/lib/utils";
 /* ─────────────────────────────────────────────────────────────────────────
  * NEAR ME · NY  │  ALL US
  *
- * The one global answer to "which recalls am I looking at?". It drives Home
- * (digest, aisles, follows), the Recalls list and the counts; search is always
- * national and only changes how it groups. It sits beside the location button
- * because the two are one thought: where I am, and whether I care.
+ * The one global answer to "which recalls am I looking at?". It drives Home's
+ * Latest recalls list (where it sits, on the list it scopes), the stores and
+ * Recalls view, and the counts; search is always national and only changes
+ * how it orders.
  *
  * A segmented control with radio semantics: one Tab stop, arrows move and
  * select (roving tabindex), Home/End jump. The selected segment is a raised
- * neutral, never mint — mint is the Home/Stores nav switch's "you are here",
- * and a green "Near me" would read as "near me is fine".
+ * neutral, never mint — a green "Near me" would read as "near me is fine".
  *
  * "Near me" with no location does not switch: it asks for a place (the
  * caller opens the picker) and the switch follows once one is set.
@@ -92,7 +91,7 @@ export default function ScopeSwitch({ scope, stateAbbr, onChange, className }) {
             onClick={() => onChange(key, "header")}
             className={cn(
               "relative z-[1] inline-flex h-8 items-center whitespace-nowrap rounded-full px-2.5 text-[13px] font-semibold transition-colors sm:px-3",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 pointer-coarse:h-9",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 pointer-coarse:h-10",
               on ? "text-paper" : "text-fog hover:text-paper",
             )}
           >

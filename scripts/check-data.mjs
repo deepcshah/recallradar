@@ -27,6 +27,7 @@ import { verdictFor, isInArea, statesIn, VERDICTS } from "../src/lib/verdict.js"
 import { prepareSearch, searchIndex, freshnessOf, recentFor, lookupMatchToRecord } from "../src/lib/search-index.js";
 import { buildIndex, parseRss, announcementToIndex, dropAnnouncedDuplicates, sameFirm } from "./build-index.mjs";
 import { rankMatches, relevanceOf } from "../api/_lib/lookup-rank.js";
+import { shortProduct } from "../src/lib/digest.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const fixture = async (name) => readFile(resolve(HERE, "fixtures", name), "utf8");
@@ -276,6 +277,15 @@ check("a miss falls back to all-words matching, then reports openFDA's date", ()
   assert.equal(miss.body.lastUpdated, "2026-09-23");
 });
 globalThis.fetch = realFetch;
+
+check("'sugar free' is not about sugar (real text, D-0461-2026)", () => {
+  const coughDrops = { product: "MGC Health, Menthol- Cough Suppressant, Oral Anesthetic, Cough Drops, Sugar Free, Honey Lemon", firm: "Xiamen Kang Zhongyuan Biotechnology Co.", reason: "" };
+  assert.equal(relevanceOf(coughDrops, "sugar"), 1);
+  assert.equal(relevanceOf({ product: "Light Brown Sugar 2 lb", firm: "United Sugar Producers and Refiners", reason: "" }, "sugar"), 3);
+});
+check("headline names the product, not only the brand (real text, D-0461-2026)", () => {
+  assert.match(shortProduct("MGC Health, Menthol- Cough Suppressant, Oral Anesthetic, Cough Drops, Sugar Free"), /^MGC Health Menthol/);
+});
 
 // ─────────────────────────────────────────── 6. ambiguous state codes
 console.log("\n6. ambiguous state codes in the openFDA query");

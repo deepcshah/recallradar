@@ -49,11 +49,16 @@ export function relevanceOf(m, q) {
   const head = (cut === -1 ? product : product.slice(0, cut)).toLowerCase();
   const reason = String(m.reason || "").toLowerCase();
 
+  /* "Sugar Free" is not about sugar: drop "<query> free" / "<query>-free"
+   * before matching, so a sugar-free cough drop doesn't rank with the sugar
+   * recall someone is looking for (D-0461-2026 did). */
+  const noFree = (s) => s.replace(new RegExp(`${esc(query)}[\\s-]*free`, "gi"), " ");
+  const firmN = noFree(firm), headN = noFree(head), reasonN = noFree(reason);
   const phrase = new RegExp(`(^|[^a-z0-9])${esc(query)}`, "i");
-  if (phrase.test(firm) || phrase.test(head.slice(0, 80))) return 3;
+  if (phrase.test(firmN) || phrase.test(headN.slice(0, 80))) return 3;
 
   const terms = words(query);
-  const strong = `${firm} \n ${head} \n ${reason}`;
+  const strong = `${firmN} \n ${headN} \n ${reasonN}`;
   if (terms.length && terms.every((t) => new RegExp(`(^|[^a-z0-9])${esc(t)}`).test(strong))) return 2;
   return 1;
 }

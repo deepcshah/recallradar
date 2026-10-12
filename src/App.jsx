@@ -1,10 +1,10 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertCircle, Armchair, Baby, Beef, Bell, BellOff, Bike, Candy, Carrot, Check, ChevronDown, ChevronRight, ChevronUp,
-  Crosshair, CupSoda, House, Map as MapIcon,
+  AlertCircle, ArrowLeft, ArrowRight, Armchair, Baby, Beef, Bell, Bike, Candy, Carrot, Check, ChevronDown, ChevronRight, ChevronUp,
+  CupSoda,
   ExternalLink, Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package,
   PanelRightOpen, PawPrint, Pill, Plug, Plus, Radar, Rows2, Columns2, Search, SearchX,
-  ScanLine, ShieldCheck, Soup, Stethoscope, Sun, Moon, MonitorSmartphone, MoreHorizontal, Store,
+  ShieldCheck, Soup, Stethoscope, Sun, Moon, MonitorSmartphone, MoreHorizontal, Store,
   ClipboardList, UtensilsCrossed, Wheat, X, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -19,11 +19,10 @@ import { Tooltip, InfoTip } from "@/components/ui/tooltip";
 import { FilterButton, FilterSheet, FilterGroup, FilterChoice } from "@/components/FilterSheet";
 import ScanSheet from "@/components/ScanSheet";
 import RecallSearch from "@/components/RecallSearch";
-import HomeDigest from "@/components/HomeDigest";
+import LatestRecalls from "@/components/LatestRecalls";
 import VerdictCard from "@/components/VerdictCard";
 import AlertsPanel from "@/components/AlertsPanel";
 import WatchButton from "@/components/WatchButton";
-import { useIsMd } from "@/components/ui/responsive-surface";
 import { Sheet, useSheetPresence } from "@/components/ui/sheet";
 import {
   Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
@@ -40,7 +39,7 @@ import {
   FOLLOWS_EVENT, ALERTS_EVENT, getFollows, getLastVisit, markVisit, getFollowedRecalls, getAlertsSeen,
 } from "@/lib/follows";
 import {
-  getPushState, needsInstallForPush, pushAvailable, pushSupported, subscribePush, unsubscribePush,
+  getPushState, subscribePush, unsubscribePush,
 } from "@/lib/push";
 import { alertChannels, channelPayload, computeInbox, syncChannels, restoreParamFromUrl, PREFS_EVENT } from "@/lib/alerts";
 import { findStores, STORE_CAPS, DEFAULT_STORE_CAP } from "@/lib/stores";
@@ -819,6 +818,7 @@ export default function App() {
   /* A recall opened from the digest (its headline, a follow match, a story),
    * answered in a sheet over wherever the reader is. */
   const [sheetRecall, setSheetRecall] = useState(null);
+  const [sheetShared, setSheetShared] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [push, setPush] = useState({ state: "unknown", busy: false, msg: null, dropped: [] });
   /* Which delivery channels this deployment can actually use, per channel
@@ -829,19 +829,6 @@ export default function App() {
    * another), so the inbox recomputes without a shared store. */
   const [followsRev, setFollowsRev] = useState(0);
   const [lastVisit] = useState(sessionVisitBaseline);
-  /* Offered where it can work, or where one step would make it work (an
-   * iPhone in a Safari tab: add to Home Screen first). Nowhere else — a
-   * button that can only ever answer "not supported" is not an offer. */
-  const [pushOffered, setPushOffered] = useState(() => pushSupported() || needsInstallForPush());
-  /* …and only where this deployment can send them. Without VAPID keys the
-   * server says { enabled: false }, and an offer that ends in "not switched
-   * on for this site" is the same non-offer from the other side. */
-  useEffect(() => {
-    if (!pushOffered) return undefined;
-    let alive = true;
-    pushAvailable().then((v) => { if (alive && !(v && v.enabled)) setPushOffered(false); });
-    return () => { alive = false; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [moreOpen, setMoreOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -1229,7 +1216,7 @@ export default function App() {
     });
   }, [verdictState, viewScope]);
 
-  const openRecallSheet = useCallback((r) => {
+  const openRecallSheet = useCallback((r, via = "latest") => {
     if (!r) return;
     /* One recall, one answer. normalizeFsis and the index now share one
      * rule for when USDA's "not active" flag means ended (fsisStatus and
@@ -1240,9 +1227,19 @@ export default function App() {
      * it. `active` (USDA's raw flag, for the Closed chip) is left alone. */
     const ix = index && Array.isArray(index.recalls) ? index.recalls.find((x) => x.id === r.id) : null;
     const rec = ix ? { ...r, status: ix.status, endDate: ix.endDate } : r;
+    setSheetShared(false);
     setSheetRecall(rec);
-    onVerdictOpened(rec, "digest");
+    onVerdictOpened(rec, via);
   }, [onVerdictOpened, index]);
+
+  /* A shared link (?r=<id>&st=) opens its recall straight away, in the same
+   * sheet, labelled as shared. Its view is tracked by the deep-link effect
+   * above, once, so this does not track again. */
+  const openSharedRecall = useCallback((r) => {
+    if (!r) return;
+    setSheetShared(true);
+    setSheetRecall(r);
+  }, []);
 
   /* ── the All US list ──
    * Fetched lazily, the first time the reader is in All US, and kept for the
@@ -1420,7 +1417,6 @@ export default function App() {
    * lists this page already loaded (the index copy wins on an id both have,
    * as in the recall sheet). No channel needed: this is what the bell's
    * count and the panel's "New for you" read. */
-  const isMd = useIsMd();
   const { inbox, recordsById } = useMemo(() => {
     if (!index || !Array.isArray(index.recalls)) return { inbox: null, recordsById: null };
     const records = [...index.recalls, ...recalls, ...(national.recalls || [])];
@@ -1439,14 +1435,6 @@ export default function App() {
     // followsRev: re-read localStorage after any follow / read-marker change.
   }, [index, recalls, national, ownState, lastVisit, followsRev]); // eslint-disable-line react-hooks/exhaustive-deps
   const unreadAlerts = (inbox && inbox.count) || 0;
-
-  const enablePushFromStories = useCallback(() => {
-    setAlertsOpen(true);
-    const canAskNow = loc && loc.stateAbbr && pushSupported() && !needsInstallForPush() &&
-      typeof Notification !== "undefined" && Notification.permission !== "denied";
-    if (canAskNow) enablePush();
-    else refreshPushState();
-  }, [loc, enablePush, refreshPushState]);
 
   /** Selecting a store is one action: focus its pin and scope the product list.
    *  Open on the bucket that has something in it — "names this store" when a
@@ -2077,170 +2065,59 @@ export default function App() {
   return (
     <div className="flex h-[100dvh] flex-col overflow-hidden bg-ink" style={motionStyle}>
       {/* ================= top bar =================
-          Identity and location only. The recall search box and the product
-          type menu used to live here too, which put the controls that filter
-          the recall list an entire layout away from the recall list — and on
-          a phone squeezed all four into one 360px row. They now sit in the
-          Recalls panel, next to the thing they act on. */}
-      <header className="z-20 shrink-0 border-b border-line bg-panel elev-1">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-2 px-3 py-2.5 sm:gap-x-3 sm:px-4">
-          <span className="flex shrink-0 items-center gap-2">
-            <Radar className="size-5 text-mint" />
-            <span className="hidden text-base font-bold tracking-tight sm:inline">Yanked</span>
-            <Tooltip content="Early release — data and matching are still being refined">
-              <Badge variant="beta" className="hidden sm:inline-flex">beta</Badge>
-            </Tooltip>
-          </span>
+          Four things, at every width: who this is, where you are, what's new
+          for you, and everything else. The Home / Stores tabs, the scope
+          switch and the Scan button used to sit here too — seven controls
+          competing before the reader had read a word. Scope now lives on the
+          list it scopes, Scan inside the search field it feeds, and the
+          stores view is a link at the foot of Home. */}
+      <header className="z-20 shrink-0 border-b border-line bg-panel">
+        {/* On Home the bar lines up with the 640px column under it; the map
+            view keeps the full width it needs. */}
+        <div className={"mx-auto flex h-14 w-full items-center gap-2 px-3 sm:px-4 lg:h-16 " + (tab === "home" ? "max-w-[672px]" : "")}>
+          <button type="button" onClick={() => setTab("home")} aria-label="Yanked — home"
+                  className="tap -ml-1 flex shrink-0 items-center gap-2 rounded-lg px-1 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60">
+            <Radar className="size-6 text-mint" aria-hidden="true" />
+            <span className="hidden text-[17px] font-bold tracking-tight text-paper sm:inline">Yanked</span>
+          </button>
 
-          {/* ---- where you are (wide screens) ----
-              The phone has the bottom bar for this; a wide screen has no bar,
-              so Home and the map-and-lists view are a two-way switch here,
-              next to the name. Two, not three: at this width the store list
-              and the recall list are one view side by side, not two places. */}
-          <div className="hidden shrink-0 items-center gap-1 rounded-full border border-line bg-panel-2 p-0.5 lg:flex"
-               role="group" aria-label="View">
-            {[
-              ["home", "Home", House, () => setTab("home")],
-              ["map", "Stores & recalls", MapIcon, () => setTab((t) => (t === "home" ? "near" : t))],
-            ].map(([key, label, Icon, go]) => {
-              const on = key === "home" ? tab === "home" : tab !== "home";
-              return (
-                <button key={key} type="button" onClick={go} aria-pressed={on}
-                        className={"tap inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[13px] font-semibold " +
-                          (on ? "bg-mint-soft text-mint" : "text-fog hover:text-paper")}>
-                  <Icon className="size-3.5" aria-hidden="true" /> {label}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* ---- where you are, and how wide to look ----
-              One control for the place, the same element at every width,
-              and beside it the one switch for the scope. It used to be five
-              location entry points — a header form, a search button, a "My
-              Location" button, a ZIP card in search and a button in the
-              digest — with errors printed in a strip across the page, 900px
-              from the field that caused them. */}
-          <div role="group" aria-label="Location and scope" className="flex min-w-0 items-center gap-1.5">
+          <div className="ml-auto flex min-w-0 items-center gap-1.5">
             <LocationButton
               loc={loc}
               busy={locating || (productsBusy && !recalls.length)}
               open={pickerOpen}
+              compact
               onOpen={() => (pickerOpen ? setPickerOpen(false) : openLocationPicker(null, "header"))}
             />
-            <ScopeSwitch scope={viewScope} stateAbbr={loc && loc.stateAbbr} onChange={changeScope} />
-          </div>
-
-          {/* Scanning is a task, not a filter.
-              On a phone it is a bottom-bar destination; on a desktop it sat in
-              the recalls toolbar next to Filters, styled like a sibling of
-              one — so the same action read as top-level on one screen and as
-              a list control on the other. It is the app's one primary verb,
-              so here it is the header's one primary button. */}
-          <Tooltip content="Point the camera at a package and check it against these notices">
-            <Button
-              id="btn-scan" size="sm"
-              className="hidden h-9 shrink-0 px-3.5 lg:ml-auto lg:inline-flex"
-              onClick={() => setScanOpen(true)}
-            >
-              <ScanLine /> Scan
-            </Button>
-          </Tooltip>
-
-          {/* Phone: one overflow control instead of three standing ones. */}
-          <Button
-            id="btn-more" variant="secondary" size="icon" className="ml-auto h-9 w-9 shrink-0 lg:hidden"
-            onClick={() => setMoreOpen(true)}
-            aria-label="More: theme, data sources, about"
-          >
-            <MoreHorizontal />
-          </Button>
-          {/* Alerts: a header item from md up (the popover hangs from it), the
-              bottom bar's job below lg. Between md and lg both show and both
-              open the same popover, anchored here. */}
-          <Tooltip content={unreadAlerts ? `Alerts — ${unreadAlerts} new for what you follow` : "Alerts — what you follow, and how you're told"}>
-            <Button
-              id="btn-alerts" variant="secondary" size="sm"
-              className={"relative hidden h-9 shrink-0 px-3 md:inline-flex " + (alertsOpen ? "border-line-strong bg-panel-3" : "")}
+            <button
+              id="btn-alerts" type="button"
               onClick={() => (alertsOpen ? setAlertsOpen(false) : openAlerts())}
               aria-haspopup="dialog"
               aria-expanded={alertsOpen}
               aria-controls="alerts-panel"
               aria-label={unreadAlerts ? `Alerts, ${unreadAlerts} new` : "Alerts"}
+              title={unreadAlerts ? `Alerts — ${unreadAlerts} new for what you follow` : "Alerts — what you follow, and how you're told"}
+              className={"tap relative grid size-10 shrink-0 place-items-center rounded-full text-fog hover:bg-panel-3 hover:text-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 pointer-coarse:size-11 " +
+                (alertsOpen ? "bg-panel-3 text-paper" : "")}
             >
-              <Bell /><span className="hidden xl:inline">Alerts</span>
+              <Bell className="size-5" aria-hidden="true" />
               {unreadAlerts > 0 && (
-                <span className="tnum absolute -right-1.5 -top-1.5 grid h-[18px] min-w-[18px] place-items-center rounded-full border-2 border-panel bg-paper px-1 text-[10px] font-bold text-panel">
+                <span aria-hidden="true"
+                      className="tnum absolute right-0.5 top-0.5 grid h-[18px] min-w-[18px] place-items-center rounded-full border-2 border-panel bg-paper px-1 text-[10px] font-bold leading-none text-panel">
                   {unreadAlerts > 99 ? "99+" : unreadAlerts}
                 </span>
               )}
-            </Button>
-          </Tooltip>
-          <Tooltip content={theme === "system" ? "Following your system theme — click for light" : `${theme[0].toUpperCase()}${theme.slice(1)} theme — click to change`}>
-            <Button
-              id="btn-theme" variant="secondary" size="icon" className="hidden h-9 w-9 shrink-0 lg:ml-0 lg:inline-flex"
-              onClick={cycleTheme}
-              aria-label={`Theme: ${theme}. Click to change.`}
+            </button>
+            <button
+              id="btn-more" type="button"
+              onClick={() => setMoreOpen(true)}
+              aria-label="More: theme, data sources, about"
+              title="Theme, data sources, about"
+              className="tap grid size-10 shrink-0 place-items-center rounded-full text-fog hover:bg-panel-3 hover:text-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 pointer-coarse:size-11"
             >
-              {theme === "dark" ? <Moon /> : theme === "light" ? <Sun /> : <MonitorSmartphone />}
-            </Button>
-          </Tooltip>
-
-          {/* ---- what the window is showing (wide screens) ----
-              These were one "Hide Lists" button floating over the top-left
-              corner of the map, which is where a map control belongs and not
-              where a layout control does: it sat on the map while acting on
-              everything except the map, and it could only take both lists at
-              once. Beside the theme switch they read as what they are — chrome
-              that decides what the window shows — and they take one list each,
-              so "just the recalls, I don't care which shop" is finally a thing
-              you can ask for. Turning both off is the old button. */}
-          {loc && tab !== "home" && (
-            <>
-              <span aria-hidden="true" className="hidden h-5 w-px shrink-0 bg-line lg:block" />
-              <div className="hidden shrink-0 items-center gap-1.5 lg:flex" role="group" aria-label="Panels to show">
-                {[
-                  ["stores", "Stores", "store list", Store, storesShown, toggleStores, "stores-list-scroll"],
-                  ["recalls", "Recalls", "recall list", ClipboardList, recallsShown, toggleRecalls, "recalls-list-scroll"],
-                ].map(([key, label, spoken, Icon, on, toggle, controls]) => (
-                  <Tooltip key={key}
-                           content={on ? `Hide the ${spoken} and give the room to the map` : `Show the ${spoken}`}>
-                    <Button
-                      id={`btn-show-${key}`}
-                      variant="secondary" size="sm"
-                      aria-pressed={on}
-                      aria-controls={controls}
-                      onClick={toggle}
-                      className={"h-9 shrink-0 px-3 " +
-                        (on ? "border-mint bg-mint-soft text-mint" : "text-fog")}
-                    >
-                      <Icon /><span className="hidden xl:inline">{label}</span>
-                    </Button>
-                  </Tooltip>
-                ))}
-                {/* Disabled when there is only one list, never absent. A
-                    control that vanishes takes its own explanation with it —
-                    you are left wondering where it went, and on the way back
-                    the row changes width under the pointer. Greyed out, it
-                    says the same thing and stays put; the tooltip says why. */}
-                <Tooltip content={!bothLists
-                  ? "Needs both lists — turn the other one back on"
-                  : sideBySide ? "Stack the two lists vertically" : "Put the two lists side by side"}>
-                  <Button
-                    id="btn-toggle-layout"
-                    variant="secondary" size="icon"
-                    aria-pressed={sideBySide}
-                    disabled={!bothLists}
-                    onClick={toggleLayout}
-                    aria-label={sideBySide ? "Stack the lists vertically" : "Put the lists side by side"}
-                    className="h-9 w-9 shrink-0"
-                  >
-                    {sideBySide ? <Rows2 /> : <Columns2 />}
-                  </Button>
-                </Tooltip>
-              </div>
-            </>
-          )}
+              <MoreHorizontal className="size-5" aria-hidden="true" />
+            </button>
+          </div>
         </div>
 
         {(productsBusy || storesStatus?.busy || (usMode && national.status === "loading")) && <div id="progress" className="progress-track" />}
@@ -2250,68 +2127,134 @@ export default function App() {
         <p id="scope-status" role="status" aria-live="polite" className="sr-only">{liveMsg}</p>
       </header>
 
+      {/* ================= the stores / full-list views: a way back =================
+          With no tab bar, these two views carry their own way home, the
+          scope they read, and (phone) the switch between the store list and
+          the recall list that the bar used to be. On a wide screen the two
+          are one side-by-side view, and the switches that decide which
+          lists it shows live here instead of in the global header. */}
+      {tab !== "home" && (
+        <div className="z-10 flex shrink-0 items-center gap-2 border-b border-line bg-panel px-2 py-1.5 sm:px-3">
+          <button id="btn-back-home" type="button" onClick={() => setTab("home")}
+                  className="tap inline-flex h-10 shrink-0 items-center gap-1 rounded-full pl-1.5 pr-3 text-[14px] font-semibold text-paper hover:bg-panel-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 pointer-coarse:h-11">
+            <ArrowLeft className="size-5" aria-hidden="true" />
+            <span className="max-sm:sr-only">Home</span>
+          </button>
+          {/* Phone: the two lists, one at a time. */}
+          <div className="flex shrink-0 items-center rounded-full border border-line bg-panel-2 p-0.5 lg:hidden" role="group" aria-label="View">
+            {[["near", "Stores", goStores], ["recalls", "Recalls", goRecalls]].map(([id, label, go]) => (
+              <button key={id} id={`view-${id}`} type="button" onClick={go} aria-pressed={tab === id}
+                      className={"inline-flex h-8 items-center rounded-full px-3 text-[13px] font-semibold pointer-coarse:h-10 " +
+                        (tab === id ? "bg-panel text-paper shadow-[var(--rr-shadow-1),var(--rr-bevel)]" : "text-fog")}>
+                {label}
+                {id === "recalls" && selectedStore && <span aria-label="(one store)" className="ml-1 size-1.5 rounded-full bg-mint" />}
+              </button>
+            ))}
+          </div>
+          <span className="hidden text-[15px] font-semibold text-paper lg:inline">Stores &amp; recalls</span>
+          <ScopeSwitch className="ml-auto" scope={viewScope} stateAbbr={loc && loc.stateAbbr}
+                       onChange={(next) => changeScope(next, "header")} />
+
+          {/* ---- what the window is showing (wide screens) ---- */}
+          {loc && (
+            <div className="hidden shrink-0 items-center gap-1.5 lg:flex" role="group" aria-label="Panels to show">
+              {[
+                ["stores", "Stores", "store list", Store, storesShown, toggleStores, "stores-list-scroll"],
+                ["recalls", "Recalls", "recall list", ClipboardList, recallsShown, toggleRecalls, "recalls-list-scroll"],
+              ].map(([key, label, spoken, Icon, on, toggle, controls]) => (
+                <Tooltip key={key}
+                         content={on ? `Hide the ${spoken} and give the room to the map` : `Show the ${spoken}`}>
+                  <Button
+                    id={`btn-show-${key}`}
+                    variant="secondary" size="sm"
+                    aria-pressed={on}
+                    aria-controls={controls}
+                    onClick={toggle}
+                    className={"h-9 shrink-0 px-3 " +
+                      (on ? "border-mint bg-mint-soft text-mint" : "text-fog")}
+                  >
+                    <Icon /><span className="hidden xl:inline">{label}</span>
+                  </Button>
+                </Tooltip>
+              ))}
+              <Tooltip content={!bothLists
+                ? "Needs both lists — turn the other one back on"
+                : sideBySide ? "Stack the two lists vertically" : "Put the two lists side by side"}>
+                <Button
+                  id="btn-toggle-layout"
+                  variant="secondary" size="icon"
+                  aria-pressed={sideBySide}
+                  disabled={!bothLists}
+                  onClick={toggleLayout}
+                  aria-label={sideBySide ? "Stack the lists vertically" : "Put the lists side by side"}
+                  className="h-9 w-9 shrink-0"
+                >
+                  {sideBySide ? <Rows2 /> : <Columns2 />}
+                </Button>
+              </Tooltip>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ================= home =================
-          Search first, digest second, one column at every width.
+          Two jobs, in the order people arrive with them:
 
-          Search leads because it is the question people arrive with ("is
-          the sausage on the news mine?") and it needs nothing from them —
-          no location, no permission. The digest answers the other question,
-          "anything new near me?", and falls back from the live area list to
-          the national index so it has something to say before (or without)
-          a location. The map, the store list and the full recall list are
-          the power-user views now: one tap away on the bottom bar, or the
-          header switch on a wide screen, and exactly as they were.
+            1. Is it recalled?  one field (search, or the barcode button in
+               it); typing replaces the list below with compact answers.
+            2. Latest recalls   newest first, Near me · ST | All US on the
+               list itself, each row one tap from the full answer.
 
-          On a wide screen this is a centred column rather than a stretched
-          one: a verdict is a sentence, and a sentence 1400px wide is not
-          one anybody reads. */}
+          Then a quiet way to the stores view and the full list with filters.
+          One centred column at every width: a verdict is a sentence, and a
+          sentence 1400px wide is not one anybody reads. */}
       <div id="home-scroll"
-           className={(tab === "home" ? "block " : "hidden ") + "tabbar-space min-h-0 flex-1 overflow-y-auto"}>
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 pt-5 pb-8 lg:pt-8">
+           className={(tab === "home" ? "block " : "hidden ") + "min-h-0 flex-1 overflow-y-auto"}>
+        <div className="mx-auto flex w-full max-w-[640px] flex-col px-4 pt-6 pb-[calc(2.5rem+env(safe-area-inset-bottom,0px))] sm:pt-10 lg:pt-14">
           <RecallSearch
             loc={verdictLoc}
             scope={viewScope}
             freshness={searchFreshness}
             initialRecallId={DEEP_LINK.recallId}
-            onOpenRecall={(r) => onVerdictOpened(r, "search")}
-            onRequestLocation={() => openLocationPicker("to check your state", "search_card")}
+            onOpenRecall={(r) => openRecallSheet(r, "search")}
+            onOpenShared={openSharedRecall}
+            onScan={() => setScanOpen(true)}
             onSearch={onSearchSettled}
-          />
-          <HomeDigest
-            loc={verdictLoc}
-            hasLocation={Boolean(loc)}
-            scope={viewScope}
-            index={index}
-            live={usMode
-              ? (national.status === "done" ? { records: national.recalls, sources: national.sources } : null)
-              : (loc && !productsBusy ? { records: recalls, sources } : null)}
-            lastVisit={lastVisit}
-            onOpenRecall={openRecallSheet}
-            onOpenStores={goStores}
-            onOpenAll={goRecalls}
-            onRequestLocation={(reason, via) => openLocationPicker(reason, via || "digest")}
-            onEnablePush={pushOffered ? enablePushFromStories : undefined}
-            onStorySeen={(id) => track("story_viewed", { recall_id: id })}
-            onCaughtUp={() => track("caught_up", { state: verdictState })}
-          />
-          {(pushOffered || (channels && channels.email.enabled)) && (
-            <div className="flex items-center gap-3 rounded-2xl border border-line bg-panel px-4 py-3">
-              <span className="grid size-9 shrink-0 place-items-center rounded-full border border-line bg-panel-2">
-                <Bell className="size-4 text-fog" aria-hidden="true" />
-              </span>
-              <p className="min-w-0 flex-1 text-[13px] leading-snug text-fog">
-                <span className="font-semibold text-paper">A weekly heads-up</span>
-                {" "}for {loc?.stateAbbr || "your state"}, and an alert straight away for a serious recall there,
-                one matching a product you follow, or an update to a recall you follow — by notification or email.
-              </p>
-              <Button variant="secondary" size="sm" className="shrink-0 pointer-coarse:h-10" onClick={openAlerts}>
-                {push.state === "subscribed" ? "Alerts on" : "Set up"}
-              </Button>
-            </div>
-          )}
-          <p className="text-center text-xs leading-relaxed text-subtle">
-            Beta. Recall data comes from public FDA, USDA and CPSC feeds. Not a substitute for the official
-            notice — always check the product codes against it.
+          >
+            <LatestRecalls
+              loc={verdictLoc}
+              hasLocation={Boolean(loc)}
+              scope={viewScope}
+              index={index}
+              live={usMode
+                ? (national.status === "done" ? { records: national.recalls, sources: national.sources } : null)
+                : (loc && !productsBusy ? { records: recalls, sources } : null)}
+              busy={usMode ? national.status === "loading" : productsBusy}
+              onChangeScope={changeScope}
+              onOpenRecall={(r) => openRecallSheet(r, "latest")}
+            />
+          </RecallSearch>
+
+          <nav aria-label="More ways in" className="mt-10 flex flex-col border-t border-line">
+            {[
+              ["home-stores", "Stores near you named in recalls", goStores],
+              ["home-browse", "Browse all with filters", goRecalls],
+            ].map(([id, label, go]) => (
+              <button key={id} id={id} type="button" onClick={go}
+                      className="tap group flex min-h-12 items-center justify-between gap-3 border-b border-line text-left text-[15px] font-medium text-paper hover:text-mint">
+                {label}
+                <ArrowRight className="size-4 shrink-0 text-subtle group-hover:text-mint" aria-hidden="true" />
+              </button>
+            ))}
+          </nav>
+
+          <p className="mt-6 text-[12px] leading-relaxed text-subtle">
+            Recall data from public FDA, USDA and CPSC feeds.{" "}
+            <span className="font-semibold text-fog">Beta</span> — informational only; always check the product
+            codes against the official notice.{" "}
+            <button type="button" onClick={() => setAboutOpen(true)} className="font-semibold text-fog underline-offset-2 hover:text-paper hover:underline">
+              About this data
+            </button>
           </p>
         </div>
       </div>
@@ -2683,7 +2626,7 @@ export default function App() {
               </PanelHeader>
 
               <div id="stores-list-scroll"
-                   className="tabbar-space sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
+                   className="sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 {/* Stores are local whatever the header says: in All US they
                     are still matched to the recalls that reach this state. */}
                 {usMode && loc && !storesNoteHidden && (
@@ -2936,7 +2879,7 @@ export default function App() {
               )}
 
               <div id="recalls-list-scroll" ref={productsScrollRef}
-                   className="tabbar-space sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
+                   className="sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 {!listBusy && <SourceNotice sources={listSources} />}
                 {!listBusy && listFrom === "index" && listRecalls.length > 0 && (
                   <p className="mb-2 text-[12px] leading-snug text-subtle">
@@ -3121,7 +3064,8 @@ export default function App() {
 
       {/* ================= footer ================= */}
       <footer
-        className="safe-b z-20 hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line bg-panel px-4 pt-1.5 lg:flex"
+        className={"safe-b z-20 hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line bg-panel px-4 pt-1.5 " +
+          (tab === "home" ? "" : "lg:flex")}
         style={{ "--safe-b-pad": "0.375rem" }}
       >
         <p className="min-w-0 flex-1 truncate text-[11px] text-fog">
@@ -3141,96 +3085,6 @@ export default function App() {
           </button>
         </div>
       </footer>
-
-      {/* ================= bottom navigation (phone) =================
-          Three destinations, in the half of the screen a thumb reaches.
-          This replaces a tab strip that sat two-thirds of the way up the
-          panel, under five other bands — and it absorbs the footer, whose
-          only unique content was a disclaimer already written out in full
-          inside About. Two rows of chrome removed, one added, and everything
-          you press most is now where your hand already is. */}
-      {/* Four now: Home leads, and what was "Near me" is "Stores", named for
-          what it holds now that it is no longer where the app starts. Shown
-          without a location too — Home works without one, and the other two
-          answer with the location prompt they always had. */}
-      <nav
-          aria-label="Main"
-          /* Floating, not welded on.
-           *
-           * It was a flush white strip with a hairline on top, in the flow
-           * below a white scrolling list — so it shared an edge and a fill
-           * with the thing it sits over, and disappeared. It was missed
-           * entirely, which for the app's primary navigation is the whole
-           * ballgame.
-           *
-           * Now it detaches: inset from all three edges, fully rounded,
-           * lifted on the app's deepest shadow, over a blurred translucent
-           * ground so the list visibly passes underneath. Depth is doing the
-           * separating rather than a 1px line — which is the same argument
-           * ui/button.jsx already makes about bevels, applied to a surface.
-           * The blur is a saturated backdrop over a 78%-opaque panel, not a
-           * clear pane: legibility first, glass second. */
-          className="tabbar lg:hidden"
-        >
-          {[
-            { id: "home", label: "Home", icon: House },
-            { id: "near", label: "Stores", icon: Store, count: loc && storesWanted ? stores.length : null },
-            /* A clipboard, not the sliders glyph. `ListFilter` is what half
-               the platforms on a phone draw for "filter" — so the app's second
-               destination wore the icon of a control, two rows above an actual
-               Filters button wearing very nearly the same one. */
-            { id: "recalls", label: "Recalls", icon: ClipboardList, count: loc || usMode ? filtered.length : null },
-            /* Alerts is a destination, not a tab: like Scan it opens a
-               surface over wherever you are, so the list behind it keeps its
-               place. The badge counts what's new for your follows. */
-            { id: "alerts", label: "Alerts", icon: Bell, badge: unreadAlerts },
-            { id: "scan", label: "Scan", icon: ScanLine },
-          ].map(({ id, label, icon: Icon, count, badge }) => {
-            const on = id === "alerts" ? alertsOpen : id !== "scan" && tab === id;
-            const busyCount = id === "recalls" ? listBusy : scanning;
-            const shown = count != null && !busyCount ? fmtCount(count) : null;
-            const spoken = id === "recalls" && shown != null
-              ? `Recalls, ${shown} ${usMode && !selectedStore ? "across the US" : `in ${loc?.stateAbbr || "your area"}`}`
-              : id === "near" && shown != null ? `Stores, ${shown}`
-              : id === "alerts" ? (badge ? `Alerts, ${badge} new` : "Alerts") : undefined;
-            return (
-              <button
-                key={id}
-                id={`tab-${id}`}
-                type="button"
-                aria-current={on && id !== "alerts" ? "page" : undefined}
-                aria-expanded={id === "alerts" ? alertsOpen : undefined}
-                aria-haspopup={id === "alerts" ? "dialog" : undefined}
-                aria-label={spoken}
-                onClick={() => {
-                  if (id === "scan") { setScanOpen(true); return; }
-                  if (id === "alerts") { alertsOpen ? setAlertsOpen(false) : openAlerts(); return; }
-                  setTab(id);
-                  if (id !== "home" && view === "map") setView("split"); // don't land on a hidden list
-                }}
-                className={"tabbar-item " + (on ? "tabbar-item-on" : "")}
-              >
-                <span className="relative">
-                  <Icon className="size-5" strokeWidth={on ? 2.4 : 2} />
-                  {/* The dot says the recall list is scoped to a store — the
-                      one thing you cannot see from the other screen. */}
-                  {id === "recalls" && selectedStore && (
-                    <span className="absolute -right-1.5 -top-0.5 size-1.5 rounded-full bg-mint" />
-                  )}
-                  {id === "alerts" && badge > 0 && (
-                    <span aria-hidden="true"
-                          className="tnum absolute -right-2.5 -top-1.5 grid h-4 min-w-4 place-items-center rounded-full bg-paper px-1 text-[9px] font-bold leading-none text-panel">
-                      {badge > 99 ? "99+" : badge}
-                    </span>
-                  )}
-                </span>
-                <span className="text-[10px] font-semibold tracking-wide">
-                  {label}{shown != null ? ` ${shown}` : ""}
-                </span>
-              </button>
-            );
-          })}
-        </nav>
 
       {/* ---- location: the one picker, every size ---- */}
       <LocationPicker
@@ -3255,6 +3109,7 @@ export default function App() {
           <div className="px-4 py-4">
             <VerdictCard
               recall={sheetRecall}
+              eyebrow={sheetShared ? "Shared with you" : undefined}
               loc={verdictLoc}
               expanded
               freshness={searchFreshness}
@@ -3272,7 +3127,7 @@ export default function App() {
       <AlertsPanel
         open={alertsOpen}
         onClose={() => setAlertsOpen(false)}
-        anchorId={isMd ? "btn-alerts" : "tab-alerts"}
+        anchorId="btn-alerts"
         loc={loc}
         inbox={inbox}
         byId={recordsById}
@@ -3282,7 +3137,7 @@ export default function App() {
         push={push}
         onEnablePush={enablePush}
         onDisablePush={disablePush}
-        onOpenRecall={(r) => { setAlertsOpen(false); openRecallSheet(r); }}
+        onOpenRecall={(r) => { setAlertsOpen(false); openRecallSheet(r, "alerts"); }}
         onRequestLocation={() => openLocationPicker("for alerts", "alerts")}
         restoreLink={RESTORE_LINK}
         onRestored={onRestored}
