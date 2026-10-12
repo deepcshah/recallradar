@@ -4,7 +4,15 @@
  *
  *   { subscription: { endpoint, keys: { p256dh, auth } },
  *     stateAbbr: "CA", follows: ["spinach", ...],
+ *     recalls: ["fda-food-F-0000-2026", ...],     followed recall ids (≤50)
+ *     snapshots: { "<id>": {s,k,st,c,d,…} },      public recall fields the
+ *                                                 cron diffs (recall-watch.js),
+ *                                                 computed here from the index
+ *     prefs: { weekly: true, urgent: true },
  *     createdAt, updatedAt, lastSentIds: [...] }
+ *
+ * Email subscribers (api/_lib/email-store.js) use the same storage shape,
+ * under alerts/email/, through `makeBlobStore`.
  *
  * One file per subscriber rather than one list for everybody, because Blob
  * has no transactions: two people subscribing in the same second would each
@@ -39,17 +47,23 @@
  * ───────────────────────────────────────────────────────────────────────── */
 import { createHash } from "node:crypto";
 import { put, get, del, list } from "@vercel/blob";
-import { blobAuth, blobConfigured } from "./blob.js";
+import { alertsBlobAuth as blobAuth, alertsBlobConfigured as blobConfigured, alertsBlobAccess } from "./blob.js";
 import { ABBR_TO_NAME } from "./states.js";
+import { isRecallId } from "./recall-watch.js";
+
+export { isRecallId };
 
 export const SUBS_PREFIX = "push/subs/";
 export const MAX_FOLLOWS = 20;
 export const MAX_FOLLOW_CHARS = 40;
+/** Followed recalls per subscriber (follows.js MAX_FOLLOWED_RECALLS). */
+export const MAX_RECALLS = 50;
 /** Enough to dedupe a week of digests and urgents; older ids have left the
  *  lookback window the digest reads anyway. */
 export const MAX_SENT_IDS = 400;
 
-const ACCESS = process.env.PUSH_BLOB_ACCESS === "private" ? "private" : "public";
+/* Read per call, not at import: see alertsBlobAccess in src/lib/blob.js. */
+const access = () => alertsBlobAccess();
 
 export function endpointKey(endpoint) {
   return SUBS_PREFIX + createHash("sha256").update(String(endpoint)).digest("hex") + ".json";
@@ -57,7 +71,7 @@ export function endpointKey(endpoint) {
 
 // ------------------------------------------------------------ validation
 const B64URL = /^[A-Za-z0-9_-]+={0,2}$/;
-const ALLOWED_KEYS = new Set(["subscription", "stateAbbr", "follows", "replaces"]);
+const ALLOWED_KEYS = new Set(["subscription", "stateAbbr", "follows", "replaces", "recalls", "prefs"]);
 
 function badRequest(message) {
   return { ok: false, error: message };
@@ -133,6 +147,31 @@ export function cleanFollows(v) {
   return out;
 }
 
+/** Followed recall ids: an array of at most 50 well-formed ids. Rejected, not
+ *  trimmed, when anything in it is malformed. Duplicates collapse. */
+export function cleanRecallIds(v) {
+  if (v == null) return [];
+  if (!Array.isArray(v) || v.length > MAX_RECALLS) return null;
+  const out = [];
+  for (const id of v) {
+    if (!isRecallId(id)) return null;
+    if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+/** Delivery preferences: { weekly, urgent }, booleans only, nothing else.
+ *  Missing keys default to on (what a subscriber had before prefs existed). */
+export const DEFAULT_PREFS = Object.freeze({ weekly: true, urgent: true });
+export function cleanPrefs(v) {
+  if (v == null) return { ...DEFAULT_PREFS };
+  if (typeof v !== "object" || Array.isArray(v)) return null;
+  for (const k of Object.keys(v)) if (k !== "weekly" && k !== "urgent") return null;
+  if (v.weekly != null && typeof v.weekly !== "boolean") return null;
+  if (v.urgent != null && typeof v.urgent !== "boolean") return null;
+  return { weekly: v.weekly !== false, urgent: v.urgent !== false };
+}
+
 /** Validate a POST body. Returns { ok:true, value } or { ok:false, error }.
  *  With `replaces` (sent by the service worker on pushsubscriptionchange,
  *  which cannot read the reader's preferences) stateAbbr may be omitted and
@@ -140,7 +179,7 @@ export function cleanFollows(v) {
 export function validateSubscribeBody(body) {
   if (!body || typeof body !== "object" || Array.isArray(body)) return badRequest("Body must be a JSON object.");
   for (const k of Object.keys(body)) {
-    if (!ALLOWED_KEYS.has(k)) return badRequest(`Unexpected field "${k}". Only subscription, stateAbbr and follows are accepted.`);
+    if (!ALLOWED_KEYS.has(k)) return badRequest(`Unexpected field "${k}". Only subscription, stateAbbr, follows, recalls and prefs are accepted.`);
   }
   const subscription = cleanSubscription(body.subscription);
   if (!subscription) return badRequest("subscription must be a PushSubscription with an https endpoint and p256dh/auth keys.");
@@ -159,7 +198,14 @@ export function validateSubscribeBody(body) {
   if (follows === null && !carryFollows) {
     return badRequest(`follows must be an array of at most ${MAX_FOLLOWS} terms of at most ${MAX_FOLLOW_CHARS} characters.`);
   }
-  return { ok: true, value: { subscription, stateAbbr, follows, replaces } };
+  // Like follows: absent on a rotation means "carry over".
+  const carryRecalls = body.recalls === undefined && replaces;
+  const recalls = carryRecalls ? null : cleanRecallIds(body.recalls);
+  if (recalls === null && !carryRecalls) return badRequest(`recalls must be an array of at most ${MAX_RECALLS} recall ids.`);
+  const carryPrefs = body.prefs === undefined && replaces;
+  const prefs = carryPrefs ? null : cleanPrefs(body.prefs);
+  if (prefs === null && !carryPrefs) return badRequest("prefs may only be { weekly: boolean, urgent: boolean }.");
+  return { ok: true, value: { subscription, stateAbbr, follows, recalls, prefs, replaces } };
 }
 
 // ------------------------------------------------------------ storage
@@ -167,40 +213,46 @@ async function readStream(stream) {
   return await new Response(stream).text();
 }
 
-const blobStore = {
-  configured: () => blobConfigured(),
-  async read(path) {
-    // useCache:false — lastSentIds is read-modify-write, and a CDN copy even
-    // a minute old would resend what the last run already sent.
-    const hit = await get(path, { access: ACCESS, useCache: false, ...blobAuth() });
-    if (!hit || hit.statusCode !== 200 || !hit.stream) return null;
-    return JSON.parse(await readStream(hit.stream));
-  },
-  async write(path, value) {
-    await put(path, JSON.stringify(value), {
-      access: ACCESS,
-      addRandomSuffix: false,
-      allowOverwrite: true,
-      contentType: "application/json",
-      cacheControlMaxAge: 60,
-      ...blobAuth(),
-    });
-  },
-  async remove(path) {
-    await del(path, blobAuth());
-  },
-  /** Every stored pathname under the prefix, following the cursor. */
-  async paths() {
-    const out = [];
-    let cursor;
-    do {
-      const page = await list({ prefix: SUBS_PREFIX, cursor, limit: 1000, ...blobAuth() });
-      for (const b of page.blobs) out.push(b.pathname);
-      cursor = page.hasMore ? page.cursor : undefined;
-    } while (cursor);
-    return out;
-  },
-};
+/** A Blob-backed store of one JSON file per subscriber under `prefix`.
+ *  Shared by push (push/subs/) and email (alerts/email/). */
+export function makeBlobStore(prefix) {
+  return {
+    configured: () => blobConfigured(),
+    async read(path) {
+      // useCache:false — lastSentIds is read-modify-write, and a CDN copy even
+      // a minute old would resend what the last run already sent.
+      const hit = await get(path, { access: access(), useCache: false, ...blobAuth() });
+      if (!hit || hit.statusCode !== 200 || !hit.stream) return null;
+      return JSON.parse(await readStream(hit.stream));
+    },
+    async write(path, value) {
+      await put(path, JSON.stringify(value), {
+        access: access(),
+        addRandomSuffix: false,
+        allowOverwrite: true,
+        contentType: "application/json",
+        cacheControlMaxAge: 60,
+        ...blobAuth(),
+      });
+    },
+    async remove(path) {
+      await del(path, blobAuth());
+    },
+    /** Every stored pathname under the prefix, following the cursor. */
+    async paths() {
+      const out = [];
+      let cursor;
+      do {
+        const page = await list({ prefix, cursor, limit: 1000, ...blobAuth() });
+        for (const b of page.blobs) out.push(b.pathname);
+        cursor = page.hasMore ? page.cursor : undefined;
+      } while (cursor);
+      return out;
+    },
+  };
+}
+
+const blobStore = makeBlobStore(SUBS_PREFIX);
 
 let store = blobStore;
 
@@ -215,7 +267,7 @@ export function pushStore() {
 }
 
 /** A Map-backed store with the same shape, for node harnesses. */
-export function memoryPushStore() {
+export function memoryStore(prefix) {
   const m = new Map();
   return {
     data: m,
@@ -223,8 +275,12 @@ export function memoryPushStore() {
     async read(p) { return m.has(p) ? JSON.parse(m.get(p)) : null; },
     async write(p, v) { m.set(p, JSON.stringify(v)); },
     async remove(p) { m.delete(p); },
-    async paths() { return [...m.keys()].filter((k) => k.startsWith(SUBS_PREFIX)); },
+    async paths() { return [...m.keys()].filter((k) => k.startsWith(prefix)); },
   };
+}
+
+export function memoryPushStore() {
+  return memoryStore(SUBS_PREFIX);
 }
 
 /** VAPID keys present? Without both, nothing can be sent or subscribed. */

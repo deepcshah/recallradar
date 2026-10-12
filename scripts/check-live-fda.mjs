@@ -69,6 +69,15 @@ for (const kind of KINDS) {
   out.push(`| ${kind} | ${r.lastUpdated || "—"} | ${day(r.results[0] && r.results[0].report_date)} | ${r.total} |`);
 }
 
+/* Records openFDA publishes without a recall number ("N/A"). Before fdaId()
+ * these all shared one id per kind and all but one were dropped; this is how
+ * many that was, measured. */
+out.push("", "Records with recall_number \"N/A\" (all dates):", "");
+for (const kind of KINDS) {
+  const r = await openFda(kind, 'search=recall_number:"N/A"&limit=1');
+  out.push(`- ${kind}: ${r.ok ? r.total : `unreachable (${r.error})`}`);
+}
+
 const idxFda = index.sources && index.sources.fda;
 out.push("", "### 2. Our index", "",
   `- built ${index.builtAt}; FDA records: **${indexFda}**; sources.fda.ok: ${idxFda ? idxFda.ok : "—"}; ` +

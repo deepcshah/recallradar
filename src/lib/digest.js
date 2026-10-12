@@ -102,7 +102,14 @@ export function shortProduct(product, maxWords = 5) {
   if (m && m[1].length > 3) {
     t = m[1].replace(/,\s*/g, " ");
   } else {
-    t = t.split(/,|;|\s[-–—]\s|\(/)[0];
+    const parts = t.split(/,|;|\s[-–—]\s|\(/);
+    t = parts[0].trim();
+    /* A lone brand says nothing about the product: FDA drug descriptions
+     * lead with it ("MGC Health, Menthol- Cough Suppressant, …",
+     * D-0461-2026). Carry the next segment when the first is two words or
+     * fewer. */
+    if (t.split(" ").length <= 2 && parts[1] && parts[1].trim()) t = `${t} ${parts[1].trim()}`;
+    t = t.replace(/-\s+/g, " ");
   }
   t = t.split(/\s(?:recalled|due to|because|that|which|for possible|for undeclared|over|after|produced|sold|distributed|imported without|containing)\s/i)[0];
   t = t.split(/\s(?:products?|items?)(?:\s|$)/i)[0].trim();

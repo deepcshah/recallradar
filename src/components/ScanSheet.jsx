@@ -251,14 +251,14 @@ export default function ScanSheet({ open, onClose, recalls }) {
     <div className="fixed inset-0 z-[80] flex flex-col bg-ink" role="dialog" aria-modal="true" aria-label="Scan a barcode">
       <div className="flex shrink-0 items-center gap-2 border-b border-line bg-panel px-4 py-3">
         <Camera className="size-4 text-mint" />
-        <p className="text-sm font-bold">Scan a barcode</p>
+        <p className="text-[17px] font-semibold tracking-tight">Scan a barcode</p>
         {result && (
           <Button variant="ghost" size="sm" className="ml-auto h-9" onClick={again}>
             <RotateCcw /> Scan another
           </Button>
         )}
         <button onClick={onClose} aria-label="Close scanner"
-                className={"grid size-9 place-items-center rounded-lg text-fog hover:bg-panel-3 hover:text-paper " + (result ? "" : "ml-auto")}>
+                className={"grid size-10 place-items-center rounded-full text-fog hover:bg-panel-3 hover:text-paper pointer-coarse:size-11 " + (result ? "" : "ml-auto")}>
           <X className="size-5" />
         </button>
       </div>
@@ -359,8 +359,8 @@ function ScanResult({ result }) {
       {/* what was scanned */}
       <div className="flex items-center gap-3 rounded-xl border border-line bg-panel-2 p-3">
         {product?.image
-          ? <img src={product.image} alt="" className="size-14 shrink-0 rounded-lg border border-line object-cover" />
-          : <span className="grid size-14 shrink-0 place-items-center rounded-lg border border-line bg-panel text-fog"><Camera className="size-5" /></span>}
+          ? <img src={product.image} alt="" className="size-14 shrink-0 rounded-2xl object-cover bg-white" />
+          : <span className="grid size-14 shrink-0 place-items-center rounded-2xl bg-sunken text-fog"><Camera className="size-5" /></span>}
         <div className="min-w-0 flex-1">
           {product?.brand && <p className="microlabel leading-none">{product.brand}</p>}
           <p className="truncate text-sm font-bold">{product?.name || "Unknown product"}</p>

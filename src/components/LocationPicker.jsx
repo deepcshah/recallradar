@@ -40,7 +40,7 @@ function Row({ icon: Icon, label, sub, trailing, onClick, disabled, busy, classN
         disabled={disabled}
         aria-busy={busy || undefined}
         className={cn(
-          "flex min-h-11 w-full items-center gap-3 rounded-lg px-2.5 py-1.5 text-left transition-colors",
+          "flex min-h-12 w-full items-center gap-3 rounded-2xl px-3 py-1.5 text-left transition-colors",
           "hover:bg-panel-3 focus-visible:bg-panel-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60",
           "disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent",
           className,
@@ -135,18 +135,18 @@ export default function LocationPicker({
       titleId="location-picker-title"
       initialFocusRef={inputRef}
       renderHeader={(sheet) => (
-        <div className="relative shrink-0 px-4 pb-1 pt-4">
-          {sheet && <span aria-hidden="true" className="absolute inset-x-0 top-1.5 mx-auto h-1 w-9 rounded-full bg-line-strong" />}
+        <div className="relative shrink-0 px-5 pb-1 pt-5">
+          {sheet && <span aria-hidden="true" className="sheet-grabber absolute inset-x-0 top-2" />}
           <div className="flex items-start gap-2">
             <div className="min-w-0 flex-1">
-              <p id="location-picker-title" className={cn("text-sm font-bold text-paper", sheet && "mt-1")}>Your location</p>
+              <p id="location-picker-title" className={cn("text-[17px] font-semibold tracking-tight text-paper", sheet && "mt-1")}>Your location</p>
               <p className="mt-0.5 text-[12px] leading-snug text-subtle">
                 {lead}Only your state leaves this browser.
               </p>
             </div>
             {sheet && (
               <button type="button" onClick={onClose} aria-label="Close"
-                      className="-mr-1 grid size-9 shrink-0 place-items-center rounded-lg text-fog hover:bg-panel-3 hover:text-paper">
+                      className="-mr-1 grid size-10 shrink-0 place-items-center rounded-full text-fog hover:bg-panel-3 hover:text-paper pointer-coarse:size-11">
                 <X className="size-4" />
               </button>
             )}
@@ -154,7 +154,7 @@ export default function LocationPicker({
         </div>
       )}
     >
-      <div className="flex flex-col gap-3 px-4 pb-4 pt-2">
+      <div className="flex flex-col gap-3 px-5 pb-5 pt-2">
         <form noValidate role="search" aria-label="Set location" onSubmit={submit}>
           <label htmlFor="loc-input" className="mb-1.5 block text-[12px] font-semibold text-fog">ZIP code or city</label>
           <div className="relative">
@@ -172,9 +172,9 @@ export default function LocationPicker({
               aria-invalid={error ? "true" : undefined}
               aria-describedby={error ? "loc-error" : undefined}
               className={cn(
-                "h-11 w-full rounded-lg border border-line-strong bg-panel-2 pl-3.5 pr-12 text-[15px] text-paper",
+                "h-12 w-full rounded-2xl border border-line bg-panel-2 pl-4 pr-12 text-[15px] text-paper",
                 "shadow-[var(--rr-field)] transition-shadow placeholder:text-subtle disabled:opacity-70",
-                "focus-visible:border-mint/60 focus-visible:outline-none focus-visible:shadow-[var(--rr-field),0_0_0_3px_var(--rr-accent-soft)]",
+                "focus-visible:border-mint focus-visible:outline-none focus-visible:shadow-[var(--rr-field),0_0_0_3px_var(--rr-accent-soft)]",
                 error && "border-alert focus-visible:border-alert",
               )}
             />

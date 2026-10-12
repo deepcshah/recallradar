@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InfoTip } from "@/components/ui/tooltip";
 import StateMap from "@/components/StateMap";
+import WatchButton from "@/components/WatchButton";
 import { verdictFor, coverageOf, resolveLoc, VERDICTS, isAnnounced } from "@/lib/verdict";
 import { coverageLine } from "@/lib/coverage-line";
 import { fmtAsOf } from "@/components/FreshnessLine";
@@ -30,7 +31,8 @@ import { track } from "@/lib/analytics";
  *      can see we did not invent "not reported in California"
  *   3. the same thing as a picture (StateMap)
  *   4. why it was recalled, how serious, when, and the official notice
- *   5. what to do with it: share it, or follow the brand
+ *   5. what to do with it: share it, get told when it changes, or follow
+ *      the brand
  *
  * Colour stays where the rest of the app keeps it. The severity badge is the
  * only warm thing on the card, because the class is the government's own
@@ -418,6 +420,9 @@ export default function VerdictCard({
 
           <div className="mt-3.5 flex flex-wrap items-center gap-2">
             <ShareButton recall={recall} stateAbbr={L && L.stateAbbr} />
+            {/* This notice, watched for changes — closed, more states,
+                reclassified. Follow <brand> beside it watches for new ones. */}
+            <WatchButton recall={recall} />
             <FollowButton term={term} />
             {recall.url && (
               <a

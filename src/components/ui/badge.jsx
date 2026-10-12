@@ -10,18 +10,20 @@ import { cn } from "@/lib/utils";
  * the government's own ("Class I"). Nothing about a *store* is ever coloured
  * as a hazard — see the note in App.jsx. */
 const badgeVariants = cva(
-  "inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap border",
+  "inline-flex items-center rounded-full px-2.5 py-0.5 text-[12px] font-medium whitespace-nowrap border",
   {
     variants: {
       variant: {
-        source: "border-line bg-panel-3 text-fog uppercase tracking-[0.06em] text-[10px]",
+        source: "border-line bg-panel-3 text-fog",
         high: "border-alert-line bg-alert-soft text-alert",
-        med: "border-amber/45 bg-amber-soft text-amber",
+        /* Warm colour is for a serious recall only. Class II is the middle
+         * of the scale and reads in ink; the badge explains itself on tap. */
+        med: "border-line bg-panel-3 text-paper",
         low: "border-line bg-panel-3 text-fog",
-        scope: "border-line bg-panel-3 text-subtle uppercase tracking-[0.06em] text-[10px]",
+        scope: "border-line bg-panel-3 text-fog",
         chain: "border-mint-line bg-mint-soft text-mint",
         neutral: "border-line-strong bg-panel-3 text-paper",
-        beta: "border-mint-line bg-mint-soft text-mint uppercase tracking-[0.1em] text-[10px] font-bold",
+        beta: "border-mint-line bg-mint-soft text-mint text-[11px] font-semibold",
       },
     },
     defaultVariants: { variant: "low" },

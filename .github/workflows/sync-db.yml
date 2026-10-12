@@ -1,0 +1,154 @@
+# Sync the recall database (Postgres) from the agencies, and verify pull
+# requests that touch the pipeline against the LIVE agencies.
+#
+#   schedule / workflow_dispatch / push to main
+#     migrations + sync against the DATABASE_URL repository secret (Neon or
+#     Supabase). If the secret is absent the run is a labelled DRY RUN into a
+#     throwaway PGlite database — it says so in the summary and as a warning,
+#     never silently.
+#
+#   pull_request
+#     The real end-to-end check of a change to the pipeline: the offline
+#     checks (real committed data, PGlite), then the whole sync against the
+#     live agencies into a fresh PGlite database — twice, so the second run
+#     exercises the incremental openFDA window and idempotency on live data.
+#     Nothing is written anywhere and nothing is committed. The summary is the
+#     job summary and a comment on the pull request.
+#
+# The committed snapshot/index pipeline (refresh-feeds.yml) keeps running
+# beside this until the database is live and the owner retires it.
+name: Sync recall database
+
+on:
+  schedule:
+    - cron: "41 */6 * * *"   # off the hour, and off refresh-feeds.yml's :17
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "openFDA: fetch the whole lookback window instead of the incremental one"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - "db/**"
+      - "scripts/db/**"
+      - "scripts/sync/**"
+      - "scripts/build-index.mjs"
+      - "scripts/refresh-feeds.mjs"
+      - "src/lib/**"
+      - ".github/workflows/sync-db.yml"
+  pull_request:
+    paths:
+      - "db/**"
+      - "scripts/db/**"
+      - "scripts/sync/**"
+      - "scripts/check-db.mjs"
+      - "scripts/build-index.mjs"
+      - "scripts/refresh-feeds.mjs"
+      - "src/lib/**"
+      - "api/data.js"
+      - "api/_lib/**"
+      - ".github/workflows/sync-db.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-db-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  sync:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+
+      - name: Migrate and sync
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENFDA_KEY: ${{ secrets.OPENFDA_KEY }}
+          PG_POOL_MAX: "2"
+          FULL: ${{ github.event.inputs.full == 'true' && '--full' || '' }}
+        run: |
+          if [ -n "$DATABASE_URL" ]; then
+            node scripts/db/migrate.mjs
+            node scripts/sync/run.mjs $FULL
+          else
+            echo "::warning::DATABASE_URL secret is not set: this is a DRY RUN into a throwaway PGlite database. Nothing was written. Set the secret to sync the real database (README → Data pipeline → Owner setup)."
+            {
+              echo "> [!WARNING]"
+              echo "> **DATABASE_URL secret is not set — dry run only.** The sync below ran into a throwaway PGlite database and wrote nothing. See README → Data pipeline → Owner setup."
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+            node scripts/sync/run.mjs --dry-run $FULL
+          fi
+
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # check-db replays an older committed fsis.json from history
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+
+      - name: Offline checks (real committed data, PGlite)
+        run: |
+          node scripts/check-db.mjs
+          node scripts/check-data.mjs
+          node scripts/check-alerts.mjs
+
+      # Against the live agencies. Fork PRs get no secrets; OPENFDA_KEY is
+      # optional (a full run is about a dozen openFDA requests).
+      - name: Dry run against the live agencies (fresh PGlite, full backfill)
+        id: live1
+        env:
+          OPENFDA_KEY: ${{ secrets.OPENFDA_KEY }}
+          SYNC_SUMMARY_FILE: ${{ runner.temp }}/sync-summary.md
+        run: |
+          echo "### Run 1 — fresh database, full backfill" >> "$SYNC_SUMMARY_FILE"
+          node scripts/sync/run.mjs --dry-run --pglite "$RUNNER_TEMP/yanked-db" --upstream-outage-ok \
+            --expect fda-food-H-1391-2026,fda-food-H-1392-2026
+
+      - name: Second dry run into the same database (incremental openFDA, idempotency)
+        if: always() && steps.live1.outcome != 'skipped'
+        env:
+          OPENFDA_KEY: ${{ secrets.OPENFDA_KEY }}
+          SYNC_SUMMARY_FILE: ${{ runner.temp }}/sync-summary.md
+        run: |
+          echo "### Run 2 — same database, minutes later" >> "$SYNC_SUMMARY_FILE"
+          node scripts/sync/run.mjs --dry-run --pglite "$RUNNER_TEMP/yanked-db" --upstream-outage-ok \
+            --expect fda-food-H-1391-2026,fda-food-H-1392-2026
+
+      - name: Post the summary on the pull request
+        if: always() && github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const path = `${process.env.RUNNER_TEMP}/sync-summary.md`;
+            const body = fs.existsSync(path) ? fs.readFileSync(path, "utf8") : "_The live dry run produced no summary — see the job log._";
+            const marker = "<!-- yanked-sync-dry-run -->";
+            const text = `${marker}\n## Recall database: live dry run\n\nAgainst the live agencies, into a throwaway PGlite database. Nothing was written anywhere.\n\n${body}`.slice(0, 65000);
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+            const mine = comments.find((c) => c.body && c.body.startsWith(marker));
+            if (mine) await github.rest.issues.updateComment({ owner, repo, comment_id: mine.id, body: text });
+            else await github.rest.issues.createComment({ owner, repo, issue_number, body: text });

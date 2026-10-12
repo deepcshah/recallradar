@@ -1,13 +1,14 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
-  AlertCircle, Armchair, Baby, Beef, Bell, BellOff, Bike, Candy, Carrot, Check, ChevronDown, ChevronRight, ChevronUp,
-  Crosshair, CupSoda, House, Map as MapIcon,
+  AlertCircle, ArrowLeft, ArrowRight, Armchair, Baby, Beef, Bell, Bike, Candy, Carrot, Check, ChevronDown, ChevronRight, ChevronUp,
+  CupSoda,
   ExternalLink, Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package,
   PanelRightOpen, PawPrint, Pill, Plug, Plus, Radar, Rows2, Columns2, Search, SearchX,
-  ScanLine, ShieldCheck, Soup, Stethoscope, Sun, Moon, MonitorSmartphone, MoreHorizontal, Store,
-  ClipboardList, UtensilsCrossed, Wheat, X, Zap,
+  ShieldCheck, Soup, Stethoscope, Sun, Moon, MonitorSmartphone, MoreHorizontal, Store,
+  ClipboardList, ListFilter, UtensilsCrossed, Wheat, X, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import LocationButton from "@/components/LocationButton";
 import LocationPicker from "@/components/LocationPicker";
 import ScopeSwitch from "@/components/ScopeSwitch";
@@ -19,27 +20,33 @@ import { Tooltip, InfoTip } from "@/components/ui/tooltip";
 import { FilterButton, FilterSheet, FilterGroup, FilterChoice } from "@/components/FilterSheet";
 import ScanSheet from "@/components/ScanSheet";
 import RecallSearch from "@/components/RecallSearch";
-import HomeDigest from "@/components/HomeDigest";
-import VerdictCard from "@/components/VerdictCard";
+import LatestRecalls, { SyncNote, latestInScope } from "@/components/LatestRecalls";
+import RecallDetail, { RecallActionBar } from "@/components/RecallDetail";
+import RecallThumb from "@/components/RecallThumb";
+import AlertsPanel from "@/components/AlertsPanel";
+import WatchButton from "@/components/WatchButton";
 import { Sheet, useSheetPresence } from "@/components/ui/sheet";
 import {
   Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { recallUpcs, lookupProduct } from "@/lib/upc";
 import { browserPosition, reverseGeocode, geocodeInput, geoError, locLabel } from "@/lib/geo";
-import { fetchAll, fetchNational, recoverBlockedSources, sortRecalls } from "@/lib/sources";
-import { isInArea, verdictFor, isAnnounced } from "@/lib/verdict";
-import { loadIndex, freshnessOf, recentForUs } from "@/lib/search-index";
+import { isInArea, verdictFor, isAnnounced, resolveLoc } from "@/lib/verdict";
+import { freshnessOf } from "@/lib/search-index";
+import { recallData } from "@/lib/data-sync";
 import { coverageLine } from "@/lib/coverage-line";
 import { cleanState } from "@/lib/share";
 import { ABBR_TO_NAME } from "@/lib/states";
-import { FOLLOWS_EVENT, getFollows, getLastVisit, markVisit } from "@/lib/follows";
 import {
-  getPushState, needsInstallForPush, pushAvailable, pushSupported, subscribePush, syncPush, unsubscribePush,
+  FOLLOWS_EVENT, ALERTS_EVENT, getFollows, getLastVisit, markVisit, getFollowedRecalls, getAlertsSeen,
+} from "@/lib/follows";
+import {
+  getPushState, subscribePush, unsubscribePush,
 } from "@/lib/push";
+import { alertChannels, channelPayload, computeInbox, syncChannels, restoreParamFromUrl, PREFS_EVENT } from "@/lib/alerts";
 import { findStores, STORE_CAPS, DEFAULT_STORE_CAP } from "@/lib/stores";
-import { byId, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
+import { byId, chainsInText, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
 import { categoryFor } from "@/lib/category";
+import { countByPrimary, isPrimaryKey } from "@/lib/primary-category";
 import { classInfo, severityLabel, severityVariant } from "@/lib/classification";
 import { reasonFor, REASON_ORDER } from "@/lib/reason";
 import { DialRoot } from "dialkit";
@@ -195,6 +202,23 @@ function writeScopeParam(scope) {
   } catch (_) { /* sandboxed frame */ }
 }
 
+/* The Home category pill, in the URL as ?cat= so a filtered view can be
+ * shared and survives a reload. Absent means All. */
+function readCatParam() {
+  try {
+    const v = new URLSearchParams(window.location.search).get("cat");
+    return isPrimaryKey(v) ? v : "all";
+  } catch (_) { return "all"; }
+}
+function writeCatParam(cat) {
+  try {
+    const url = new URL(window.location.href);
+    if (cat && cat !== "all") url.searchParams.set("cat", cat);
+    else url.searchParams.delete("cat");
+    window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
+  } catch (_) { /* sandboxed frame */ }
+}
+
 /* DialKit is an authoring tool: never in production; in dev, or on a preview
  * deploy opened with ?dialkit=1 (remembered for the tab). */
 const DIALKIT_ASKED = (() => {
@@ -225,6 +249,9 @@ function readDeepLink() {
   }
 }
 const DEEP_LINK = readDeepLink();
+/* A "Restore your follows" link from email (/?restore=<id>.<token>): opens
+ * Alerts with a Restore button. Read once, like DEEP_LINK. */
+const RESTORE_LINK = restoreParamFromUrl();
 
 /* "Since your last visit" needs the PREVIOUS visit, fixed for the whole of
  * this one. It is read once per tab (sessionStorage, so a reload does not
@@ -354,40 +381,12 @@ function plural(n, one, many) {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-/* A photo of the recalled product, where one can be had.
- *
- * CPSC publishes images; FDA and FSIS publish none at all. The gap closes
- * through the barcode: where a notice prints one, Open Food Facts can usually
- * turn it into a product shot. That lookup is a third-party request, so it
- * only happens for a card that has actually scrolled into view, once per
- * barcode per session, and it is silent when it fails — a missing photo is a
- * missing photo, never an error the reader has to deal with. */
+/* The recall's picture in a list card: the agency's own photo where there is
+ * one (CPSC), otherwise a calm category tile. Never an Open Food Facts lookup
+ * — a list of cards must not fire a third-party request per row; that photo
+ * is fetched only when a recall is opened (RecallDetail), and labelled. */
 function RecallImage({ recall }) {
-  const [src, setSrc] = useState(recall.image || "");
-  const ref = useRef(null);
-
-  useEffect(() => {
-    if (recall.image) return;
-    const code = recallUpcs(recall)[0];
-    const el = ref.current;
-    if (!code || !el || typeof IntersectionObserver === "undefined") return;
-    let done = false;
-    const io = new IntersectionObserver((entries) => {
-      if (done || !entries.some((e) => e.isIntersecting)) return;
-      done = true;
-      io.disconnect();
-      lookupProduct(code).then((p) => p?.image && setSrc(p.image)).catch(() => {});
-    }, { rootMargin: "200px" });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [recall]);
-
-  if (!src) return <span ref={ref} aria-hidden="true" className="size-0 shrink-0" />;
-  return (
-    <img ref={ref} src={src} alt="" loading="lazy" referrerPolicy="no-referrer"
-         className="size-14 shrink-0 rounded-lg border border-line bg-panel object-cover"
-         onError={(e) => { e.currentTarget.style.display = "none"; }} />
-  );
+  return <RecallThumb recall={recall} size="md" />;
 }
 
 /* What each feed is the only source for. When one is down, this is what is
@@ -412,6 +411,32 @@ function coverageFor(name) {
  * Say it once. */
 function shortSourceName(name) {
   return String(name).replace(/\s*\([^)]*\)\s*$/, "");
+}
+
+/* Per-agency rows for a list, from the manifest's `sources`: how many of
+ * this list's recalls came from each feed, and whether our database's last
+ * pull of that feed worked. `ok: false` is "not refreshed", not "absent" —
+ * the database still holds what it had. */
+const SOURCE_ROWS = [
+  ["FDA Food", "fda"], ["FDA Drug", "fda"], ["FDA Device", "fda"],
+  ["USDA FSIS", "fsis"], ["CPSC", "cpsc"], ["FDA announcement", "fdaAnnouncements"],
+];
+function sourcesFor(list, manifestSources) {
+  const counts = new Map();
+  for (const r of list || []) counts.set(r.source, (counts.get(r.source) || 0) + 1);
+  const ms = manifestSources || {};
+  return SOURCE_ROWS
+    .filter(([name, key]) => counts.has(name) || (ms[key] && name !== "FDA announcement"))
+    .map(([name, key]) => {
+      const m = ms[key] || null;
+      const ok = !m || m.ok !== false;
+      return {
+        name, ok, count: counts.get(name) || 0,
+        ...(m && m.syncedAt ? { syncedAt: m.syncedAt } : null),
+        ...(m && m.lastUpdated ? { lastUpdated: m.lastUpdated } : null),
+        ...(ok ? null : { error: m.syncedAt ? `last refreshed ${new Date(m.syncedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : "not refreshed" }),
+      };
+    });
 }
 
 /* A source that is *down*, said in the list it is missing from.
@@ -457,9 +482,9 @@ function SourceNotice({ sources }) {
         <p key={s.name} className="flex items-start gap-2 text-[12px] leading-relaxed">
           <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-amber" />
           <span>
-            <span className="font-semibold text-paper">{shortSourceName(s.name)} is unavailable right now.</span>{" "}
-            {coverageFor(s.name)} are missing from this list — an empty list is not the same as no
-            recalls. <span className="text-subtle">({s.error || "no response"})</span>
+            <span className="font-semibold text-paper">{shortSourceName(s.name)} didn't refresh in our last update.</span>{" "}
+            {coverageFor(s.name)} published since then may be missing from this list — an empty list is
+            not the same as no recalls. <span className="text-subtle">({s.error || "no response"})</span>
           </span>
         </p>
       ))}
@@ -754,8 +779,6 @@ export default function App() {
   /* Near me · ST | All US. See THE GLOBAL SCOPE above. Named `viewScope`
    * because `scope` below is the panel's store scope (named | area). */
   const [viewScope, setViewScope] = useState(() => initialViewScope(Boolean(loadSavedLoc())));
-  /* The All US list, fetched the first time it is needed and kept. */
-  const [national, setNational] = useState({ status: "idle", recalls: [], sources: [] });
   /* Polite announcements: a new place, a new scope. */
   const [liveMsg, setLiveMsg] = useState("");
   const [radius, setRadius] = useState(16093);
@@ -767,9 +790,31 @@ export default function App() {
   const [storeCap, setStoreCap] = useState(() => loadPref("rr-store-cap", DEFAULT_STORE_CAP));
   useEffect(() => { savePref("rr-store-cap", storeCap); }, [storeCap]);
 
-  const [recalls, setRecalls] = useState([]);
-  const [sources, setSources] = useState([]);
-  const [productsBusy, setProductsBusy] = useState(false);
+  /* ── THE ONE DATASET ──
+   * Every list on every screen reads the local copy of our database
+   * (lib/data-sync.js: IndexedDB, kept current from /api/data). There is no
+   * per-state fetch and no national fetch any more: Near me is that copy
+   * through isInArea, All US is all of it that is active. */
+  const sync = recallData({ onEvent: track });
+  const data = useSyncExternalStore(sync.subscribe, sync.getState);
+  const index = data.dataset; // { recalls, sources } — search, freshness, verdict lookups
+  /* Nothing on the device yet, and the first sync still on its way. */
+  const productsBusy = !index && (data.status === "empty" || data.status === "syncing");
+
+  /* The records as the list views use them: `date` as a Date (their sorting
+   * and "Posted" lines read it), and the chains each notice names, read
+   * from the same text verdict.js reads, for the store matching. Everything
+   * else is the stored record untouched. */
+  const appRecords = useMemo(() => (index ? index.recalls.map((r) => ({
+    ...r,
+    date: r.date ? new Date(`${String(r.date).slice(0, 10)}T12:00:00Z`) : null,
+    retailerIds: Array.isArray(r.retailerIds) ? r.retailerIds
+      : chainsInText([r.distribution, r.product, r.reason, r.firm].filter(Boolean).join(" \n ")).map((c) => c.id),
+  })) : []), [index]);
+  const activeRecords = useMemo(() => appRecords.filter((r) => r.status !== "ended"), [appRecords]);
+  /* The area list: the one area rule, over the one dataset. */
+  const recalls = useMemo(() => (loc ? activeRecords.filter((r) => isInArea(r, loc)) : []), [activeRecords, loc]);
+  const sources = useMemo(() => sourcesFor(recalls, data.sources), [recalls, data.sources]);
 
   const [stores, setStores] = useState([]);
   const [storesStatus, setStoresStatus] = useState(null);
@@ -803,29 +848,22 @@ export default function App() {
    * camera. */
   const [storesWanted, setStoresWanted] = useState(false);
   useEffect(() => { if (tab !== "home") setStoresWanted(true); }, [tab]);
-  /* The national index (public/feeds/index.json). RecallSearch loads it for
-   * itself; this is the same memoized promise, held here for the digest.
-   * Started after first paint, never awaited by it. */
-  const [index, setIndex] = useState(null);
   /* A recall opened from the digest (its headline, a follow match, a story),
    * answered in a sheet over wherever the reader is. */
   const [sheetRecall, setSheetRecall] = useState(null);
+  const [homeCat, setHomeCat] = useState(readCatParam);
+  const [headerSolid, setHeaderSolid] = useState(false);
+  const [sheetShared, setSheetShared] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [push, setPush] = useState({ state: "unknown", busy: false, msg: null, dropped: [] });
+  /* Which delivery channels this deployment can actually use, per channel
+   * with a reason when off — the Alerts panel says "not available yet"
+   * rather than hiding. Null until GET /api/push answers. */
+  const [channels, setChannels] = useState(null);
+  /* Bumped on any follow / followed-recall / inbox change (this tab or
+   * another), so the inbox recomputes without a shared store. */
+  const [followsRev, setFollowsRev] = useState(0);
   const [lastVisit] = useState(sessionVisitBaseline);
-  /* Offered where it can work, or where one step would make it work (an
-   * iPhone in a Safari tab: add to Home Screen first). Nowhere else — a
-   * button that can only ever answer "not supported" is not an offer. */
-  const [pushOffered, setPushOffered] = useState(() => pushSupported() || needsInstallForPush());
-  /* …and only where this deployment can send them. Without VAPID keys the
-   * server says { enabled: false }, and an offer that ends in "not switched
-   * on for this site" is the same non-offer from the other side. */
-  useEffect(() => {
-    if (!pushOffered) return undefined;
-    let alive = true;
-    pushAvailable().then((v) => { if (alive && !(v && v.enabled)) setPushOffered(false); });
-    return () => { alive = false; };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [moreOpen, setMoreOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -940,61 +978,6 @@ export default function App() {
     }
   }, []);
 
-  /* A place changed while its list was still loading (a recent picked, then
-   * another, in two taps) must not have the first answer land on the second
-   * place. Each load takes a ticket; only the newest may write. */
-  const recallsRunRef = useRef(0);
-  const loadRecalls = useCallback(async (locArg) => {
-    const run = ++recallsRunRef.current;
-    const current = () => run === recallsRunRef.current;
-    setProductsBusy(true);
-    setRecalls([]);
-    setSources([]);
-    setLimit(25);
-    try {
-      /* The normalizers keep notices naming only other states ('elsewhere')
-       * so a verdict can say "not reported in your state". This list is the
-       * area list, so it filters through the one area rule. fetchAll already
-       * applies it on every path; this is the guard at the point of use. */
-      const { recalls: all, sources: srcs } = await fetchAll(locArg);
-      if (!current()) return;
-      const fetched = all.filter((r) => isInArea(r, locArg));
-      setRecalls(fetched);
-      setSources(srcs);
-
-      track("recalls_loaded", {
-        count: fetched.length,
-        state: locArg.stateAbbr || null,
-        sources_ok: srcs.filter((x) => x.ok).length,
-        sources_failed: srcs.filter((x) => !x.ok).length,
-      });
-      /* One event per failed feed, not a list on the load event — a feed
-       * going dark is the thing worth alerting on, and it needs its own
-       * breakdown by name. See the four-tier fallback in the README. */
-      for (const x of srcs) {
-        if (!x.ok) track("source_failed", { source: x.name, error: String(x.error || "failed").slice(0, 120) });
-      }
-
-      /* USDA blocks our server but usually not the browser, so retry it here and
-       * fold the result in when it lands. Deliberately not awaited: the stores
-       * lookup is the slow part of the page and must not wait on a source that
-       * may well be blocked here too. */
-      // Deliberately not awaited: the store lookup is the slow part of this
-      // page and must not wait on sources that may be unreachable from here
-      // too. Whatever comes back is folded in and re-sorted.
-      recoverBlockedSources(locArg, srcs).then((late) => {
-        if (!late || !current()) return;
-        // Whether the browser can reach what the server could not is the
-        // whole premise of the fallback; without this it is unmeasurable.
-        track("sources_recovered", { count: late.recalls.length });
-        setRecalls((prev) => sortRecalls([...prev, ...late.recalls.filter((r) => isInArea(r, locArg))]));
-        setSources(late.sources);
-      });
-    } finally {
-      if (current()) setProductsBusy(false);
-    }
-  }, []);
-
   /* Store loading has exactly one trigger: this effect. The first load, a new
    * location and a radius change all take the same path — previously the first
    * load was an imperative tail-call inside the recall fetch and the radius
@@ -1022,8 +1005,6 @@ export default function App() {
     const from = viewScopeRef.current;
     if (next === from) return;
     setViewScope(next);
-    // A national list that failed earlier gets another try on the way back.
-    if (next === "us") setNational((n) => (n.status === "failed" ? { ...n, status: "idle" } : n));
     savePref(SCOPE_KEY, next);
     writeScopeParam(next);
     registerSuper({ scope: next });
@@ -1059,8 +1040,7 @@ export default function App() {
       applyScope("near", "location_set", newLoc.state || newLoc.stateAbbr);
       setLiveMsg(`Location set to ${locLabel(newLoc)}. Showing Near me · ${newLoc.stateAbbr}.`);
     }
-    await loadRecalls(newLoc);
-  }, [loadRecalls, applyScope]);
+  }, [applyScope]);
 
   const [locating, setLocating] = useState(false);
 
@@ -1123,10 +1103,6 @@ export default function App() {
   const forgetLocation = useCallback(() => {
     saveLoc(null);
     setLoc(null);
-    recallsRunRef.current += 1; // a list still loading for the old place must not land
-    setProductsBusy(false);
-    setRecalls([]);
-    setSources([]);
     setStores([]);
     setStoresStatus(null);
     setActiveStore(-1);
@@ -1169,27 +1145,46 @@ export default function App() {
   }, [loc]);
   const verdictState = verdictLoc && verdictLoc.stateAbbr ? verdictLoc.stateAbbr : null;
 
-  // ── the national index, after first paint ─────────────────────────────
+  /* Pill counts for Home's list: the same set LatestRecalls shows (active, in
+   * the current scope), counted per primary category. */
+  const homeCounts = useMemo(() => {
+    if (!index) return null;
+    const us = viewScope === "us" || !loc || !resolveLoc(verdictLoc);
+    return countByPrimary(latestInScope(index.recalls, { us, loc: verdictLoc }));
+  }, [index, viewScope, loc, verdictLoc]);
+  const changeCat = useCallback((k) => {
+    setHomeCat(k);
+    writeCatParam(k);
+    track("category_filtered", { category: k, scope: viewScope });
+  }, [viewScope]);
+
+  /* One event per place the list is shown for, once the data is there —
+   * the funnel's "the list loaded" step, now read from the local copy. */
+  const loadedForRef = useRef("");
   useEffect(() => {
-    let alive = true;
-    loadIndex().then((ix) => { if (alive) setIndex(ix); }).catch(() => { /* RecallSearch shows the retry */ });
-    return () => { alive = false; };
-  }, []);
+    const st = loc && loc.stateAbbr;
+    if (!st || !index || loadedForRef.current === st) return;
+    loadedForRef.current = st;
+    track("recalls_loaded", { count: recalls.length, state: st, from: "local" });
+  }, [loc, index, recalls.length]);
 
   /* A shared link's verdict counts as viewed once the record is known —
    * RecallSearch opens it itself, without a click to hang the event on. */
   const deepTrackedRef = useRef(false);
   useEffect(() => {
     if (!index || !DEEP_LINK.recallId || deepTrackedRef.current) return;
+    const r = data.byId.get(DEEP_LINK.recallId);
+    // Not there yet while months are still arriving: only a complete copy
+    // may call a link "not found".
+    if (!r && (data.partial || data.status === "syncing" || data.status === "empty")) return;
     deepTrackedRef.current = true;
-    const r = (index.recalls || []).find((x) => x.id === DEEP_LINK.recallId);
     track("verdict_viewed", {
       verdict: r ? verdictFor(r, verdictLoc).verdict : "not_found",
       source: r ? r.source : null,
       via: "share_link",
       state: verdictState,
     });
-  }, [index, verdictLoc, verdictState]);
+  }, [index, data.byId, data.status, data.partial, verdictLoc, verdictState]);
 
   // ── analytics hooks for the Home components ───────────────────────────
   const onVerdictOpened = useCallback((r, via = "search") => {
@@ -1213,44 +1208,33 @@ export default function App() {
     });
   }, [verdictState, viewScope]);
 
-  const openRecallSheet = useCallback((r) => {
+  const openRecallSheet = useCallback((r, via = "latest") => {
     if (!r) return;
-    /* One recall, one answer. normalizeFsis and the index now share one
-     * rule for when USDA's "not active" flag means ended (fsisStatus and
-     * FSIS_TRUST_CLOSED_DAYS in lib/sources.js), so the two should agree; the
-     * index's status still wins here as a guard against a live record cached
-     * before that rule, which called a days-old notice "ended". Everything
-     * else — lot codes, photo — stays the live record's, which has more of
-     * it. `active` (USDA's raw flag, for the Closed chip) is left alone. */
-    const ix = index && Array.isArray(index.recalls) ? index.recalls.find((x) => x.id === r.id) : null;
+    /* One recall, one answer: the local database's status wins, so a row
+     * that came from somewhere else (a /api/lookup result) cannot contradict
+     * it. Everything else stays the record that was opened. */
+    const ix = data.byId.get(r.id) || null;
     const rec = ix ? { ...r, status: ix.status, endDate: ix.endDate } : r;
+    setSheetShared(false);
     setSheetRecall(rec);
-    onVerdictOpened(rec, "digest");
-  }, [onVerdictOpened, index]);
+    onVerdictOpened(rec, via);
+  }, [onVerdictOpened, data.byId]);
 
-  /* ── the All US list ──
-   * Fetched lazily, the first time the reader is in All US, and kept for the
-   * session: it is one CDN-cached URL for everybody, but it is also the
-   * biggest payload the app asks for. Until it lands (or if it fails) the
-   * surfaces read the national index instead and say so. */
-  useEffect(() => {
-    if (viewScope !== "us" || national.status !== "idle") return;
-    setNational((n) => ({ ...n, status: "loading" }));
-    fetchNational().then((got) => {
-      if (!got) {
-        setNational({ status: "failed", recalls: [], sources: [] });
-        track("recalls_failed", { scope: "us" });
-        return;
-      }
-      setNational({ status: "done", recalls: got.recalls, sources: got.sources });
-      track("recalls_loaded", {
-        count: got.recalls.length,
-        scope: "us",
-        sources_ok: got.sources.filter((x) => x.ok).length,
-        sources_failed: got.sources.filter((x) => !x.ok).length,
-      });
-    });
-  }, [viewScope, national.status]);
+  const closeRecallSheet = useCallback(() => setSheetRecall(null), []);
+  /* The sheet keeps showing the recall it was opened on while it slides
+   * away; clearing it first left an empty panel travelling off screen. */
+  const lastSheetRecallRef = useRef(null);
+  if (sheetRecall) lastSheetRecallRef.current = sheetRecall;
+  const sheetShownRecall = sheetRecall || lastSheetRecallRef.current;
+
+  /* A shared link (?r=<id>&st=) opens its recall straight away, in the same
+   * sheet, labelled as shared. Its view is tracked by the deep-link effect
+   * above, once, so this does not track again. */
+  const openSharedRecall = useCallback((r) => {
+    if (!r) return;
+    setSheetShared(true);
+    setSheetRecall(r);
+  }, []);
 
   const goStores = useCallback(() => {
     setTab("near");
@@ -1300,11 +1284,30 @@ export default function App() {
       /* The reader's OWN state, never verdictState: that can be the sender's
        * state from a shared link (?st=), and a subscription must not be moved
        * to Texas because a friend in Texas sent a link. */
-      if (ownState && pushSupported()) syncPush({ stateAbbr: ownState, follows: next }).catch(() => {});
+      /* Every channel that is on (push, email) is told — silently, never
+       * prompting, and not at all for channels that are off. */
+      syncChannels({ stateAbbr: ownState }).catch(() => {});
     };
+    const onPrefs = () => syncChannels({ stateAbbr: ownState }).catch(() => {});
     window.addEventListener(FOLLOWS_EVENT, onChange);
-    return () => window.removeEventListener(FOLLOWS_EVENT, onChange);
+    window.addEventListener(PREFS_EVENT, onPrefs);
+    return () => {
+      window.removeEventListener(FOLLOWS_EVENT, onChange);
+      window.removeEventListener(PREFS_EVENT, onPrefs);
+    };
   }, [ownState]);
+
+  useEffect(() => {
+    const bump = () => setFollowsRev((n) => n + 1);
+    window.addEventListener(FOLLOWS_EVENT, bump);
+    window.addEventListener(ALERTS_EVENT, bump);
+    window.addEventListener("storage", bump);
+    return () => {
+      window.removeEventListener(FOLLOWS_EVENT, bump);
+      window.removeEventListener(ALERTS_EVENT, bump);
+      window.removeEventListener("storage", bump);
+    };
+  }, []);
 
   /* A new state is a different weekly digest: tell an existing subscription.
    * Only on a CHANGE of state — the restore on every page load is the same
@@ -1316,8 +1319,8 @@ export default function App() {
     if (!st) return;
     const prev = syncedStateRef.current;
     syncedStateRef.current = st;
-    if (!prev || prev === st || !pushSupported()) return;
-    syncPush({ stateAbbr: st, follows: getFollows() }).catch(() => {});
+    if (!prev || prev === st) return;
+    syncChannels({ stateAbbr: st }).catch(() => {});
   }, [loc]);
 
   /* ── alerts ──
@@ -1337,7 +1340,8 @@ export default function App() {
   const enablePush = useCallback(async () => {
     const stateAbbr = loc && loc.stateAbbr;
     setPush((p) => ({ ...p, busy: true, msg: null, dropped: [] }));
-    const out = await subscribePush({ stateAbbr, follows: getFollows() });
+    const { follows, recalls, prefs } = channelPayload();
+    const out = await subscribePush({ stateAbbr, follows, recalls, prefs });
     if (out.ok) {
       track("push_enabled", { state: out.stateAbbr || stateAbbr || null, follows: (out.follows || []).length });
       setPush({ state: "subscribed", busy: false, msg: null, dropped: out.dropped || [] });
@@ -1356,18 +1360,48 @@ export default function App() {
     refreshPushState();
   }, [refreshPushState]);
 
+  const refreshChannels = useCallback(() => {
+    alertChannels().then(setChannels).catch(() => {});
+  }, []);
+  useEffect(() => { refreshChannels(); }, [refreshChannels]);
+
   const openAlerts = useCallback(() => {
     setAlertsOpen(true);
     refreshPushState();
-  }, [refreshPushState]);
+    refreshChannels();
+  }, [refreshPushState, refreshChannels]);
 
-  const enablePushFromStories = useCallback(() => {
-    setAlertsOpen(true);
-    const canAskNow = loc && loc.stateAbbr && pushSupported() && !needsInstallForPush() &&
-      typeof Notification !== "undefined" && Notification.permission !== "denied";
-    if (canAskNow) enablePush();
-    else refreshPushState();
-  }, [loc, enablePush, refreshPushState]);
+  // Arriving from a restore link: open Alerts on the Restore button.
+  useEffect(() => { if (RESTORE_LINK) openAlerts(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const onRestored = useCallback(() => {
+    // The link is spent: take it off the URL so a reload doesn't offer it again.
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.delete("restore");
+      window.history.replaceState(null, "", u.pathname + u.search + u.hash);
+    } catch (_) { /* cosmetic */ }
+    refreshChannels();
+  }, [refreshChannels]);
+
+  /* ── the Alerts inbox ──
+   * Computed here, in the browser, from the local database — the same
+   * records every list reads. No channel needed: this is what the bell's
+   * count and the panel's "New for you" read. */
+  const { inbox, recordsById } = useMemo(() => {
+    if (!index) return { inbox: null, recordsById: null };
+    return {
+      inbox: computeInbox({
+        records: index.recalls,
+        terms: getFollows(),
+        followed: getFollowedRecalls(),
+        since: getAlertsSeen() || lastVisit,
+        stateAbbr: ownState,
+      }),
+      recordsById: data.byId,
+    };
+    // followsRev: re-read localStorage after any follow / read-marker change.
+  }, [index, data.byId, ownState, lastVisit, followsRev]); // eslint-disable-line react-hooks/exhaustive-deps
+  const unreadAlerts = (inbox && inbox.count) || 0;
 
   /** Selecting a store is one action: focus its pin and scope the product list.
    *  Open on the bucket that has something in it — "names this store" when a
@@ -1550,32 +1584,23 @@ export default function App() {
   const selectedStore = activeStore >= 0 ? stores[activeStore] : null;
 
   /* ── which list the Recalls panel reads ──
-   *   Near me   the area list (live, state-scoped)
-   *   All US    the national list (live, ?scope=us), or while it loads / if
-   *             it failed, the national index — never a mix of the two
+   * One dataset, three views of it:
+   *   Near me   the area list (isInArea over the local copy)
+   *   All US    every active record in the local copy
    *   a store   always the area list, whatever the scope: a store is a place,
    *             and a Texas-only recall naming Target does not concern the
    *             Target on 34th St. */
   const usMode = viewScope === "us";
-  const nationalIndexList = useMemo(() => {
-    if (!usMode || national.status === "done" || !index) return [];
-    return recentForUs(index, { sinceDays: 400 })
-      .map((r) => ({ ...r, date: r.date ? new Date(`${r.date}T12:00:00Z`) : null }));
-  }, [usMode, national.status, index]);
-  const listFrom = selectedStore || !usMode ? "area" : national.status === "done" ? "us" : "index";
-  const listRecalls = listFrom === "area" ? recalls : listFrom === "us" ? national.recalls : nationalIndexList;
-  const listSources = listFrom === "area" ? sources : listFrom === "us" ? national.sources : [];
-  const listBusy = listFrom === "area" ? productsBusy : national.status === "loading" && !nationalIndexList.length;
-  const listFreshness = useMemo(
-    () => (index || listSources.length ? freshnessOf(index, listFrom === "index" ? null : listSources) : []),
-    [index, listSources, listFrom],
+  const listFrom = selectedStore || !usMode ? "area" : "us";
+  const listRecalls = listFrom === "area" ? recalls : activeRecords;
+  const listSources = useMemo(
+    () => (listFrom === "area" ? sources : sourcesFor(activeRecords, data.sources)),
+    [listFrom, sources, activeRecords, data.sources],
   );
-  /* Search is national in both scopes: its freshness is the index's, with the
-   * live list's dates winning where the reader has one loaded. */
-  const searchFreshness = useMemo(
-    () => (index ? freshnessOf(index, usMode ? (national.status === "done" ? national.sources : null) : (loc ? sources : null)) : []),
-    [index, usMode, national.status, national.sources, loc, sources],
-  );
+  const listBusy = productsBusy;
+  /* Freshness is the manifest's, everywhere: one database, one answer. */
+  const listFreshness = useMemo(() => (index ? freshnessOf(index) : []), [index]);
+  const searchFreshness = listFreshness;
   const listFdaGap = !listBusy && listRecalls.length > 0 && fdaMissing(listFreshness, listRecalls);
   /* All US, one card: does it reach the reader's state? Neutral words only. */
   const ownAbbr = loc && loc.stateAbbr;
@@ -1996,222 +2021,215 @@ export default function App() {
   );
 
   return (
-    <div className="flex h-[100dvh] flex-col overflow-hidden bg-ink" style={motionStyle}>
+    <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-ink" style={motionStyle}>
       {/* ================= top bar =================
-          Identity and location only. The recall search box and the product
-          type menu used to live here too, which put the controls that filter
-          the recall list an entire layout away from the recall list — and on
-          a phone squeezed all four into one 360px row. They now sit in the
-          Recalls panel, next to the thing they act on. */}
-      <header className="z-20 shrink-0 border-b border-line bg-panel elev-1">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-2 px-3 py-2.5 sm:gap-x-3 sm:px-4">
-          <span className="flex shrink-0 items-center gap-2">
-            <Radar className="size-5 text-mint" />
-            <span className="hidden text-base font-bold tracking-tight sm:inline">Yanked</span>
-            <Tooltip content="Early release — data and matching are still being refined">
-              <Badge variant="beta" className="hidden sm:inline-flex">beta</Badge>
-            </Tooltip>
-          </span>
+          Four things, at every width: who this is, where you are, what's new
+          for you, and everything else. On Home the bar floats over the page —
+          transparent over the gradient at the top, frosted once the page
+          scrolls under it — so the headline gets the whole first screen. In
+          the stores and full-list views it is an ordinary solid bar. */}
+      <header className={cn(
+        "z-30 shrink-0 transition-[background-color,box-shadow,backdrop-filter] duration-200",
+        tab === "home"
+          ? cn("absolute inset-x-0 top-0", headerSolid ? "bg-glass-strong backdrop-blur-xl backdrop-saturate-150 shadow-[0_1px_0_var(--rr-glass-line)]" : "bg-transparent")
+          : "relative border-b border-line bg-panel",
+      )}>
+        <div className={"mx-auto flex h-14 w-full items-center gap-1.5 px-3 sm:px-4 lg:h-16 " + (tab === "home" ? "max-w-[712px]" : "")}>
+          <button type="button" onClick={() => setTab("home")} aria-label="Yanked — home"
+                  className="tap -ml-0.5 flex shrink-0 items-center gap-2 rounded-full py-1 pl-0.5 pr-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint">
+            <span aria-hidden="true" className="grid size-9 place-items-center rounded-[12px] bg-paper text-ink shadow-[var(--rr-shadow-2)]">
+              <Radar className="size-5" strokeWidth={2.25} />
+            </span>
+            <span className="text-[17px] font-semibold tracking-[-0.02em] text-paper max-[359px]:sr-only">Yanked</span>
+          </button>
 
-          {/* ---- where you are (wide screens) ----
-              The phone has the bottom bar for this; a wide screen has no bar,
-              so Home and the map-and-lists view are a two-way switch here,
-              next to the name. Two, not three: at this width the store list
-              and the recall list are one view side by side, not two places. */}
-          <div className="hidden shrink-0 items-center gap-1 rounded-full border border-line bg-panel-2 p-0.5 lg:flex"
-               role="group" aria-label="View">
-            {[
-              ["home", "Home", House, () => setTab("home")],
-              ["map", "Stores & recalls", MapIcon, () => setTab((t) => (t === "home" ? "near" : t))],
-            ].map(([key, label, Icon, go]) => {
-              const on = key === "home" ? tab === "home" : tab !== "home";
-              return (
-                <button key={key} type="button" onClick={go} aria-pressed={on}
-                        className={"tap inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[13px] font-semibold " +
-                          (on ? "bg-mint-soft text-mint" : "text-fog hover:text-paper")}>
-                  <Icon className="size-3.5" aria-hidden="true" /> {label}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* ---- where you are, and how wide to look ----
-              One control for the place, the same element at every width,
-              and beside it the one switch for the scope. It used to be five
-              location entry points — a header form, a search button, a "My
-              Location" button, a ZIP card in search and a button in the
-              digest — with errors printed in a strip across the page, 900px
-              from the field that caused them. */}
-          <div role="group" aria-label="Location and scope" className="flex min-w-0 items-center gap-1.5">
+          <div className="ml-auto flex min-w-0 items-center gap-1">
             <LocationButton
               loc={loc}
               busy={locating || (productsBusy && !recalls.length)}
               open={pickerOpen}
+              compact
               onOpen={() => (pickerOpen ? setPickerOpen(false) : openLocationPicker(null, "header"))}
             />
-            <ScopeSwitch scope={viewScope} stateAbbr={loc && loc.stateAbbr} onChange={changeScope} />
+            <button
+              id="btn-alerts" type="button"
+              onClick={() => (alertsOpen ? setAlertsOpen(false) : openAlerts())}
+              aria-haspopup="dialog"
+              aria-expanded={alertsOpen}
+              aria-controls="alerts-panel"
+              aria-label={unreadAlerts ? `Alerts, ${unreadAlerts} new` : "Alerts"}
+              title={unreadAlerts ? `Alerts — ${unreadAlerts} new for what you follow` : "Alerts — what you follow, and how you're told"}
+              className={"icon-btn relative text-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint " +
+                (alertsOpen ? "bg-panel-3" : "")}
+            >
+              <Bell className="size-[21px]" aria-hidden="true" strokeWidth={1.9} />
+              {unreadAlerts > 0 && (
+                <span aria-hidden="true"
+                      className="absolute right-[11px] top-[10px] size-[9px] rounded-full bg-mint ring-2 ring-[var(--rr-bg)]" />
+              )}
+            </button>
+            <button
+              id="btn-more" type="button"
+              onClick={() => setMoreOpen(true)}
+              aria-label="More: theme, data sources, about"
+              title="Theme, data sources, about"
+              className="icon-btn -mr-1.5 text-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint"
+            >
+              <MoreHorizontal className="size-[21px]" aria-hidden="true" />
+            </button>
           </div>
-
-          {/* Scanning is a task, not a filter.
-              On a phone it is a bottom-bar destination; on a desktop it sat in
-              the recalls toolbar next to Filters, styled like a sibling of
-              one — so the same action read as top-level on one screen and as
-              a list control on the other. It is the app's one primary verb,
-              so here it is the header's one primary button. */}
-          <Tooltip content="Point the camera at a package and check it against these notices">
-            <Button
-              id="btn-scan" size="sm"
-              className="hidden h-9 shrink-0 px-3.5 lg:ml-auto lg:inline-flex"
-              onClick={() => setScanOpen(true)}
-            >
-              <ScanLine /> Scan
-            </Button>
-          </Tooltip>
-
-          {/* Phone: one overflow control instead of three standing ones. */}
-          <Button
-            id="btn-more" variant="secondary" size="icon" className="ml-auto h-9 w-9 shrink-0 lg:hidden"
-            onClick={() => setMoreOpen(true)}
-            aria-label="More: theme, data sources, about"
-          >
-            <MoreHorizontal />
-          </Button>
-          <Tooltip content={theme === "system" ? "Following your system theme — click for light" : `${theme[0].toUpperCase()}${theme.slice(1)} theme — click to change`}>
-            <Button
-              id="btn-theme" variant="secondary" size="icon" className="hidden h-9 w-9 shrink-0 lg:ml-0 lg:inline-flex"
-              onClick={cycleTheme}
-              aria-label={`Theme: ${theme}. Click to change.`}
-            >
-              {theme === "dark" ? <Moon /> : theme === "light" ? <Sun /> : <MonitorSmartphone />}
-            </Button>
-          </Tooltip>
-
-          {/* ---- what the window is showing (wide screens) ----
-              These were one "Hide Lists" button floating over the top-left
-              corner of the map, which is where a map control belongs and not
-              where a layout control does: it sat on the map while acting on
-              everything except the map, and it could only take both lists at
-              once. Beside the theme switch they read as what they are — chrome
-              that decides what the window shows — and they take one list each,
-              so "just the recalls, I don't care which shop" is finally a thing
-              you can ask for. Turning both off is the old button. */}
-          {loc && tab !== "home" && (
-            <>
-              <span aria-hidden="true" className="hidden h-5 w-px shrink-0 bg-line lg:block" />
-              <div className="hidden shrink-0 items-center gap-1.5 lg:flex" role="group" aria-label="Panels to show">
-                {[
-                  ["stores", "Stores", "store list", Store, storesShown, toggleStores, "stores-list-scroll"],
-                  ["recalls", "Recalls", "recall list", ClipboardList, recallsShown, toggleRecalls, "recalls-list-scroll"],
-                ].map(([key, label, spoken, Icon, on, toggle, controls]) => (
-                  <Tooltip key={key}
-                           content={on ? `Hide the ${spoken} and give the room to the map` : `Show the ${spoken}`}>
-                    <Button
-                      id={`btn-show-${key}`}
-                      variant="secondary" size="sm"
-                      aria-pressed={on}
-                      aria-controls={controls}
-                      onClick={toggle}
-                      className={"h-9 shrink-0 px-3 " +
-                        (on ? "border-mint bg-mint-soft text-mint" : "text-fog")}
-                    >
-                      <Icon /><span className="hidden xl:inline">{label}</span>
-                    </Button>
-                  </Tooltip>
-                ))}
-                {/* Disabled when there is only one list, never absent. A
-                    control that vanishes takes its own explanation with it —
-                    you are left wondering where it went, and on the way back
-                    the row changes width under the pointer. Greyed out, it
-                    says the same thing and stays put; the tooltip says why. */}
-                <Tooltip content={!bothLists
-                  ? "Needs both lists — turn the other one back on"
-                  : sideBySide ? "Stack the two lists vertically" : "Put the two lists side by side"}>
-                  <Button
-                    id="btn-toggle-layout"
-                    variant="secondary" size="icon"
-                    aria-pressed={sideBySide}
-                    disabled={!bothLists}
-                    onClick={toggleLayout}
-                    aria-label={sideBySide ? "Stack the lists vertically" : "Put the lists side by side"}
-                    className="h-9 w-9 shrink-0"
-                  >
-                    {sideBySide ? <Rows2 /> : <Columns2 />}
-                  </Button>
-                </Tooltip>
-              </div>
-            </>
-          )}
         </div>
 
-        {(productsBusy || storesStatus?.busy || (usMode && national.status === "loading")) && <div id="progress" className="progress-track" />}
+        {(productsBusy || storesStatus?.busy) && <div id="progress" className="progress-track" />}
 
         {/* Announcements for a new place or a new scope. Nothing visible:
             the header button and the switch already show both. */}
         <p id="scope-status" role="status" aria-live="polite" className="sr-only">{liveMsg}</p>
       </header>
 
+      {/* ================= the stores / full-list views: a way back =================
+          With no tab bar, these two views carry their own way home, the
+          scope they read, and (phone) the switch between the store list and
+          the recall list that the bar used to be. On a wide screen the two
+          are one side-by-side view, and the switches that decide which
+          lists it shows live here instead of in the global header. */}
+      {tab !== "home" && (
+        <div className="z-10 flex shrink-0 items-center gap-2 border-b border-line bg-panel px-2 py-1.5 sm:px-3">
+          <button id="btn-back-home" type="button" onClick={() => setTab("home")}
+                  className="tap inline-flex h-10 shrink-0 items-center gap-1 rounded-full pl-1.5 pr-3 text-[14px] font-semibold text-paper hover:bg-panel-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 pointer-coarse:h-11">
+            <ArrowLeft className="size-5" aria-hidden="true" />
+            <span className="max-sm:sr-only">Home</span>
+          </button>
+          {/* Phone: the two lists, one at a time. */}
+          <div className="flex shrink-0 items-center rounded-full border border-line bg-panel-2 p-0.5 lg:hidden" role="group" aria-label="View">
+            {[["near", "Stores", goStores], ["recalls", "Recalls", goRecalls]].map(([id, label, go]) => (
+              <button key={id} id={`view-${id}`} type="button" onClick={go} aria-pressed={tab === id}
+                      className={"inline-flex h-8 items-center rounded-full px-3 text-[13px] font-semibold pointer-coarse:h-10 " +
+                        (tab === id ? "bg-panel text-paper shadow-[var(--rr-shadow-1),var(--rr-bevel)]" : "text-fog")}>
+                {label}
+                {id === "recalls" && selectedStore && <span aria-label="(one store)" className="ml-1 size-1.5 rounded-full bg-mint" />}
+              </button>
+            ))}
+          </div>
+          <span className="hidden text-[15px] font-semibold text-paper lg:inline">Stores &amp; recalls</span>
+          <ScopeSwitch className="ml-auto" scope={viewScope} stateAbbr={loc && loc.stateAbbr}
+                       onChange={(next) => changeScope(next, "header")} />
+
+          {/* ---- what the window is showing (wide screens) ---- */}
+          {loc && (
+            <div className="hidden shrink-0 items-center gap-1.5 lg:flex" role="group" aria-label="Panels to show">
+              {[
+                ["stores", "Stores", "store list", Store, storesShown, toggleStores, "stores-list-scroll"],
+                ["recalls", "Recalls", "recall list", ClipboardList, recallsShown, toggleRecalls, "recalls-list-scroll"],
+              ].map(([key, label, spoken, Icon, on, toggle, controls]) => (
+                <Tooltip key={key}
+                         content={on ? `Hide the ${spoken} and give the room to the map` : `Show the ${spoken}`}>
+                  <Button
+                    id={`btn-show-${key}`}
+                    variant="secondary" size="sm"
+                    aria-pressed={on}
+                    aria-controls={controls}
+                    onClick={toggle}
+                    className={"h-9 shrink-0 px-3 " +
+                      (on ? "border-mint bg-mint-soft text-mint" : "text-fog")}
+                  >
+                    <Icon /><span className="hidden xl:inline">{label}</span>
+                  </Button>
+                </Tooltip>
+              ))}
+              <Tooltip content={!bothLists
+                ? "Needs both lists — turn the other one back on"
+                : sideBySide ? "Stack the two lists vertically" : "Put the two lists side by side"}>
+                <Button
+                  id="btn-toggle-layout"
+                  variant="secondary" size="icon"
+                  aria-pressed={sideBySide}
+                  disabled={!bothLists}
+                  onClick={toggleLayout}
+                  aria-label={sideBySide ? "Stack the lists vertically" : "Put the lists side by side"}
+                  className="h-9 w-9 shrink-0"
+                >
+                  {sideBySide ? <Rows2 /> : <Columns2 />}
+                </Button>
+              </Tooltip>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ================= home =================
-          Search first, digest second, one column at every width.
+          The question, the box, the categories, then the latest recalls —
+          one centred 680px column at every width: a verdict is a sentence,
+          and a sentence 1400px wide is not one anybody reads.
 
-          Search leads because it is the question people arrive with ("is
-          the sausage on the news mine?") and it needs nothing from them —
-          no location, no permission. The digest answers the other question,
-          "anything new near me?", and falls back from the live area list to
-          the national index so it has something to say before (or without)
-          a location. The map, the store list and the full recall list are
-          the power-user views now: one tap away on the bottom bar, or the
-          header switch on a wide screen, and exactly as they were.
-
-          On a wide screen this is a centred column rather than a stretched
-          one: a verdict is a sentence, and a sentence 1400px wide is not
-          one anybody reads. */}
+            Is it recalled?          display type, centred
+            [ search card ]          frosted, scan bottom-left, go bottom-right
+            ( All )( Food )( … )     category pills, filter list AND results
+            Latest recalls  [Near me · NY | All US]
+            rows                     tile · headline · meta
+            footer                   two ways on, sources, beta */}
       <div id="home-scroll"
-           className={(tab === "home" ? "block " : "hidden ") + "tabbar-space min-h-0 flex-1 overflow-y-auto"}>
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 pt-5 pb-8 lg:pt-8">
+           onScroll={(e) => { const y = e.currentTarget.scrollTop > 6; if (y !== headerSolid) setHeaderSolid(y); }}
+           className={(tab === "home" ? "block " : "hidden ") + "home-wash min-h-0 flex-1 overflow-y-auto"}>
+        <div className="mx-auto flex w-full max-w-[680px] flex-col px-4 pt-[92px] pb-[calc(2.5rem+env(safe-area-inset-bottom,0px))] sm:px-6 sm:pt-[120px] lg:pt-[136px]">
           <RecallSearch
             loc={verdictLoc}
             scope={viewScope}
             freshness={searchFreshness}
             initialRecallId={DEEP_LINK.recallId}
-            onOpenRecall={(r) => onVerdictOpened(r, "search")}
-            onRequestLocation={() => openLocationPicker("to check your state", "search_card")}
+            onOpenRecall={(r) => openRecallSheet(r, "search")}
+            onOpenShared={openSharedRecall}
+            onScan={() => setScanOpen(true)}
             onSearch={onSearchSettled}
-          />
-          <HomeDigest
-            loc={verdictLoc}
-            hasLocation={Boolean(loc)}
-            scope={viewScope}
             index={index}
-            live={usMode
-              ? (national.status === "done" ? { records: national.recalls, sources: national.sources } : null)
-              : (loc && !productsBusy ? { records: recalls, sources } : null)}
-            lastVisit={lastVisit}
-            onOpenRecall={openRecallSheet}
-            onOpenStores={goStores}
-            onOpenAll={goRecalls}
-            onRequestLocation={(reason, via) => openLocationPicker(reason, via || "digest")}
-            onEnablePush={pushOffered ? enablePushFromStories : undefined}
-            onStorySeen={(id) => track("story_viewed", { recall_id: id })}
-            onCaughtUp={() => track("caught_up", { state: verdictState })}
-          />
-          {pushOffered && (
-            <div className="flex items-center gap-3 rounded-2xl border border-line bg-panel px-4 py-3">
-              <span className="grid size-9 shrink-0 place-items-center rounded-full border border-line bg-panel-2">
-                <Bell className="size-4 text-fog" aria-hidden="true" />
-              </span>
-              <p className="min-w-0 flex-1 text-[13px] leading-snug text-fog">
-                <span className="font-semibold text-paper">A weekly heads-up</span>
-                {" "}for {loc?.stateAbbr || "your state"}, and an alert straight away for a serious recall there
-                or one matching a product you follow.
-              </p>
-              <Button variant="secondary" size="sm" className="shrink-0 pointer-coarse:h-10" onClick={openAlerts}>
-                {push.state === "subscribed" ? "Alerts on" : "Set up"}
-              </Button>
-            </div>
-          )}
-          <p className="text-center text-xs leading-relaxed text-subtle">
-            Beta. Recall data comes from public FDA, USDA and CPSC feeds. Not a substitute for the official
-            notice — always check the product codes against it.
+            byId={data.byId}
+            dataStatus={data.status}
+            dataPartial={data.partial}
+            onRetry={() => sync.sync({ force: true })}
+            category={homeCat}
+            onCategory={changeCat}
+            listCounts={homeCounts}
+          >
+            <LatestRecalls
+              loc={verdictLoc}
+              hasLocation={Boolean(loc)}
+              scope={viewScope}
+              dataset={index}
+              sync={{ status: data.status, lastSynced: data.lastSynced }}
+              onChangeScope={changeScope}
+              onOpenRecall={(r) => openRecallSheet(r, "latest")}
+              category={homeCat}
+              onClearCategory={() => changeCat("all")}
+            />
+          </RecallSearch>
+
+          <nav aria-label="More ways in" className="card mt-12 flex flex-col overflow-hidden p-1.5">
+            {[
+              ["home-stores", "Stores near you named in recalls", "A map of the chains notices name", Store, goStores],
+              ["home-browse", "Browse all with filters", "By type, reason and source", ListFilter, goRecalls],
+            ].map(([id, label, sub, Icon, go]) => (
+              <button key={id} id={id} type="button" onClick={go}
+                      className="press group flex min-h-16 items-center gap-3.5 rounded-[18px] px-3 py-2.5 text-left hover:bg-panel-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint">
+                <span className="grid size-10 shrink-0 place-items-center rounded-[14px] bg-sunken text-fog">
+                  <Icon className="size-5" aria-hidden="true" strokeWidth={1.9} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[15px] font-semibold leading-snug text-paper">{label}</span>
+                  <span className="block truncate text-[13px] leading-snug text-subtle">{sub}</span>
+                </span>
+                <ChevronRight className="size-[18px] shrink-0 text-subtle transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+              </button>
+            ))}
+          </nav>
+
+          <p className="mx-auto mt-8 max-w-[52ch] text-center text-[12.5px] leading-relaxed text-subtle">
+            Recall data from public FDA, USDA and CPSC feeds, kept on this device and refreshed when you open the app.{" "}
+            <span className="font-semibold text-fog">Beta</span> — informational only; always check the product
+            codes against the official notice.{" "}
+            <button type="button" onClick={() => setAboutOpen(true)}
+                    className="-my-3 inline-block py-3 font-semibold text-fog underline decoration-line-strong underline-offset-2 hover:text-paper">
+              About this data
+            </button>
           </p>
         </div>
       </div>
@@ -2583,7 +2601,7 @@ export default function App() {
               </PanelHeader>
 
               <div id="stores-list-scroll"
-                   className="tabbar-space sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
+                   className="sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 {/* Stores are local whatever the header says: in All US they
                     are still matched to the recalls that reach this state. */}
                 {usMode && loc && !storesNoteHidden && (
@@ -2836,15 +2854,9 @@ export default function App() {
               )}
 
               <div id="recalls-list-scroll" ref={productsScrollRef}
-                   className="tabbar-space sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
+                   className="sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 {!listBusy && <SourceNotice sources={listSources} />}
-                {!listBusy && listFrom === "index" && listRecalls.length > 0 && (
-                  <p className="mb-2 text-[12px] leading-snug text-subtle">
-                    {national.status === "failed"
-                      ? "The live national list didn't load, so this is our recall index."
-                      : "Showing our recall index while the live national list loads."}
-                  </p>
-                )}
+                {!listBusy && <SyncNote status={data.status} lastSynced={data.lastSynced} hasData={!!index} className="mb-2 mt-0" />}
                 {listFdaGap && !usMode && <FdaGapNote className="mb-2" />}
                 {listBusy && (
                   <ul className="flex flex-col gap-2">{[0, 1, 2, 3].map((i) => <RecallSkeleton key={i} delay={i * stagger * 2} />)}</ul>
@@ -2871,7 +2883,6 @@ export default function App() {
                   {sorted.slice(0, limit).map((r, i) => {
                     const cat = categoryFor(r);
                     const why = reasonFor(r);
-                    const CatIcon = CATEGORY_ICONS[cat.key] || Package;
                     /* Store chips only for a recall that reaches this state:
                        in All US a Texas-only notice naming Target must not
                        point at the Target down the road. */
@@ -2881,7 +2892,7 @@ export default function App() {
                     const unlinked = (r.retailerIds || []).filter((id) => !linked.has(id));
                     return (
                       <li key={r.id} style={{ animationDelay: `${Math.min(i, 8) * stagger}ms` }}
-                          className="recall-item fade-item elev-1 rounded-xl border border-line bg-panel-2 p-3.5">
+                          className="recall-item fade-item card p-4">
                         <div className="flex flex-wrap items-center gap-1.5">
                           {isAnnounced(r) ? <AnnouncedBadge /> : <SeverityBadge recall={r} />}
                           {/* USDA closes a notice when the recalling firm has
@@ -2901,15 +2912,11 @@ export default function App() {
                             {r.posted ? `Posted ${fmtDate(new Date(`${r.posted}T12:00:00Z`))}` : fmtDate(r.date)}
                           </span>
                         </div>
-                        <div className="mt-2 flex items-start gap-2.5">
-                          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-mint-line bg-mint-soft"
-                                title={cat.label} aria-label={cat.label}>
-                            <CatIcon className="size-4 text-mint" aria-hidden="true" />
-                          </span>
+                        <div className="mt-3 flex items-start gap-3">
+                          <span title={cat.label}><RecallImage recall={r} /></span>
                           <div className="min-w-0 flex-1">
-                            <p className="recall-product text-sm font-semibold [overflow-wrap:anywhere]">{truncate(r.product, 150)}</p>
+                            <p className="recall-product text-[15px] font-semibold leading-snug [overflow-wrap:anywhere]">{truncate(r.product, 150)}</p>
                           </div>
-                          <RecallImage recall={r} />
                         </div>
                         {r.reason && <p className="recall-reason mt-2 text-[13px] leading-relaxed text-paper [overflow-wrap:anywhere]">{truncate(r.reason, 160)}</p>}
                         {/* Where it went, on every card in All US — the
@@ -2951,6 +2958,7 @@ export default function App() {
                              href={r.url} target="_blank" rel="noopener noreferrer">
                             Official Notice <ExternalLink className="size-3" />
                           </a>
+                          <WatchButton recall={r} compact />
                           <details className="recall-details min-w-0 flex-1">
                             <summary className="inline-flex min-h-8 items-center tnum text-[11px] text-fog hover:text-mint">Details</summary>
                             <dl className="mt-1.5 flex flex-col gap-1 text-[11px] text-fog">
@@ -2999,15 +3007,6 @@ export default function App() {
                 {!listBusy && listFreshness.length > 0 && (
                   <div className="mt-3 space-y-0.5 px-1 pb-1 text-center">
                     <FreshnessLine entries={listFreshness} />
-                    {listSources.some((x) => x.truncated) && (
-                      <p className="text-[11px] text-subtle">
-                        FDA: the newest notices only
-                        {(() => {
-                          const o = listSources.filter((x) => x.truncated && x.oldest).map((x) => x.oldest).sort().pop();
-                          return o ? `, back to ${new Date(`${o}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}` : "";
-                        })()}.
-                      </p>
-                    )}
                   </div>
                 )}
               </div>
@@ -3020,7 +3019,8 @@ export default function App() {
 
       {/* ================= footer ================= */}
       <footer
-        className="safe-b z-20 hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line bg-panel px-4 pt-1.5 lg:flex"
+        className={"safe-b z-20 hidden shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line bg-panel px-4 pt-1.5 " +
+          (tab === "home" ? "" : "lg:flex")}
         style={{ "--safe-b-pad": "0.375rem" }}
       >
         <p className="min-w-0 flex-1 truncate text-[11px] text-fog">
@@ -3029,8 +3029,8 @@ export default function App() {
         </p>
         <div className="flex items-center gap-2">
           {listSources.map((s) => (
-            <Tooltip key={s.name} content={s.ok ? `${s.name} — ${s.count} ${listFrom === "us" ? "in the US list" : "matching your area"}` : `${s.name} — unavailable (${s.error || "error"})`}>
-              <span tabIndex={0} aria-label={s.ok ? `${s.name}: ${s.count} matching` : `${s.name}: unavailable`}
+            <Tooltip key={s.name} content={s.ok ? `${s.name} — ${s.count} ${listFrom === "us" ? "in the US list" : "matching your area"}` : `${s.name} — not refreshed in our last update (${s.error || "error"})`}>
+              <span tabIndex={0} aria-label={s.ok ? `${s.name}: ${s.count} matching` : `${s.name}: not refreshed`}
                     className={"size-1.5 rounded-full " + (s.ok ? "bg-mint" : "bg-amber")} />
             </Tooltip>
           ))}
@@ -3040,81 +3040,6 @@ export default function App() {
           </button>
         </div>
       </footer>
-
-      {/* ================= bottom navigation (phone) =================
-          Three destinations, in the half of the screen a thumb reaches.
-          This replaces a tab strip that sat two-thirds of the way up the
-          panel, under five other bands — and it absorbs the footer, whose
-          only unique content was a disclaimer already written out in full
-          inside About. Two rows of chrome removed, one added, and everything
-          you press most is now where your hand already is. */}
-      {/* Four now: Home leads, and what was "Near me" is "Stores", named for
-          what it holds now that it is no longer where the app starts. Shown
-          without a location too — Home works without one, and the other two
-          answer with the location prompt they always had. */}
-      <nav
-          aria-label="Main"
-          /* Floating, not welded on.
-           *
-           * It was a flush white strip with a hairline on top, in the flow
-           * below a white scrolling list — so it shared an edge and a fill
-           * with the thing it sits over, and disappeared. It was missed
-           * entirely, which for the app's primary navigation is the whole
-           * ballgame.
-           *
-           * Now it detaches: inset from all three edges, fully rounded,
-           * lifted on the app's deepest shadow, over a blurred translucent
-           * ground so the list visibly passes underneath. Depth is doing the
-           * separating rather than a 1px line — which is the same argument
-           * ui/button.jsx already makes about bevels, applied to a surface.
-           * The blur is a saturated backdrop over a 78%-opaque panel, not a
-           * clear pane: legibility first, glass second. */
-          className="tabbar lg:hidden"
-        >
-          {[
-            { id: "home", label: "Home", icon: House },
-            { id: "near", label: "Stores", icon: Store, count: loc && storesWanted ? stores.length : null },
-            /* A clipboard, not the sliders glyph. `ListFilter` is what half
-               the platforms on a phone draw for "filter" — so the app's second
-               destination wore the icon of a control, two rows above an actual
-               Filters button wearing very nearly the same one. */
-            { id: "recalls", label: "Recalls", icon: ClipboardList, count: loc || usMode ? filtered.length : null },
-            { id: "scan", label: "Scan", icon: ScanLine },
-          ].map(({ id, label, icon: Icon, count }) => {
-            const on = id !== "scan" && tab === id;
-            const busyCount = id === "recalls" ? listBusy : scanning;
-            const shown = count != null && !busyCount ? fmtCount(count) : null;
-            const spoken = id === "recalls" && shown != null
-              ? `Recalls, ${shown} ${usMode && !selectedStore ? "across the US" : `in ${loc?.stateAbbr || "your area"}`}`
-              : id === "near" && shown != null ? `Stores, ${shown}` : undefined;
-            return (
-              <button
-                key={id}
-                type="button"
-                aria-current={on ? "page" : undefined}
-                aria-label={spoken}
-                onClick={() => {
-                  if (id === "scan") { setScanOpen(true); return; }
-                  setTab(id);
-                  if (id !== "home" && view === "map") setView("split"); // don't land on a hidden list
-                }}
-                className={"tabbar-item " + (on ? "tabbar-item-on" : "")}
-              >
-                <span className="relative">
-                  <Icon className="size-5" strokeWidth={on ? 2.4 : 2} />
-                  {/* The dot says the recall list is scoped to a store — the
-                      one thing you cannot see from the other screen. */}
-                  {id === "recalls" && selectedStore && (
-                    <span className="absolute -right-1.5 -top-0.5 size-1.5 rounded-full bg-mint" />
-                  )}
-                </span>
-                <span className="text-[10px] font-semibold tracking-wide">
-                  {label}{shown != null ? ` ${shown}` : ""}
-                </span>
-              </button>
-            );
-          })}
-        </nav>
 
       {/* ---- location: the one picker, every size ---- */}
       <LocationPicker
@@ -3134,128 +3059,82 @@ export default function App() {
           notice" all land here: the same card search answers with, open, in
           a sheet over wherever the reader was — so the answer never costs
           them their place in the digest. */}
-      <Sheet open={Boolean(sheetRecall)} onClose={() => setSheetRecall(null)} title="Recall">
-        {sheetRecall && (
-          <div className="px-4 py-4">
-            <VerdictCard
-              recall={sheetRecall}
-              loc={verdictLoc}
-              expanded
-              freshness={searchFreshness}
-              onRequestLocation={() => openLocationPicker("to check your state", "search_card")}
-            />
-          </div>
+      <Sheet open={Boolean(sheetRecall)} onClose={closeRecallSheet} title="Recall"
+             variant="detail" size="lg" labelledBy="recall-title"
+             footer={sheetShownRecall && <RecallActionBar recall={sheetShownRecall} loc={verdictLoc} />}>
+        {sheetShownRecall && (
+          <RecallDetail
+            key={sheetShownRecall.id}
+            recall={sheetShownRecall}
+            eyebrow={sheetShared ? "Shared with you" : undefined}
+            loc={verdictLoc}
+            freshness={searchFreshness}
+            onRequestLocation={() => openLocationPicker("to check your state", "search_card")}
+          />
         )}
       </Sheet>
 
       {/* ---- alerts ----
-          Every outcome of asking is said here in words, including the ones
-          that are not failures of ours: an iPhone that needs the Home Screen
-          step first, a browser that cannot do it, a permission that was
-          refused. And the privacy line is said before the button, not after
-          it: what leaves this browser is the state and the follow terms. */}
-      <Sheet open={alertsOpen} onClose={() => setAlertsOpen(false)} title="Recall alerts">
-        <div className="flex flex-col gap-3 px-4 py-4 text-[13px] leading-relaxed text-fog">
-          <p>
-            <span className="font-semibold text-paper">Once a week</span>, the new recalls for{" "}
-            {loc?.stateAbbr || "your state"}. <span className="font-semibold text-paper">Straight away</span>, a
-            serious (Class I) recall there, or one matching a product you follow.
-          </p>
-          {usMode && loc?.stateAbbr && (
-            <p className="text-[12px] text-subtle">
-              Alerts are for your state ({loc.stateAbbr}), whichever view you're browsing.
-            </p>
-          )}
-          <p className="text-[12px] text-subtle">
-            Only your state and the products you follow are sent to our server — never your address or
-            coordinates. Turning alerts off deletes them.
-          </p>
-          {push.state === "needs-install" ? (
-            <div className="rounded-xl border border-line bg-panel-2 px-3.5 py-3">
-              <p className="font-semibold text-paper">On iPhone and iPad, one step first</p>
-              <p className="mt-1">
-                Apple only delivers alerts to sites added to the Home Screen. Tap{" "}
-                <span className="font-semibold text-paper">Share</span>, then{" "}
-                <span className="font-semibold text-paper">Add to Home Screen</span>, open Yanked from
-                there, and turn alerts on.
-              </p>
-            </div>
-          ) : !loc?.stateAbbr ? (
-            <Button className="h-11 w-full" onClick={() => { setAlertsOpen(false); openLocationPicker("for alerts", "alerts"); }}>
-              <MapPin /> Set a location first
-            </Button>
-          ) : push.state === "subscribed" ? (
-            <>
-              <p className="flex items-center gap-2 rounded-xl border border-line bg-panel-2 px-3.5 py-3 font-semibold text-paper">
-                <Check className="size-4 shrink-0 text-mint" /> Alerts are on for {loc.stateAbbr}.
-              </p>
-              <Button variant="outline" className="h-11 w-full" disabled={push.busy} onClick={disablePush}>
-                {push.busy ? <Loader2 className="animate-spin" /> : <BellOff />} Turn off alerts
-              </Button>
-            </>
-          ) : push.state === "unsupported" ? (
-            <p className="rounded-xl border border-line bg-panel-2 px-3.5 py-3">
-              This browser can't receive notifications from websites.
-            </p>
-          ) : push.state === "denied" ? (
-            <p className="rounded-xl border border-line bg-panel-2 px-3.5 py-3">
-              Notifications are blocked for this site. You can allow them in your browser's site settings,
-              then come back here.
-            </p>
-          ) : (
-            <Button className="h-11 w-full" disabled={push.busy || push.state === "unknown"} onClick={enablePush}>
-              {push.busy ? <Loader2 className="animate-spin" /> : <Bell />} Turn on alerts
-            </Button>
-          )}
-          {push.msg && <p role="alert" className="text-[12px] font-semibold text-alert">{push.msg}</p>}
-          {push.dropped.length > 0 && (
-            <p className="text-[12px] text-subtle">
-              Alerts can watch up to 20 products of 40 characters each, so these aren't included:{" "}
-              {push.dropped.map((t) => `“${t}”`).join(", ")}.
-            </p>
-          )}
-        </div>
-      </Sheet>
+          One surface (AlertsPanel on ResponsiveSurface, like the location
+          picker): the inbox for what you follow, the follows themselves, and
+          delivery — each channel saying "not available yet" when this
+          deployment can't send it, rather than vanishing. */}
+      <AlertsPanel
+        open={alertsOpen}
+        onClose={() => setAlertsOpen(false)}
+        anchorId="btn-alerts"
+        loc={loc}
+        inbox={inbox}
+        byId={recordsById}
+        terms={getFollows()}
+        followed={getFollowedRecalls()}
+        channels={channels}
+        push={push}
+        onEnablePush={enablePush}
+        onDisablePush={disablePush}
+        onOpenRecall={(r) => { setAlertsOpen(false); openRecallSheet(r, "alerts"); }}
+        onRequestLocation={() => openLocationPicker("for alerts", "alerts")}
+        restoreLink={RESTORE_LINK}
+        onRestored={onRestored}
+      />
 
       {/* ---- theme, sources, about ---- */}
       <Sheet open={moreOpen} onClose={() => setMoreOpen(false)} title="Yanked">
-        <div className="flex flex-col divide-y divide-line">
-          <div className="px-4 py-3">
+        <div className="flex flex-col gap-1 pb-[calc(1rem+env(safe-area-inset-bottom,0px))]">
+          <div className="px-5 py-3">
             <p className="microlabel">Appearance</p>
             <div className="mt-2 flex gap-1.5" role="group" aria-label="Theme">
               {[["light", "Light", Sun], ["dark", "Dark", Moon], ["system", "System", MonitorSmartphone]].map(([k, lbl, Icon]) => (
                 <button key={k} type="button" aria-pressed={theme === k} onClick={() => setTheme(k)}
                         className={"chip flex-1 " + (theme === k ? "chip-on" : "chip-off")}>
-                  <Icon className="size-3.5" />
-                  <span className="normal-case tracking-normal">{lbl}</span>
+                  <Icon className="size-4" />
+                  <span>{lbl}</span>
                 </button>
               ))}
             </div>
           </div>
 
-          <div className="px-4 py-3">
+          <div className="mx-5 my-2 rounded-2xl bg-sunken px-4 py-3">
             <p className="microlabel">Data sources</p>
-            <ul className="mt-2 flex flex-col gap-1.5">
+            <ul className="mt-2 flex flex-col gap-2">
               {listSources.map((src) => (
                 <li key={src.name} className="flex items-center gap-2 text-[13px]">
                   <span className={"size-1.5 shrink-0 rounded-full " + (src.ok ? "bg-mint" : "bg-amber")} aria-hidden="true" />
                   <span className="min-w-0 flex-1 truncate">{src.name}</span>
                   <span className="tnum shrink-0 text-[11px] text-fog">
-                    {src.ok ? `${fmtCount(src.count)} ${listFrom === "us" ? "in the US" : "matching"}` : "unavailable"}
+                    {src.ok ? `${fmtCount(src.count)} ${listFrom === "us" ? "in the US" : "matching"}` : `${fmtCount(src.count)} · not refreshed`}
                   </span>
                 </li>
               ))}
             </ul>
           </div>
 
-          <div className="px-4 py-3">
-            {pushOffered && (
-              <Button variant="secondary" className="mb-2 h-11 w-full"
-                      onClick={() => { setMoreOpen(false); openAlerts(); }}>
-                <Bell /> Recall alerts
-              </Button>
-            )}
-            <Button variant="secondary" className="h-11 w-full"
+          <div className="px-5 py-3">
+            <Button variant="secondary" className="mb-2 h-12 w-full"
+                    onClick={() => { setMoreOpen(false); openAlerts(); }}>
+              <Bell /> Alerts{unreadAlerts ? ` · ${unreadAlerts} new` : ""}
+            </Button>
+            <Button variant="secondary" className="h-12 w-full"
                     onClick={() => { setMoreOpen(false); setAboutOpen(true); }}>
               <Info /> About this data
             </Button>
@@ -3298,14 +3177,14 @@ export default function App() {
               dialog out, so the two can move independently: the dim fades
               while the surface travels. It is `absolute`, so it is out of the
               flow and the panel is still the only flex item. */}
-          <div className={"sheet-scrim absolute inset-0 bg-ink/70 " + (aboutShown ? "is-shown" : "")}
+          <div className={"sheet-scrim absolute inset-0 bg-[var(--rr-scrim)] " + (aboutShown ? "is-shown" : "")}
                onClick={() => setAboutOpen(false)} />
-          <div className={"sheet-panel sheet-centered relative max-h-[85dvh] w-full max-w-xl overflow-y-auto overscroll-contain rounded-t-2xl border border-b-0 border-line bg-panel p-5 text-sm text-fog sm:rounded-2xl sm:border-b " +
+          <div className={"sheet-panel sheet-centered relative max-h-[88dvh] w-full max-w-xl overflow-y-auto overscroll-contain rounded-t-[28px] bg-panel p-6 text-[14px] leading-relaxed text-fog shadow-[var(--rr-shadow-3)] sm:rounded-[28px] " +
                  (aboutShown ? "is-shown" : "")}
                style={{ paddingBottom: "calc(1.25rem + env(safe-area-inset-bottom, 0px))" }}>
             <div className="flex items-center justify-between">
-              <p className="microlabel text-paper">About this data</p>
-              <button onClick={() => setAboutOpen(false)} aria-label="Close" className="grid size-8 place-items-center rounded-lg text-fog hover:bg-panel-3 hover:text-paper"><X className="size-4" /></button>
+              <p className="text-[20px] font-semibold tracking-tight text-paper">About this data</p>
+              <button onClick={() => setAboutOpen(false)} aria-label="Close" className="icon-btn -mr-2"><X className="size-[18px]" /></button>
             </div>
             <p className="mt-3">
               Yanked aggregates public recall data from{" "}
@@ -3375,8 +3254,8 @@ export default function App() {
               incomplete — distributors re-ship, and people travel — so an answer that your state isn&rsquo;t
               listed is grey, never green, and the evidence is always one tap away.
             </p>
-            <div className="mt-4 rounded-xl border border-amber/40 bg-amber-soft p-3.5">
-              <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-amber">
+            <div className="mt-5 rounded-2xl bg-amber-soft p-4">
+              <p className="text-[13px] font-semibold text-amber">
                 Beta — no warranty, no liability
               </p>
               <p className="mt-1.5 text-xs leading-relaxed">
@@ -3399,7 +3278,7 @@ export default function App() {
                   <span className={"size-1.5 shrink-0 rounded-full " + (s.ok ? "bg-mint" : "bg-amber")} aria-hidden="true" />
                   <span>{s.name}</span>
                   <span className="ml-auto tnum text-[11px]">
-                    {s.ok ? `${s.count} matching` : `unavailable (${s.error || "error"})`}
+                    {s.ok ? `${s.count} matching` : `${s.count} · ${s.error || "not refreshed"}`}
                   </span>
                   {s.note && <p className="w-full pl-3.5 text-[11px] text-amber">{s.note}</p>}
                 </li>

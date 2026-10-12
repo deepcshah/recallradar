@@ -1,11 +1,10 @@
 /* Recall data sources: openFDA enforcement (food / drug / device),
- * USDA FSIS recall API, CPSC recall API.
+ * USDA FSIS recall API, CPSC recall API — the pure half.
  *
- * Primary path: one call to /api/recalls, which fetches and normalizes all
- * five feeds server-side (with the openFDA key) and is edge-cached per
- * state — the browser downloads one small, ready-to-render payload.
- * Fallback (bare static deployments): fetch each feed directly from the
- * browser using the same normalizers. Each source degrades independently.
+ * The browser no longer fetches any of these. It reads one local copy of our
+ * database (./data-sync.js, from /api/data). What is left here are the pure
+ * normalizers, slimmers and openFDA query builders that the server side
+ * (api/*, scripts/build-index.mjs, scripts/refresh-feeds.mjs) imports.
  *
  * Normalized recall shape:
  * {
@@ -23,17 +22,15 @@
  * cannot answer about a record that was thrown away before it got there. The
  * area list's rule (nationwide, your state, or unstated-but-names-a-chain)
  * lives in one place, `isInArea` in ./verdict.js, and every consumer of these
- * lists — fetchAll's fallbacks, api/recalls.js, App.jsx — filters through it.
+ * lists — api/recalls.js, App.jsx — filters through it.
  */
 import { chainsInText } from "./retailers.js";
 import { ABBR_TO_NAME, abbrForName } from "./states.js";
-import { NATIONWIDE_RE, statesIn, isInArea, AMBIGUOUS_STATE_ABBRS } from "./verdict.js";
-import { FSIS_ENDPOINTS, cpscUrl } from "./feeds.js";
+import { NATIONWIDE_RE, statesIn, AMBIGUOUS_STATE_ABBRS } from "./verdict.js";
 
 const DAY_MS = 86400000;
 export const LOOKBACK_DAYS = 365;
 export const CPSC_LOOKBACK_DAYS = 180;
-const CACHE_TTL_MS = 30 * 60 * 1000;
 
 // Defined in ./verdict.js (so coverage and scope read text with one regex);
 // re-exported here because callers already import it from this module.
@@ -60,32 +57,6 @@ export function fmtFdaDate(d) {
 function parseFdaDate(s) {
   if (!s || !/^\d{8}$/.test(s)) return null;
   return new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T00:00:00`);
-}
-
-// `transform` slims the raw response BEFORE caching — the full FSIS/CPSC
-// payloads are megabytes and would blow the sessionStorage quota.
-async function cachedFetchJSON(url, { timeoutMs = 20000, transform } = {}) {
-  const key = "rr-cache:" + url;
-  try {
-    const hit = JSON.parse(sessionStorage.getItem(key) || "null");
-    if (hit && Date.now() - hit.t < CACHE_TTL_MS) return hit.v;
-  } catch (_) { /* cache is best-effort */ }
-
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, { signal: ctrl.signal, headers: { Accept: "application/json" } });
-    if (res.status === 404 && !url.startsWith("/api/")) return null; // openFDA returns 404 for "no matches"
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    let v = await res.json();
-    if (transform) v = transform(v);
-    try { sessionStorage.setItem(key, JSON.stringify({ t: Date.now(), v })); } catch (_) { /* quota */ }
-    return v;
-  } catch (err) {
-    throw err && err.name === "AbortError" ? new Error("timed out") : err;
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 /** Where does this distribution text put the notice, relative to the reader?
@@ -165,6 +136,24 @@ function isoDay(d) {
 // Pure data -> recalls transforms, shared verbatim by api/recalls.js.
 // `loc` may be null (the national index builds without a reader).
 
+/** A stable, unique id for one openFDA enforcement record.
+ *
+ * `recall_number` is the natural key, but openFDA publishes some records with
+ * the literal string "N/A" in it — in the 2026-09-23 data, a Heinz mayonnaise
+ * and a Sun Pharma cream among them. Every such record got the same id
+ * ("fda-food-N/A"), so de-duplication kept the first and silently dropped the
+ * rest, and a shared link to any of them opened the wrong recall. Without a
+ * real recall number the id is built from the event id plus a short hash of
+ * the product text: stable across refreshes, distinct within an event. */
+export function fdaId(kind, r) {
+  const num = String((r && r.recall_number) || "").trim();
+  if (num && !/^n\/?a$/i.test(num)) return `fda-${kind}-${num}`;
+  const text = `${(r && r.product_description) || ""}|${(r && r.code_info) || ""}`;
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) >>> 0;
+  return `fda-${kind}-e${(r && r.event_id) || "0"}-${h.toString(36)}`;
+}
+
 export function normalizeFda(kind, results, loc) {
   const label = { food: "FDA Food", drug: "FDA Drug", device: "FDA Device" }[kind];
   return (results || [])
@@ -179,7 +168,7 @@ export function normalizeFda(kind, results, loc) {
       const status = fdaStatus(r);
       const endDate = status === "ended" ? isoDay(parseFdaDate(r.termination_date)) : undefined;
       return {
-        id: `fda-${kind}-${r.recall_number || r.event_id || Math.random().toString(36).slice(2)}`,
+        id: fdaId(kind, r),
         source: label,
         product: r.product_description || "(no product description)",
         firm: r.recalling_firm || "",
@@ -506,234 +495,4 @@ export function unscopedSearchQuery() {
   const now = new Date();
   const start = new Date(now.getTime() - LOOKBACK_DAYS * DAY_MS);
   return `status:"Ongoing"+AND+report_date:[${fmtFdaDate(start)}+TO+${fmtFdaDate(now)}]`;
-}
-
-// --------------------------------------------------- browser fallback path
-async function fetchOpenFdaDirect(kind, loc) {
-  const url =
-    `https://api.fda.gov/${kind}/enforcement.json?search=${fdaSearchQuery(loc).replace(/ /g, "+")}` +
-    `&sort=report_date:desc&limit=100`;
-  const data = await cachedFetchJSON(url);
-  const results = (data && data.results) || [];
-  const total = fdaTotal(data);
-  return {
-    recalls: normalizeFda(kind, results, loc),
-    lastUpdated: fdaLastUpdated(data),
-    truncated: total != null && total > results.length,
-  };
-}
-
-/** FSIS straight from the browser: a different IP on a different network from
- *  the serverless function, which USDA's WAF blocks outright. Throws if the
- *  browser is blocked too, or if CORS forbids reading the response. */
-export async function fsisFromBrowser(loc) {
-  const list = await cachedFetchJSON(FSIS_ENDPOINTS[0], { timeoutMs: 12000, transform: slimFsis });
-  return normalizeFsis(list || [], loc);
-}
-
-async function fetchFsisDirect(loc) {
-  try {
-    return await fsisFromBrowser(loc);
-  } catch (_) {
-    // proxy returns pre-slimmed data
-    return normalizeFsis((await cachedFetchJSON("/api/fsis", { timeoutMs: 30000 })) || [], loc);
-  }
-}
-
-/* ─────────────────────────────────────────────────────────────────────────
- * THE COMMITTED SNAPSHOT — the tier that cannot be blocked
- *
- * `public/feeds/*.json` is written by a GitHub Action (see
- * scripts/refresh-feeds.mjs) and committed to the repository, so it ships with
- * the deployment as a static asset served off the CDN.
- *
- * That is what makes it different in kind from every other fallback here.
- * The live fetch, the retry loop and the Blob cache all ultimately depend on
- * USDA answering *this deployment* at some point; if it never does, they are
- * all empty together. The snapshot was fetched from somewhere else entirely,
- * by a different machine on a different network, before the user ever arrived.
- * Nothing USDA decides about this app's egress can take it away.
- *
- * The cost is honesty about age, which is why it carries `fetchedAt` and the
- * UI prints it. A three-hour-old list of meat recalls is worth enormously more
- * than an empty panel labelled "unavailable"; a three-hour-old list presented
- * as live is worth less than nothing.
- * ───────────────────────────────────────────────────────────────────────── */
-async function readSnapshot(name) {
-  const snap = await cachedFetchJSON(`/feeds/${name}.json`, { timeoutMs: 8000 });
-  if (!snap || !Array.isArray(snap.notices) || !snap.notices.length) return null;
-  return snap;
-}
-
-function snapshotAge(fetchedAt) {
-  const t = new Date(fetchedAt).getTime();
-  if (!Number.isFinite(t)) return "at an unknown time";
-  const hours = Math.floor((Date.now() - t) / 3600000);
-  if (hours < 1) return "less than an hour ago";
-  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
-  const days = Math.round(hours / 24);
-  return `${days} day${days === 1 ? "" : "s"} ago`;
-}
-
-/** Recover the sources /api/recalls could not reach, from wherever we still
- *  can. Two ladders, tried in order of freshness:
- *
- *    USDA FSIS — the browser first, because it is a different client on a
- *                different network and may simply not be blocked; then the
- *                committed snapshot.
- *    CPSC      — the snapshot only. saferproducts.gov is slow rather than
- *                hostile, and a browser that waits 30s for it has already
- *                lost; the snapshot is instant and a few hours old at worst.
- *
- *  Resolves to null when there is nothing to add, so the caller can skip the
- *  state update entirely. */
-export async function recoverBlockedSources(loc, sources) {
-  const list = sources || [];
-  const targets = [
-    {
-      match: (n) => n.startsWith("USDA FSIS"),
-      recover: async () => {
-        try {
-          return {
-            recalls: await fsisFromBrowser(loc),
-            note: "USDA would not answer our server, so your browser fetched this directly.",
-          };
-        } catch (_) { /* blocked here too, or CORS — fall through to the snapshot */ }
-        const snap = await readSnapshot("fsis");
-        if (!snap) return null;
-        return {
-          recalls: normalizeFsis(snap.notices, loc),
-          note: `USDA would not answer our server or your browser — showing the snapshot saved ${snapshotAge(snap.fetchedAt)}.`,
-        };
-      },
-    },
-    {
-      match: (n) => n.startsWith("CPSC"),
-      recover: async () => {
-        const snap = await readSnapshot("cpsc");
-        if (!snap) return null;
-        return {
-          recalls: normalizeCpsc(snap.notices),
-          note: `CPSC did not answer in time — showing the snapshot saved ${snapshotAge(snap.fetchedAt)}.`,
-        };
-      },
-    },
-  ];
-
-  const jobs = targets
-    .map((t) => ({ t, i: list.findIndex((s) => t.match(s.name)) }))
-    .filter(({ i }) => i !== -1 && !list[i].ok);
-  if (!jobs.length) return null;
-
-  // Recovered lists feed the area list and its counts, so they go through the
-  // same isInArea gate as /api/recalls — an 'elsewhere' FSIS notice must not
-  // arrive late through the back door.
-  const settled = await Promise.all(jobs.map(({ t }) => t.recover()
-    .then((got) => got && { ...got, recalls: got.recalls.filter((r) => isInArea(r, loc)) })
-    .catch(() => null)));
-
-  const next = list.slice();
-  const recalls = [];
-  const names = [];
-  settled.forEach((got, k) => {
-    if (!got || !got.recalls.length) return;
-    const { i } = jobs[k];
-    next[i] = { name: list[i].name, ok: true, count: got.recalls.length, note: got.note };
-    recalls.push(...got.recalls);
-    names.push(list[i].name.replace(/\s*\([^)]*\)\s*$/, ""));
-  });
-
-  return recalls.length ? { recalls, sources: next, names } : null;
-}
-
-async function fetchCpscDirect() {
-  let list;
-  try {
-    list = await cachedFetchJSON(cpscUrl(CPSC_LOOKBACK_DAYS), { timeoutMs: 30000, transform: slimCpsc });
-  } catch (_) {
-    // The proxy returns pre-slimmed data, and falls back to its own cached
-    // copy — so this path can still answer when saferproducts.gov cannot.
-    list = await cachedFetchJSON("/api/cpsc", { timeoutMs: 30000 });
-  }
-  return normalizeCpsc(list || []);
-}
-
-async function clientFetchAll(loc) {
-  const jobs = [
-    { name: "FDA Food enforcement", fn: () => fetchOpenFdaDirect("food", loc) },
-    { name: "FDA Drug enforcement", fn: () => fetchOpenFdaDirect("drug", loc) },
-    { name: "FDA Device enforcement", fn: () => fetchOpenFdaDirect("device", loc) },
-    { name: "USDA FSIS (meat, poultry, egg)", fn: () => fetchFsisDirect(loc) },
-    { name: "CPSC consumer products", fn: () => fetchCpscDirect() },
-  ];
-
-  // Filtered before counting, so a source's count means what it always
-  // meant: notices covering your area. See isInArea in ./verdict.js.
-  const fetchedAt = new Date().toISOString();
-  const settled = await Promise.allSettled(
-    jobs.map((j) => j.fn().then((got) => {
-      const meta = Array.isArray(got) ? {} : got;
-      const list = (Array.isArray(got) ? got : got.recalls).filter((r) => isInArea(r, loc));
-      return { list, meta };
-    })));
-  const recalls = [];
-  const sources = settled.map((s, i) => {
-    if (s.status === "fulfilled") {
-      const { list, meta } = s.value;
-      recalls.push(...list);
-      return {
-        name: jobs[i].name, ok: true, count: list.length, fetchedAt,
-        ...(meta.lastUpdated ? { lastUpdated: meta.lastUpdated } : null),
-        ...(meta.truncated ? { truncated: true } : null),
-      };
-    }
-    return { name: jobs[i].name, ok: false, error: s.reason && s.reason.message ? s.reason.message : "failed" };
-  });
-
-  return { recalls: sortRecalls(recalls), sources };
-}
-
-/**
- * Fetch every source for a location. Returns:
- * { recalls: [...normalized, sorted],
- *   sources: [{name, ok, count, error?, note?, fetchedAt?, lastUpdated?,
- *              newest?, truncated?, oldest?}] }
- * FDA sources carry openFDA's `lastUpdated`; `truncated: true` means only the
- * newest notices were fetched (back to `oldest`). See freshnessOf in
- * ./search-index.js for turning these into "as of" lines.
- */
-export async function fetchAll(loc) {
-  try {
-    const qs = new URLSearchParams();
-    if (loc.state) qs.set("state", loc.state);
-    if (loc.stateAbbr) qs.set("abbr", loc.stateAbbr);
-    const data = await cachedFetchJSON(`/api/recalls?${qs}`, { timeoutMs: 30000 });
-    if (!data || !Array.isArray(data.recalls)) throw new Error("bad payload");
-    return {
-      recalls: data.recalls.map((r) => ({ ...r, date: r.date ? new Date(r.date) : null })),
-      sources: data.sources || [],
-    };
-  } catch (_) {
-    return clientFetchAll(loc); // bare static deployment, or the API is down
-  }
-}
-
-/**
- * The All US list: every active notice, wherever it went (`/api/recalls?scope=us`).
- * Same shape as fetchAll. Resolves to null on any failure — never throws — so
- * the caller falls back to the national index and says which list it is
- * reading. There is no browser fallback: querying all three openFDA kinds
- * unscoped from a phone is exactly the request the server exists to cache.
- */
-export async function fetchNational() {
-  try {
-    const data = await cachedFetchJSON("/api/recalls?scope=us", { timeoutMs: 30000 });
-    if (!data || !Array.isArray(data.recalls)) return null;
-    return {
-      recalls: data.recalls.map((r) => ({ ...r, date: r.date ? new Date(r.date) : null })),
-      sources: data.sources || [],
-    };
-  } catch (_) {
-    return null;
-  }
 }

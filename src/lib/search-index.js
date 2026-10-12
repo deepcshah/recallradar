@@ -1,48 +1,30 @@
-/* The national recall index, read from the browser.
+/* Search and freshness over the recall database the browser holds.
  *
- * Everything else in this app starts from a place: give it a state and it
- * asks each agency for notices that cover that state. That is the right shape
- * for "what should I worry about near me", and the wrong shape for the
- * question people most often arrive with — "is *that thing* recalled?" — which
- * has no place in it at all. Answering it from the per-state payload means a
- * product sold only in Oregon is invisible to a searcher in Ohio, and the
- * empty result says "nothing found" when the truth is "not looked for".
+ * The records come from ./data-sync.js — the one local copy of our database
+ * (manifest + chunks from /api/data, kept in IndexedDB). Every list in the
+ * app reads that copy; this module only searches and describes it. The
+ * `index` argument the functions below take is the sync engine's `dataset`:
+ *   { recalls: IndexRecord[], sources: manifest.sources, generatedAt }
+ * which is the same shape public/feeds/index.json has always had, so the
+ * offline checks (scripts/check-data.mjs) still run on the committed file.
  *
- * So there is a second, location-free dataset: `public/feeds/index.json`,
- * every recall across all three agencies for the last year, *including* ones
- * that have ended, built by scripts/build-index.mjs on the same GitHub runner
- * that writes the FSIS and CPSC snapshots. It is a static asset, so searching
- * it costs one CDN fetch and no API quota, and it is fetched only when someone
- * actually searches — it is a few hundred KB gzipped and has no business on
- * the critical path.
- *
- * Record shape (contract 3; see scripts/build-index.mjs for how each field is
- * derived):
+ * Record shape (see scripts/build-index.mjs for how each field is derived):
  *   { id, source, product, firm, reason, classification, severity, date,
- *     status: 'active'|'ended'|'announced', endDate?, distribution, states,
- *     coverage: 'nationwide'|'states'|'unstated', category, reasonKey, url,
- *     upcs?, announcement? }
+ *     posted?, status: 'active'|'ended'|'announced', endDate?, distribution,
+ *     states, coverage: 'nationwide'|'states'|'unstated', category,
+ *     reasonKey, url, upcs?, announcement?, image? }
  *
- * `source: 'FDA announcement'`, `status: 'announced'`, `announcement: true`
- * marks a company press release from FDA's recalls RSS feed that has no
- * openFDA enforcement record yet (see scripts/build-index.mjs). verdict.js
- * gives it its own answer and keeps it out of area counts unless the release
- * itself names states.
- *
- * Two honesty rules carry over from the rest of the app and matter more here,
- * because a search result is read as an answer:
- *   - an ended recall is returned, not hidden. Hiding it makes "it was
- *     recalled and that is over" look identical to "we never heard of it".
- *   - when the index could not get FDA data (`sources.fda.ok === false`) an
- *     empty result is not "no FDA recall" — it is "FDA not checked". The
- *     caller falls back to `liveLookup`, which asks openFDA directly.
+ * Two honesty rules, because a search result is read as an answer:
+ *   - an ended recall is returned, not hidden.
+ *   - when the database could not get FDA data (`sources.fda.ok === false`),
+ *     or holds no strong match at all, an empty result is not "no recall" —
+ *     the caller asks openFDA through `liveLookup` as a last resort, and
+ *     labels what comes back as coming from there.
  *
  * MiniSearch is lazy-loaded through a dynamic import so it lands in its own
- * chunk, exactly like ZXing and posthog-js: anyone who never searches never
- * downloads it. The search itself is synchronous so the UI can run it per
- * keystroke; `loadIndex()` resolves only once the engine is built, and a
- * caller that somehow searches before that gets a plain substring scan rather
- * than an empty list.
+ * chunk. Search is synchronous so the UI can run it per keystroke; until the
+ * engine is built (`prepareSearch`), `searchIndex` falls back to a plain
+ * substring scan rather than an empty list.
  */
 import { statesIn, NATIONWIDE_RE } from "./sources.js";
 import { coverageOf, isInArea, resolveLoc } from "./verdict.js";
@@ -50,15 +32,7 @@ import { categoryFor } from "./category.js";
 import { reasonFor } from "./reason.js";
 import { upcKey, upcsIn } from "./upc.js";
 
-const INDEX_URL = "/feeds/index.json";
 const DAY_MS = 86400000;
-const CACHE_KEY = "rr-index";
-const CACHE_TTL_MS = 30 * 60 * 1000;
-/* sessionStorage is ~5M UTF-16 characters per origin, shared with the per-feed
- * cache in sources.js. Past this the index is simply not cached there — the
- * HTTP cache still has it, and blowing the quota would evict the feed cache
- * that the main view depends on. */
-const CACHE_MAX_CHARS = 2_500_000;
 
 // ------------------------------------------------------------ coverage
 /* Where a notice says it went, independent of where the reader is.
@@ -99,45 +73,9 @@ export function indexRecordInArea(r, loc) {
   return isInArea(r, loc);
 }
 
-// ------------------------------------------------------------ loading
-let indexPromise = null;
-const engines = new WeakMap(); // index object -> MiniSearch instance
+// ------------------------------------------------------------ engines
+const engines = new WeakMap(); // dataset object -> MiniSearch instance
 let miniSearchCtor = null;
-
-function readCache() {
-  try {
-    const hit = JSON.parse(sessionStorage.getItem(CACHE_KEY) || "null");
-    if (hit && Date.now() - hit.t < CACHE_TTL_MS && hit.v && Array.isArray(hit.v.recalls)) return hit.v;
-  } catch (_) { /* private mode, blocked storage, or a corrupt entry */ }
-  return null;
-}
-
-function writeCache(text) {
-  try {
-    if (text.length > CACHE_MAX_CHARS) return;
-    sessionStorage.setItem(CACHE_KEY, `{"t":${Date.now()},"v":${text}}`);
-  } catch (_) { /* quota — the HTTP cache still has it */ }
-}
-
-async function fetchIndex() {
-  const cached = readCache();
-  if (cached) return cached;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 20000);
-  try {
-    const res = await fetch(INDEX_URL, { signal: ctrl.signal, headers: { Accept: "application/json" } });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const text = await res.text();
-    const index = JSON.parse(text);
-    if (!index || !Array.isArray(index.recalls)) throw new Error("index.json has no recalls array");
-    writeCache(text);
-    return index;
-  } catch (err) {
-    throw err && err.name === "AbortError" ? new Error("timed out loading the recall index") : err;
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 /* Words a category key stands for, so "bread" or "baby" finds a notice whose
  * product text happens not to use that word. Keys are category.js's. */
@@ -173,25 +111,7 @@ async function buildEngine(index) {
   return engine;
 }
 
-/** The national index, fetched once per page (and cached in sessionStorage
- *  for half an hour when it fits), with the search engine already built.
- *  Rejects when the file cannot be read; a later call retries. */
-export function loadIndex() {
-  if (!indexPromise) {
-    indexPromise = (async () => {
-      const index = await fetchIndex();
-      try {
-        await buildEngine(index);
-      } catch (_) { /* chunk failed to load — searchIndex falls back to a scan */ }
-      return index;
-    })();
-    indexPromise.catch(() => { indexPromise = null; });
-  }
-  return indexPromise;
-}
-
-/** Build (or reuse) the engine for an index that did not come from
- *  loadIndex — a test fixture, or the server's copy. */
+/** Build (or reuse) the search engine for a dataset. Resolves to it. */
 export async function prepareSearch(index) {
   await buildEngine(index);
   return index;
@@ -343,17 +263,6 @@ export function recentFor(index, loc, { sinceDays = 7 } = {}) {
     .sort((a, b) => String(b.date).localeCompare(String(a.date)) || (sevRank[a.severity] ?? 1) - (sevRank[b.severity] ?? 1));
 }
 
-/** The All US counterpart of recentFor: active and in the window, wherever it
- *  went — no area filter at all. Announcements are kept (they are real
- *  recalls); the digest decides how to count them. */
-export function recentForUs(index, { sinceDays = 7 } = {}) {
-  if (!index || !Array.isArray(index.recalls)) return [];
-  const since = daysAgo(sinceDays);
-  return index.recalls
-    .filter((r) => r.status !== "ended" && String(r.date) >= since)
-    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || (sevRank[a.severity] ?? 1) - (sevRank[b.severity] ?? 1));
-}
-
 /* Store aisles, in the order a shopper walks them, mapped from category.js
  * keys. Categories that are not an aisle (snacks, pantry, beverages, sports,
  * a bare "food") are left out rather than forced into the nearest one — an
@@ -414,14 +323,23 @@ function newestIso(values) {
 
 /** Per-agency freshness, for "as of" lines and stale warnings.
  *
- *  @param index    the national index (or null)
- *  @param recallsResponseSources  optional `sources` array from /api/recalls
- *                  (fetchAll). When given, its live dates win over the index's.
+ *  @param index    the local dataset (data-sync `dataset`, whose `sources`
+ *                  is the manifest's) or the index file, or null
+ *  @param recallsResponseSources  optional array of per-feed sources
+ *                  ({name, ok, lastUpdated, fetchedAt}); the app no longer
+ *                  passes one — kept for the offline checks
+ *                  When given, its live dates win over the index's.
  *  @param opts.now for tests
  *  @returns {{source:'FDA'|'USDA FSIS'|'CPSC', asOf:string|null,
  *             kind:'updated'|'fetched', stale:boolean}[]}
  *  `asOf` is an ISO timestamp (an 'updated' date is midnight UTC of that day).
  *  Unknown dates are `asOf: null, stale: true` — never assumed fresh. */
+/* When our database last pulled a source: the manifest's `syncedAt`
+ * (/api/data), or `fetchedAt` in the committed index file's spelling. */
+function syncedOf(x) {
+  return x ? isoOf(x.syncedAt) || isoOf(x.fetchedAt) : null;
+}
+
 export function freshnessOf(index, recallsResponseSources = null, { now = Date.now() } = {}) {
   const src = (index && index.sources) || {};
   const live = Array.isArray(recallsResponseSources) ? recallsResponseSources.filter((x) => x && x.ok) : [];
@@ -439,10 +357,10 @@ export function freshnessOf(index, recallsResponseSources = null, { now = Date.n
     (src.fda && newestIso([src.fda.lastUpdated]));
   const fda = fdaUpdated
     ? entry("FDA", fdaUpdated, "updated")
-    : entry("FDA", newestIso(fdaLive.map((x) => x.fetchedAt)) || isoOf(src.fda && src.fda.fetchedAt), "fetched");
+    : entry("FDA", newestIso(fdaLive.map((x) => x.fetchedAt)) || syncedOf(src.fda), "fetched");
 
   const fetched = (source, prefix, key) =>
-    entry(source, newestIso(liveOf(prefix).map((x) => x.fetchedAt)) || isoOf(src[key] && src[key].fetchedAt), "fetched");
+    entry(source, newestIso(liveOf(prefix).map((x) => x.fetchedAt)) || syncedOf(src[key]), "fetched");
 
   return [fda, fetched("USDA FSIS", "USDA FSIS", "fsis"), fetched("CPSC", "CPSC", "cpsc")];
 }

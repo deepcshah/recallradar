@@ -31,6 +31,7 @@
  *     lastUpdatedByKind, activeCount, resolvedCount, partial? }
  */
 import { rankMatches } from "./_lib/lookup-rank.js";
+import { fdaId } from "../src/lib/sources.js";
 
 const KINDS = ["food", "drug", "device"];
 const LOOKBACK_DAYS = 1095; // three years: long enough to cover "I saw it on the news"
@@ -112,7 +113,7 @@ export default async function handler(req, res) {
     `&sort=report_date:desc&limit=${LIMIT}` + (key ? `&api_key=${key}` : "");
 
   const toMatch = (kind) => (r) => ({
-    id: `fda-${kind}-${r.recall_number || r.event_id}`,
+    id: fdaId(kind, r),
     source: { food: "FDA Food", drug: "FDA Drug", device: "FDA Device" }[kind],
     product: r.product_description || "",
     firm: r.recalling_firm || "",

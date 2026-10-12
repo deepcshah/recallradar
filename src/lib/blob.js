@@ -53,3 +53,27 @@ export function blobPutOptions(extra) {
     ...extra,
   };
 }
+
+/* Alert subscribers (push and email) can live in a store of their own.
+ *
+ * The main store holds the feed caches, which are written public, so it
+ * cannot simply be switched to private. Email subscriber files hold email
+ * addresses and must not be public files, so email alerts need a SEPARATE
+ * store, created private in Vercel, whose token goes in
+ * ALERTS_BLOB_READ_WRITE_TOKEN. When it is set, every alert read and write
+ * uses it with private access; when it is not, push keeps using the main
+ * store as before (PUSH_BLOB_ACCESS still applies) and email stays off. */
+export function alertsBlobToken() {
+  return process.env.ALERTS_BLOB_READ_WRITE_TOKEN || undefined;
+}
+export function alertsBlobAuth() {
+  const token = alertsBlobToken() || blobToken();
+  return token ? { token } : {};
+}
+export function alertsBlobAccess() {
+  if (alertsBlobToken()) return "private";
+  return process.env.PUSH_BLOB_ACCESS === "private" ? "private" : "public";
+}
+export function alertsBlobConfigured() {
+  return Boolean(alertsBlobToken() || blobToken());
+}

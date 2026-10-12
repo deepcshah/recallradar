@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LoaderCircle, RotateCw, Search, SearchX, TrendingUp, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowRight, LoaderCircle, RotateCw, ScanBarcode, SearchX, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import VerdictCard from "@/components/VerdictCard";
+import RecallRow, { shortVerdict, rowDate } from "@/components/RecallRow";
+import CategoryPills from "@/components/CategoryPills";
+import { countByPrimary, inPrimary, primaryNoun, PRIMARY_CATEGORIES } from "@/lib/primary-category";
 import FreshnessLine, { fmtAsOf, oldestAsOf } from "@/components/FreshnessLine";
-import { loadIndex, searchIndex, trending, liveLookup } from "@/lib/search-index";
-import { verdictFor, resolveLoc, VERDICTS, isAnnounced } from "@/lib/verdict";
+import { prepareSearch, searchIndex, liveLookup } from "@/lib/search-index";
+import { verdictFor, resolveLoc, VERDICTS } from "@/lib/verdict";
 import { relevanceOf } from "@/lib/relevance";
 import { cn } from "@/lib/utils";
 
@@ -13,9 +15,9 @@ import { cn } from "@/lib/utils";
  *
  * The rest of the app starts from a place and asks what reached it. People
  * mostly arrive the other way round: they saw a headline about a sausage and
- * want to know whether it is *their* sausage. This searches the national
- * index (every FDA, USDA and CPSC notice for the last year, ended ones
- * included) and answers each hit with verdictFor, grouped by that answer:
+ * want to know whether it is *their* sausage. This searches the local
+ * copy of our database (lib/data-sync.js: every FDA, USDA and CPSC notice
+ * for the last year, ended ones included) and answers each hit with verdictFor, grouped by that answer:
  *
  *   In your area            the notice names your state, or nationwide
  *   Region not stated       the notice names nowhere — not the same as "nowhere"
@@ -30,20 +32,23 @@ import { cn } from "@/lib/utils";
  *    car seats, boats, pesticides). It is grey, never green, and never says
  *    "safe".
  *
- * 2. "Not checked" is not "not found". When the index could not get FDA data
- *    (`sources.fda.ok === false`) — or simply has no FDA hit for the query —
- *    openFDA is asked directly through liveLookup, and while that is in
- *    flight the page says so. If that fails too, the empty-state headline
- *    stops claiming anything about the FDA.
+ * 2. "Not checked" is not "not found". When the database could not get FDA
+ *    data (`sources.fda.ok === false`) — or holds no strong match for the
+ *    query at all — openFDA is asked directly through liveLookup, as a last
+ *    resort, and while that is in flight the page says so. Rows that came
+ *    from it are labelled "From FDA directly". If it fails too, the
+ *    empty-state headline stops claiming anything about the FDA.
  *
- * 3. Without a location there is no verdict, only coverage. Every card then
- *    offers the one thing that would turn "sent to AZ, NM, TX" into an answer:
- *    "Check your state", which opens the location picker.
+ * 3. Without a location there is no verdict, only coverage. Each row then
+ *    says where the notice sent it ("Sent to AZ, NM, TX"), and the opened
+ *    recall offers "Check your state", which opens the location picker.
  *
  * Search is always national, in both scopes — "is the thing on the news
  * mine?" must never be scoped away. The global scope switch changes framing
- * only: Near me groups by the verdict for your state; All US is one flat list
- * ("3 recalls across the US"), and each card still carries its verdict line.
+ * only: Near me orders rows by the verdict for your state; All US keeps
+ * search order ("3 recalls across the US"). Every row carries its verdict as
+ * one short line; the full answer (quote, state map, follow, share) is the
+ * recall sheet a tap opens.
  * ───────────────────────────────────────────────────────────────────────── */
 
 const DEBOUNCE_MS = 80;
@@ -56,7 +61,6 @@ const RESULT_LIMIT = 40;
  * has sat unchanged this long is one somebody actually read the answer to;
  * anything shorter is a word on its way to being another word. */
 const SETTLED_MS = 1200;
-const TRENDING_N = 6;
 
 const NOT_COVERED = "vehicles & car seats (NHTSA), boats (Coast Guard), pesticides (EPA)";
 
@@ -82,10 +86,6 @@ function ago(iso) {
   return rtf.format(Math.round(hrs / 24), "day");
 }
 
-/* An FDA *announcement* (press release, not yet classified) is not an openFDA
- * enforcement hit: letting it count would stop the live openFDA check for a
- * query whose enforcement record the index does not have. */
-const isFda = (r) => String(r && r.source).startsWith("FDA") && !isAnnounced(r);
 
 /* ───────────────────────────── grouping ────────────────────────────────── */
 
@@ -129,8 +129,9 @@ function SourceRow({ name, covers, children }) {
 
 function freshness(src) {
   if (!src) return "not in the index";
-  if (!src.ok) return src.fetchedAt ? `last good copy ${ago(src.fetchedAt)}` : "not in the index";
-  return `${src.count} notices · updated ${ago(src.fetchedAt)}`;
+  const at = src.syncedAt || src.fetchedAt;
+  if (!src.ok) return at ? `last good copy ${ago(at)}` : "not in the index";
+  return `${src.count} notices · updated ${ago(at)}`;
 }
 
 function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
@@ -140,36 +141,36 @@ function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
 
   let fdaLine;
   if (fdaInIndex) fdaLine = freshness(s.fda);
-  else if (live.status === "pending") fdaLine = "not in today's index · checking openFDA directly…";
+  else if (live.status === "pending") fdaLine = "not in our database · checking openFDA directly…";
   else if (live.status === "done") {
     const asOf = live.records && live.records.lastUpdated;
     fdaLine = asOf
-      ? `not in today's index · checked openFDA directly: its data runs to ${fmtAsOf(asOf)}`
-      : "not in today's index · checked openFDA directly just now";
+      ? `not in our database · checked openFDA directly: its data runs to ${fmtAsOf(asOf)}`
+      : "not in our database · checked openFDA directly just now";
   }
-  else if (live.status === "idle") fdaLine = `not in today's index · type ${LIVE_MIN_CHARS}+ letters to check openFDA directly`;
-  else fdaLine = "not in today's index, and openFDA couldn't be reached — not checked";
+  else if (live.status === "idle") fdaLine = `not in our database · type ${LIVE_MIN_CHARS}+ letters to check openFDA directly`;
+  else fdaLine = "not in our database, and openFDA couldn't be reached — not checked";
 
   return (
-    <div className="fade-item rounded-xl border border-dashed border-line bg-panel-2/40 px-4 py-5 sm:px-5">
-      <div className="flex items-start gap-3">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-full border border-line bg-panel-3">
-          <SearchX aria-hidden="true" className="size-4 text-fog" />
+    <div className="fade-item card px-5 py-5 sm:px-6">
+      <div className="flex items-start gap-3.5">
+        <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-sunken">
+          <SearchX aria-hidden="true" className="size-5 text-fog" />
         </span>
         <div className="min-w-0">
-          <p className="text-sm font-semibold leading-snug text-paper">
+          <p className="text-[15px] font-semibold leading-snug text-paper">
             {fdaChecked
               ? <>No FDA, USDA or CPSC recall matches “{query}” in {span}.</>
               : <>No USDA or CPSC recall matches “{query}” in {span}. FDA recalls couldn't be checked just now.</>}
           </p>
-          <p className="mt-1 text-xs leading-relaxed text-fog">
+          <p className="mt-1 text-[13px] leading-relaxed text-fog">
             That means no notice we hold uses those words — not that the product has never been
             recalled, and not that any particular package is fine.
           </p>
         </div>
       </div>
 
-      <p className="microlabel mt-4">Checked</p>
+      <p className="microlabel mt-5">What we checked</p>
       <ul className="mt-1 divide-y divide-line">
         <SourceRow name="FDA" covers="food, drugs, medical devices">{fdaLine}</SourceRow>
         <SourceRow name="USDA FSIS" covers="meat, poultry, eggs">{freshness(s.fsis)}</SourceRow>
@@ -208,10 +209,10 @@ function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
         );
       })()}
 
-      <p className="microlabel mt-4">Not covered here</p>
+      <p className="microlabel mt-5">Not covered here</p>
       <p className="mt-1 text-[13px] leading-relaxed text-fog">{NOT_COVERED}.</p>
 
-      <p className="microlabel mt-4">Try</p>
+      <p className="microlabel mt-5">Try</p>
       <ul className="mt-1 list-disc pl-5 text-[13px] leading-relaxed text-fog">
         <li>the brand on the package, or the company name (notices often use the maker, not the store brand)</li>
         <li>one distinctive word — “sausage” rather than “Italian pork sausage links”</li>
@@ -226,51 +227,62 @@ function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
 /**
  * @param {object}   props
  * @param {object}   [props.loc]             { state, stateAbbr } or null
- * @param {Function} [props.onOpenRecall]    (record) => void, when a card is opened
- * @param {string}   [props.initialRecallId] open this recall's card on load (/r/:id deep links)
+ * @param {object}   [props.index]           data-sync `dataset` ({ recalls, sources }), or null
+ * @param {Map}      [props.byId]            data-sync `byId`
+ * @param {string}   [props.dataStatus]      data-sync `status`
+ * @param {boolean}  [props.dataPartial]     data-sync `partial` (stored months still being read)
+ * @param {Function} [props.onRetry]         () => void, retry a failed first sync
+ * @param {Function} [props.onOpenRecall]    (record) => void, a result row was tapped
+ *                                           (the page opens the recall sheet)
+ * @param {string}   [props.initialRecallId] a shared recall (/r/:id deep links)
+ * @param {Function} [props.onOpenShared]    (record) => void, once, when that
+ *                                           shared record is known
+ * @param {Function} [props.onScan]          () => void; the barcode button in the field
+ * @param {node}     [props.children]        shown under the box while nothing is typed
  * @param {boolean}  [props.autoFocus]       focus the search box on mount
- * @param {Function} [props.onRequestLocation] () => void; with loc null, each
- *                                           card's "Check your state" calls this
  * @param {string}   [props.scope]           "near" | "us" — framing only (see top)
  * @param {object[]} [props.freshness]       freshnessOf() entries, for empty
  *                                           results and "not reported" cards
  * @param {Function} [props.onSearch]      ({ query, results, live }) => void, once per
  *                                           query that has settled (see SETTLED_MS)
+ * @param {string}   [props.category]        primary category key ("all" | food | meat | drug | device | product)
+ * @param {Function} [props.onCategory]      (key) => void — the pills under the box
+ * @param {Map}      [props.listCounts]      pill counts for the list under the box (no query)
  * @param {string}   [props.className]
  */
 export default function RecallSearch({
-  loc, onOpenRecall, initialRecallId, autoFocus = false, onRequestLocation, onSearch, className,
-  scope = "near", freshness,
+  loc, onOpenRecall, onOpenShared, initialRecallId, autoFocus = false, onSearch, onScan, className,
+  scope = "near", freshness, children, index = null, byId = null, dataStatus = "empty", dataPartial = false, onRetry,
+  category = "all", onCategory, listCounts,
 }) {
-  const [index, setIndex] = useState(null);
-  const [loadError, setLoadError] = useState("");
-  const [loadTry, setLoadTry] = useState(0);
+  /* Nothing on the device and the sync could not get any: say so, rather
+   * than spin. With data on the device, a failed refresh is the list's
+   * business (LatestRecalls' SyncNote), not search's. */
+  const loadError = !index && (dataStatus === "offline" || dataStatus === "error") ? dataStatus : "";
+  /* Still fetching chunks beyond `latest`: a miss is not yet a miss. */
+  const complete = !!index && !dataPartial && dataStatus !== "syncing" && dataStatus !== "empty";
+  const [engineRev, setEngineRev] = useState(0);
   const [query, setQuery] = useState("");
   const [q, setQ] = useState("");               // debounced
-  const [openId, setOpenId] = useState(initialRecallId || null);
   const [live, setLive] = useState({ q: "", status: "idle", records: [] });
   const liveCache = useRef(new Map());
   const inputRef = useRef(null);
   const L = resolveLoc(loc);
   const flat = scope === "us" || !L;
 
-  // ── the index ──────────────────────────────────────────────────────────
+  // ── the search engine, built off the critical path ─────────────────────
   useEffect(() => {
+    if (!index) return undefined;
     let alive = true;
-    setLoadError("");
-    loadIndex()
-      .then((ix) => { if (alive) setIndex(ix); })
-      .catch((err) => { if (alive) setLoadError((err && err.message) || "couldn't load"); });
-    return () => { alive = false; };
-  }, [loadTry]);
+    const t = setTimeout(() => {
+      prepareSearch(index).then(() => { if (alive) setEngineRev((x) => x + 1); }).catch(() => { /* scan fallback */ });
+    }, 0);
+    return () => { alive = false; clearTimeout(t); };
+  }, [index]);
 
   useEffect(() => {
     if (autoFocus) inputRef.current?.focus({ preventScroll: true });
   }, [autoFocus]);
-
-  useEffect(() => {
-    if (initialRecallId) setOpenId(initialRecallId);
-  }, [initialRecallId]);
 
   // ── typing ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -280,14 +292,17 @@ export default function RecallSearch({
 
   const hits = useMemo(
     () => (index && q ? searchIndex(index, q, { limit: RESULT_LIMIT }) : []),
-    [index, q],
+    [index, q, engineRev], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const fdaInIndex = !!(index && index.sources && index.sources.fda && index.sources.fda.ok);
-  /* Only a real FDA answer stops the live check: a cookie whose ingredient
-   * list mentions sugar is not the sugar recall, and must not stand in for it. */
-  const wantLive = !!index && q.length >= LIVE_MIN_CHARS &&
-    (!fdaInIndex || !hits.some((r) => isFda(r) && relevanceOf(r, q) >= 2));
+  /* /api/lookup is the last resort, asked only when the local database has
+   * no strong match (a cookie whose ingredient list mentions sugar is not a
+   * strong match for "sugar"), or has no FDA data at all — and only once the
+   * whole database is on the device, so a month still downloading is not
+   * mistaken for a miss. A barcode has no "strong": any hit is the answer. */
+  const strongLocal = /^\d[\d\s-]*$/.test(q) ? hits.length > 0 : hits.some((r) => relevanceOf(r, q) >= 2);
+  const wantLive = complete && q.length >= LIVE_MIN_CHARS && (!fdaInIndex || !strongLocal);
 
   /* openFDA, directly — see rule 2 at the top. One request per settled query,
    * cached for the life of the component so backspacing to an earlier query
@@ -322,7 +337,9 @@ export default function RecallSearch({
   const { results, weak } = useMemo(() => {
     if (!q) return { results: [], weak: [] };
     const seen = new Set(hits.map((r) => r.id));
-    const extra = live.q === q ? live.records.filter((r) => r && !seen.has(r.id)) : [];
+    const extra = live.q === q
+      ? live.records.filter((r) => r && !seen.has(r.id)).map((r) => ({ ...r, viaLookup: true }))
+      : [];
     const all = [...hits, ...extra];
     if (/^\d[\d\s-]*$/.test(q)) return { results: all, weak: [] }; // a barcode has no "about"
     const rel = new Map(all.map((r) => [r.id, relevanceOf(r, q)]));
@@ -331,17 +348,29 @@ export default function RecallSearch({
   }, [hits, live, q]);
   const shown = useMemo(() => (showWeak ? [...results, ...weak] : results), [results, weak, showWeak]);
 
-  /* All US: one list, in search order (the index's relevance, then what FDA
-   * answered live). The verdict still rides on each card; it just isn't the
-   * heading, because this view is about the country, not about you. Ended
-   * recalls still sink to the bottom: they are the least likely answer. */
-  const groups = useMemo(() => {
-    if (!flat) return groupsFor(shown, L);
+  /* One list, compact rows, the verdict on each. Near me keeps the order the
+   * verdict groups used to impose — in your state, region not stated,
+   * announced, not reported, ended — without a heading per group: the line on
+   * every row already says it. All US keeps search order (the index's
+   * relevance, then what FDA answered live). Ended recalls sink either way:
+   * they are the least likely answer. */
+  /* Relevance first: someone searching "sugar" wants the sugar recall, even
+   * when it went to other states, before a nationwide cough drop that merely
+   * mentions sugar. Within a relevance tier, Near me keeps the verdict order
+   * (in your state, region not stated, announced, not reported); ended
+   * recalls sink either way. The verdict line on each row says where it went. */
+  const ordered = useMemo(() => {
     const ended = (r) => (r.status ? r.status === "ended" : r.active === false);
-    const list = [...shown.filter((r) => !ended(r)), ...shown.filter(ended)];
-    const n = list.length;
-    return n ? [{ key: "us", label: `${n} ${n === 1 ? "recall" : "recalls"} across the US`, records: list, flat: true }] : [];
-  }, [shown, flat, L && L.stateAbbr]); // eslint-disable-line react-hooks/exhaustive-deps
+    const groupRank = new Map();
+    if (!flat) groupsFor(shown, L).forEach((g, i) => g.records.forEach((r) => groupRank.set(r.id, i)));
+    const pos = new Map(shown.map((r, i) => [r.id, i]));
+    const rel = new Map(shown.map((r) => [r.id, relevanceOf(r, q)]));
+    return [...shown].sort((a, b) =>
+      (ended(a) - ended(b)) ||
+      (rel.get(b.id) - rel.get(a.id)) ||
+      ((groupRank.get(a.id) ?? 0) - (groupRank.get(b.id) ?? 0)) ||
+      (pos.get(a.id) - pos.get(b.id)));
+  }, [shown, flat, q, L && L.stateAbbr]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* Reported once per settled query, through a ref so a parent passing a
    * fresh callback each render cannot re-fire it. The count is read when the
@@ -361,37 +390,75 @@ export default function RecallSearch({
     return () => clearTimeout(t);
   }, [q, index]);
 
-  const chips = useMemo(() => (index ? trending(index, TRENDING_N) : []), [index]);
-
-  const pinned = useMemo(() => {
+  const inIndex = useMemo(() => {
     if (!initialRecallId || !index) return null;
-    return index.recalls.find((r) => r.id === initialRecallId) || null;
-  }, [index, initialRecallId]);
+    return (byId && byId.get(initialRecallId)) || index.recalls.find((r) => r.id === initialRecallId) || null;
+  }, [index, byId, initialRecallId]);
 
-  /* The callback runs outside the state updater: StrictMode calls updaters
-   * twice, and onOpenRecall is typically analytics or a URL change. */
-  const toggle = useCallback((r) => {
-    const opening = openId !== r.id;
-    setOpenId(opening ? r.id : null);
-    if (opening && onOpenRecall) onOpenRecall(r);
-  }, [openId, onOpenRecall]);
+  /* A shared id the local database lacks once it is complete — it can lag a
+   * refresh, and an FDA id can be answered from openFDA directly — is asked
+   * of /api/share before the card says it couldn't be found. */
+  const [fetched, setFetched] = useState({ id: null, status: "idle", record: null });
+  useEffect(() => {
+    if (!initialRecallId || !complete || inIndex || fetched.id === initialRecallId) return;
+    let alive = true;
+    setFetched({ id: initialRecallId, status: "pending", record: null });
+    fetch(`/api/share?format=json&id=${encodeURIComponent(initialRecallId)}`, { headers: { Accept: "application/json" } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b) => { if (alive) setFetched({ id: initialRecallId, status: "done", record: (b && b.record) || null }); })
+      .catch(() => { if (alive) setFetched({ id: initialRecallId, status: "done", record: null }); });
+    return () => { alive = false; };
+  }, [initialRecallId, complete, inIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pinned = inIndex || (fetched.id === initialRecallId ? fetched.record : null);
+  const pinnedPending = !inIndex && fetched.id === initialRecallId && fetched.status === "pending";
 
-  const cardZip = !L && typeof onRequestLocation === "function" ? () => onRequestLocation() : undefined;
+  /* A shared link opens its recall in the app's sheet, once, as soon as the
+   * record is known (App tracks that view itself). */
+  const sharedOpenedRef = useRef(null);
+  useEffect(() => {
+    if (!pinned || sharedOpenedRef.current === pinned.id) return;
+    sharedOpenedRef.current = pinned.id;
+    if (onOpenShared) onOpenShared(pinned);
+  }, [pinned]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const livePending = live.q === q && live.status === "pending";
   const liveFailed = live.q === q && live.status === "error";
   const fdaChecked = fdaInIndex || (live.q === q && live.status === "done");
 
-  let n = 0; // running index for the staggered entrance
+  /* The pills count what is below them: search results while there is a
+   * query (before the category filter, so every pill says what it would
+   * show), the latest list otherwise. */
+  const resultCounts = useMemo(() => (q ? countByPrimary(ordered) : null), [q, ordered]);
+  const filtered = useMemo(
+    () => (category === "all" ? ordered : ordered.filter((r) => inPrimary(r, category))),
+    [ordered, category],
+  );
+  const catLabel = (PRIMARY_CATEGORIES.find((c) => c.key === category) || {}).label || "";
+  const hiddenByCategory = category !== "all" && ordered.length > 0 && filtered.length === 0;
+
+  const count = filtered.length;
+  const stateName = L && L.state;
+
+  const submit = (e) => {
+    e.preventDefault();
+    setQ(query.trim());
+    /* On a phone the keyboard covers the answers; Search puts it away. */
+    inputRef.current?.blur();
+  };
 
   return (
-    <section className={cn("flex flex-col gap-4", className)} aria-label="Search recalls">
-      {/* ── the box ── */}
-      <div>
-        <label htmlFor="rs-query" className="mb-2 block text-lg font-bold leading-tight text-paper sm:text-xl">
-          Heard about a recall? Search it
-        </label>
+    <section className={cn("flex flex-col", className)} aria-label="Search recalls">
+      {/* ── the question, and the box ── */}
+      <div className="flex flex-col items-center text-center">
+        <h1 className="display text-paper">
+          <label htmlFor="rs-query">Is it recalled?</label>
+        </h1>
+        <p className="mt-3 max-w-[30ch] text-[16px] leading-snug text-fog sm:text-[17px]">
+          Check what you own, or plan to buy.
+        </p>
+      </div>
+      <form role="search" aria-label="Recall search" onSubmit={submit} className="search-card mt-7 p-2 sm:mt-9">
         <div className="relative">
-          <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-3.5 size-5 -translate-y-1/2 text-subtle" />
           <input
             ref={inputRef}
             id="rs-query"
@@ -399,15 +466,14 @@ export default function RecallSearch({
             enterKeyHint="search"
             autoComplete="off"
             spellCheck={false}
-            placeholder="Product, brand or barcode"
+            placeholder="Search a product or brand"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Escape" && query) { e.preventDefault(); setQuery(""); } }}
             className={cn(
-              "h-13 w-full rounded-xl border border-line-strong bg-panel-2 pr-12 pl-11 text-base text-paper",
-              "shadow-[var(--rr-field)] transition-shadow placeholder:text-subtle",
-              "focus-visible:border-mint/60 focus-visible:outline-none",
-              "focus-visible:shadow-[var(--rr-field),0_0_0_3px_var(--rr-accent-soft)]",
+              "h-12 w-full rounded-2xl bg-transparent pl-3.5 text-[17px] text-paper sm:text-[18px]",
+              query ? "pr-12" : "pr-3.5",
+              "placeholder:text-subtle focus-visible:outline-none",
               "[&::-webkit-search-cancel-button]:appearance-none",
             )}
           />
@@ -416,89 +482,109 @@ export default function RecallSearch({
               type="button"
               onClick={() => { setQuery(""); inputRef.current?.focus(); }}
               aria-label="Clear search"
-              className="absolute top-1/2 right-1.5 grid size-10 -translate-y-1/2 place-items-center rounded-lg text-fog hover:bg-panel-3 hover:text-paper"
+              className="icon-btn absolute right-0 top-1/2 -translate-y-1/2"
             >
-              <X aria-hidden="true" className="size-4" />
+              <X aria-hidden="true" className="size-[18px]" />
             </button>
           )}
         </div>
-      </div>
+        <div className="mt-1 flex items-center justify-between gap-2">
+          {onScan ? (
+            <button
+              id="btn-scan"
+              type="button"
+              onClick={onScan}
+              title="Scan a barcode"
+              className="inline-flex h-11 items-center gap-2 rounded-full bg-panel-2 pl-3 pr-4 text-[14px] font-medium text-paper shadow-[var(--rr-shadow-1),inset_0_0_0_1px_var(--rr-line)] transition-[transform,box-shadow] hover:shadow-[var(--rr-shadow-2),inset_0_0_0_1px_var(--rr-line-strong)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint"
+            >
+              <ScanBarcode aria-hidden="true" className="size-[18px] text-fog" />
+              Scan a barcode
+            </button>
+          ) : <span />}
+          <button
+            type="submit"
+            aria-label="Search"
+            disabled={!query.trim()}
+            className={cn(
+              "grid size-11 shrink-0 place-items-center rounded-full transition-[background-color,color,transform] active:scale-[0.94]",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--rr-surface)]",
+              query.trim() ? "bg-mint text-mint-ink shadow-[var(--rr-shadow-2)]" : "bg-[var(--rr-track)] text-subtle",
+            )}
+          >
+            <ArrowRight aria-hidden="true" className="size-5" strokeWidth={2.25} />
+          </button>
+        </div>
+      </form>
+      {onCategory && (
+        <CategoryPills
+          className="mt-3"
+          value={category}
+          onChange={onCategory}
+          counts={q ? resultCounts : listCounts}
+          label={q ? "Filter results by category" : "Filter recalls by category"}
+        />
+      )}
 
       {/* ── loading / failure ── */}
       {!index && !loadError && (
-        <p className="flex items-center gap-2 text-[13px] text-fog" role="status">
+        <p className="mt-3 flex items-center gap-2 text-[13px] text-fog" role="status">
           <LoaderCircle aria-hidden="true" className="size-4 animate-spin" />
           Loading every recall from the last year…
         </p>
       )}
       {loadError && (
-        <div className="flex flex-wrap items-center gap-3 rounded-xl border border-line bg-panel-2 px-3.5 py-3" role="alert">
+        <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-line bg-panel-2 px-3.5 py-3" role="alert">
           <p className="min-w-0 flex-1 text-[13px] leading-snug text-fog">
-            <span className="font-semibold text-paper">The recall index didn't load.</span>{" "}
+            <span className="font-semibold text-paper">
+              {loadError === "offline" ? "You're offline, and no recall data is saved on this device yet." : "The recall data didn't load."}
+            </span>{" "}
             Nothing has been searched yet — this is not an empty result.
           </p>
-          <Button type="button" size="sm" variant="secondary" onClick={() => setLoadTry((x) => x + 1)}>
+          <Button type="button" size="sm" variant="secondary" onClick={() => onRetry && onRetry()}>
             <RotateCw aria-hidden="true" /> Try again
           </Button>
         </div>
       )}
 
-      {/* ── a linked recall (/r/:id) ── */}
-      {!q && initialRecallId && index && (
-        pinned ? (
-          <VerdictCard
-            recall={pinned}
-            loc={L}
-            eyebrow="Shared with you"
-            expanded={openId === pinned.id}
-            onToggle={() => toggle(pinned)}
-            onRequestLocation={cardZip}
-            freshness={freshness}
-            className="fade-item"
-          />
+      {/* ── a linked recall (/r/:id): opened in the sheet; only the waits and
+             the miss are said here ── */}
+      {!q && initialRecallId && index && !pinned && (
+        pinnedPending || fetched.id !== initialRecallId ? (
+          <p className="mt-3 flex items-center gap-2 text-[13px] text-fog">
+            <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" /> Opening the shared recall…
+          </p>
         ) : (
-          <p className="rounded-xl border border-dashed border-line px-3.5 py-3 text-[13px] leading-relaxed text-fog">
-            The shared recall isn't in our index of {lookbackPhrase(index.lookbackDays)} — it may be
-            older, or its notice may have been withdrawn. Try searching for the product by name.
+          <p className="mt-3 rounded-xl border border-dashed border-line px-3.5 py-3 text-[13px] leading-relaxed text-fog">
+            We couldn't find the recall in this link ({initialRecallId}) in our index of{" "}
+            {lookbackPhrase(index.lookbackDays)} or at FDA — it may be older, or its notice may have been
+            withdrawn. Try searching for the product by name.
           </p>
         )
       )}
 
-      {/* ── empty box: trending ── */}
-      {!q && index && chips.length > 0 && (
-        <div>
-          <p className="microlabel flex items-center gap-1.5">
-            <TrendingUp aria-hidden="true" className="size-3.5" /> Recent serious recalls
-          </p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {chips.map((c) => (
-              <button
-                key={c.id || c.query}
-                type="button"
-                onClick={() => { setQuery(c.query); setQ(c.query); }}
-                className="chip chip-off"
-              >
-                {/* .chip is unlayered CSS and outranks utilities on the same
-                 * element, so the case and tracking reset lives on a child —
-                 * the same move App.jsx makes. These are content, not labels. */}
-                <span className="text-[12px] normal-case tracking-normal">{c.label}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* ── nothing typed: whatever the page puts here (the latest list) ── */}
+      {!q && children && <div className="mt-9">{children}</div>}
 
       {/* ── results ── */}
       {q && index && (
-        <div className="flex flex-col gap-4">
+        <div className="mt-8 flex flex-col">
           <p className="sr-only" role="status" aria-live="polite">
-            {results.length
-              ? `${results.length} ${results.length === 1 ? "recall matches" : "recalls match"} ${q}`
+            {count
+              ? `${count} ${count === 1 ? "recall matches" : "recalls match"} ${q}${catLabel && category !== "all" ? ` in ${catLabel}` : ""}`
               : livePending ? `Checking FDA for ${q}` : `No recall matches ${q}`}
           </p>
 
+          {count > 0 && (
+            <div className="flex items-baseline justify-between gap-3">
+              <h2 className="section-title text-paper">Results</h2>
+              <p className="tnum truncate text-[13px] text-subtle">
+                {count} {category !== "all" ? `${primaryNoun(category)} ` : ""}{count === 1 ? "recall" : "recalls"}{flat ? " across the US" : ` · checked for ${stateName}`}
+              </p>
+            </div>
+          )}
+
           {(livePending || (liveFailed && !fdaInIndex && results.length > 0)) && (
-            <p className="flex items-center gap-2 text-xs text-fog">
+            <p className="mt-1 flex items-center gap-2 text-xs text-fog">
               {livePending && <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />}
               {livePending
                 ? "Checking FDA directly…"
@@ -507,42 +593,43 @@ export default function RecallSearch({
           )}
 
           {live.q === q && live.status === "done" && Number(live.records.total) > live.records.length && (
-            <p className="text-xs text-fog tnum">
+            <p className="mt-1 text-xs text-fog tnum">
               FDA has {live.records.total} matching notices; these are the {live.records.length} closest to “{q}”.
               A more specific word narrows it.
             </p>
           )}
 
-          {groups.map((g) => (
-            <div key={g.key}>
-              {g.flat ? (
-                <h3 className="mb-2 text-[13px] font-semibold text-paper tnum">{g.label}</h3>
-              ) : (
-                <h3 className="microlabel mb-2">
-                  {g.label} <span className="tnum font-normal">· {g.records.length}</span>
-                </h3>
-              )}
-              <ul className="flex flex-col gap-2.5">
-                {g.records.map((r) => (
-                  <li key={r.id}>
-                    <VerdictCard
-                      recall={r}
-                      loc={L}
-                      expanded={openId === r.id}
-                      onToggle={() => toggle(r)}
-                      onRequestLocation={cardZip}
-                      freshness={freshness}
-                      className="fade-item"
-                      style={{ animationDelay: `calc(var(--rr-card-stagger, 50ms) * ${Math.min(n++, 8)})` }}
-                    />
-                  </li>
-                ))}
-              </ul>
+          {hiddenByCategory && (
+            <div className="card px-5 py-5 text-[14px] leading-relaxed text-fog">
+              <p>
+                <span className="font-semibold text-paper">
+                  {ordered.length} {ordered.length === 1 ? "recall matches" : "recalls match"} “{q}”, none of them in {catLabel}.
+                </span>{" "}
+                We searched every category; the filter is hiding the rest.
+              </p>
+              <button type="button" onClick={() => onCategory && onCategory("all")}
+                      className="tap mt-2 inline-flex items-center gap-1 text-[14px] font-semibold text-mint hover:underline">
+                Show all {ordered.length} <ArrowRight aria-hidden="true" className="size-4" />
+              </button>
             </div>
-          ))}
+          )}
+
+          {count > 0 && (
+            <ul className="mt-3 flex flex-col">
+              {filtered.map((r) => (
+                <RecallRow
+                  key={r.id}
+                  recall={r}
+                  verdict={shortVerdict(r, L)}
+                  meta={[r.viaLookup ? "From FDA directly" : null, rowDate(r), r.firm].filter(Boolean).join(" · ")}
+                  onOpen={onOpenRecall}
+                />
+              ))}
+            </ul>
+          )}
 
           {weak.length > 0 && (
-            <p className="text-[12px] leading-snug text-fog">
+            <p className="mt-3 text-[13px] leading-snug text-fog">
               {showWeak
                 ? <>Including {weak.length} {weak.length === 1 ? "notice" : "notices"} that {weak.length === 1 ? "mentions" : "mention"} “{q}” only in passing. </>
                 : <>{weak.length} more {weak.length === 1 ? "notice mentions" : "notices mention"} “{q}” only in passing, such as in an ingredient list. </>}
@@ -561,6 +648,9 @@ export default function RecallSearch({
             <p className="text-[13px] text-fog">
               Nothing in the USDA or CPSC notices for “{q}”. Still waiting on FDA before saying more.
             </p>
+          )}
+          {count > 0 && freshness && freshness.length > 0 && (
+            <FreshnessLine entries={freshness} className="mt-3" />
           )}
         </div>
       )}
