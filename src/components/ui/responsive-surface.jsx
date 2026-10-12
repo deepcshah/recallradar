@@ -155,13 +155,12 @@ export function ResponsiveSurface({
   if (!mounted) return null;
 
   const header = renderHeader ? renderHeader(!md) : (
-    <div className="relative flex shrink-0 items-center gap-2 px-4 pb-2 pt-4">
-      {!md && <span aria-hidden="true" className="absolute inset-x-0 top-1.5 mx-auto h-1 w-9 rounded-full bg-line-strong" />}
-      <p id={titleId} className="text-sm font-bold">{title}</p>
+    <div className="relative flex shrink-0 items-center gap-2 px-5 pb-2 pt-5">
+      {!md && <span aria-hidden="true" className="sheet-grabber absolute inset-x-0 top-2" />}
+      <p id={titleId} className="text-[17px] font-semibold tracking-tight">{title}</p>
       {!md && (
-        <button type="button" onClick={onClose} aria-label="Close"
-                className="ml-auto grid size-8 place-items-center rounded-lg text-fog hover:bg-panel-3 hover:text-paper">
-          <X className="size-4" />
+        <button type="button" onClick={onClose} aria-label="Close" className="icon-btn -mr-2 ml-auto">
+          <X className="size-[18px]" />
         </button>
       )}
     </div>
@@ -179,7 +178,7 @@ export function ResponsiveSurface({
         tabIndex={-1}
         style={{ left: pos.left, top: pos.top, width: pos.width, maxHeight: pos.maxHeight }}
         className={cn(
-          "popover-panel fixed z-[70] flex flex-col overflow-hidden rounded-2xl border border-line bg-panel shadow-[var(--rr-shadow-3)]",
+          "popover-panel fixed z-[70] flex flex-col overflow-hidden rounded-3xl bg-panel shadow-[var(--rr-shadow-3),0_0_0_1px_var(--rr-glass-line)]",
           shown && "is-shown", !shown && "pointer-events-none", className,
         )}
       >
@@ -192,7 +191,7 @@ export function ResponsiveSurface({
 
   return createPortal(
     <div className={"fixed inset-0 z-[75] " + (shown ? "" : "pointer-events-none")}>
-      <div className={"sheet-scrim absolute inset-0 bg-ink/60 backdrop-blur-[1px] " + (shown ? "is-shown" : "")}
+      <div className={"sheet-scrim absolute inset-0 bg-[var(--rr-scrim)] " + (shown ? "is-shown" : "")}
            onClick={onClose} />
       <div
         ref={boxRef}
@@ -204,7 +203,7 @@ export function ResponsiveSurface({
         tabIndex={-1}
         className={cn(
           "sheet-panel absolute inset-x-0 bottom-0 flex max-h-[85dvh] flex-col overflow-hidden",
-          "rounded-t-2xl border border-b-0 border-line bg-panel shadow-[var(--rr-shadow-3)]",
+          "rounded-t-[28px] bg-panel shadow-[var(--rr-shadow-3)]",
           shown && "is-shown", className,
         )}
         style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}

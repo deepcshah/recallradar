@@ -84,8 +84,8 @@ function usePlacement({ open, side, anchorRef, bubbleRef, onDismiss }) {
 }
 
 const BUBBLE_CLASS =
-  "pop-in pointer-events-none fixed z-[70] max-w-[min(20rem,calc(100vw-1rem))] " +
-  "rounded-lg border border-line bg-panel shadow-[var(--rr-shadow-3)]";
+  "pop-in pointer-events-none fixed z-[90] max-w-[min(20rem,calc(100vw-1rem))] " +
+  "rounded-2xl border border-line bg-panel shadow-[var(--rr-shadow-3)]";
 
 /* ───────────────────────────────── Tooltip ─────────────────────────────── */
 

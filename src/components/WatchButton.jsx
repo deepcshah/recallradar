@@ -53,7 +53,7 @@ function bestCopy(recall) {
  * @param {object}  props.recall
  * @param {boolean} [props.compact]  a text-link sized control for list cards
  */
-export default function WatchButton({ recall, compact = false, className }) {
+export default function WatchButton({ recall, compact = false, variant, className }) {
   const id = recall && recall.id;
   const on = useWatching(id);
   const [msg, setMsg] = useState("");
@@ -81,6 +81,36 @@ export default function WatchButton({ recall, compact = false, className }) {
 
   const label = on ? "Following updates" : "Notify me about updates";
   const Icon = on ? BellRing : BellPlus;
+
+  /* The sheet's floating action bar: the primary action, full height, with
+   * its confirmation floating above the bar rather than pushing it around. */
+  if (variant === "bar") {
+    return (
+      <span className={cn("relative flex", className)}>
+        <button
+          type="button"
+          onClick={toggle}
+          aria-pressed={on}
+          className={cn(
+            "inline-flex h-12 w-full min-w-0 items-center justify-center gap-2 rounded-full px-5 text-[15px] font-semibold",
+            "transition-[transform,background-color,color] active:scale-[0.97]",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--rr-surface)]",
+            on ? "bg-panel-2 text-paper shadow-[inset_0_0_0_1px_var(--rr-line-strong)]" : "bg-mint text-mint-ink shadow-[var(--rr-shadow-2)]",
+          )}
+        >
+          <Icon className="size-[18px] shrink-0" aria-hidden="true" />
+          <span className="truncate">{on ? "Following updates" : "Notify me"}</span>
+          {!on && <span className="sr-only"> about updates to this recall</span>}
+        </button>
+        {msg && (
+          <span role="status"
+                className="pop-in absolute bottom-full left-0 mb-2 max-w-[min(20rem,80vw)] rounded-2xl bg-paper px-3.5 py-2 text-[13px] font-medium leading-snug text-ink shadow-[var(--rr-shadow-3)]">
+            {msg}
+          </span>
+        )}
+      </span>
+    );
+  }
 
   if (compact) {
     return (

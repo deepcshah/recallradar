@@ -43,7 +43,7 @@ export function FilterButton({ open, count, onClick, id }) {
       aria-haspopup="dialog"
       onClick={onClick}
       className={cn(
-        "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg border px-3 text-[13px] font-semibold",
+        "inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full border px-4 text-[13px] font-semibold pointer-coarse:h-11",
         "shadow-[var(--rr-bevel),var(--rr-shadow-1)] transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60",
         count > 0
@@ -227,9 +227,9 @@ export function FilterSheet({ open, onClose, anchored, triggerId = "btn-filters"
       {/* The grabber is decoration on desktop and a signal on a phone: this
           panel came up from the bottom and goes back down. */}
       {!anchored && (
-        <span aria-hidden="true" className="absolute inset-x-0 top-1.5 mx-auto h-1 w-9 rounded-full bg-line-strong" />
+        <span aria-hidden="true" className="sheet-grabber absolute inset-x-0 top-2" />
       )}
-      <p className={cn("text-sm font-bold", !anchored && "mt-1.5")}>Filters &amp; sort</p>
+      <p className={cn("text-[17px] font-semibold tracking-tight", !anchored && "mt-1.5")}>Filters &amp; sort</p>
       {count > 0 && (
         <button
           type="button"
@@ -243,7 +243,7 @@ export function FilterSheet({ open, onClose, anchored, triggerId = "btn-filters"
         type="button"
         onClick={onClose}
         aria-label="Close filters"
-        className={cn("ml-auto grid size-8 place-items-center rounded-lg text-fog hover:bg-panel-3 hover:text-paper", !anchored && "mt-1.5")}
+        className={cn("ml-auto grid size-10 place-items-center rounded-full text-fog hover:bg-panel-3 hover:text-paper pointer-coarse:size-11", !anchored && "mt-1.5")}
       >
         <X className="size-4" />
       </button>
@@ -300,7 +300,7 @@ export function FilterSheet({ open, onClose, anchored, triggerId = "btn-filters"
           <button
             type="button"
             onClick={onClose}
-            className="h-11 shrink-0 rounded-lg border border-mint bg-mint px-5 text-sm font-semibold text-mint-ink shadow-[var(--rr-bevel-strong),var(--rr-shadow-1)] active:translate-y-px"
+            className="h-12 shrink-0 rounded-full border border-mint bg-mint px-6 text-[15px] font-semibold text-mint-ink shadow-[var(--rr-shadow-2)] active:scale-[0.97]"
           >
             Show results
           </button>

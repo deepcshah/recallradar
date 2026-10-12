@@ -1,4 +1,4 @@
-import { ChevronRight } from "lucide-react";
+import RecallThumb from "@/components/RecallThumb";
 import { plainHeadline, dayOf } from "@/lib/digest";
 import { reasonFor } from "@/lib/reason";
 import { coverageOf, isAnnounced, verdictFor, resolveLoc, VERDICTS } from "@/lib/verdict";
@@ -8,16 +8,20 @@ import { cn } from "@/lib/utils";
 /* ─────────────────────────────────────────────────────────────────────────
  * ONE RECALL, ONE ROW
  *
- * The home screen's list and its search results are the same shape: what is
- * wrong with what (plainHeadline, every word from the notice), one quiet line
- * under it, and a text badge only where the agency's own class says
- * "serious". No icons, no tinted chips per row — the class badge is the only
- * warm thing on screen, so it still means something when it appears.
+ *   ┌────┐  Listeria in bagged spinach                (2 lines max)
+ *   │ 🥬 │  [Serious] Listeria · Oct 8 · In NY
+ *   └────┘
  *
- * A search row adds the verdict for the reader's state as its own line
- * ("Not reported in New York"), in ink, never green: a shipping list is not
- * an all-clear. Everything the verdict rests on — the quote, the state map,
- * follow, share — is one tap away in the recall sheet.
+ * The home screen's list and its search results are the same row: a 56px
+ * tile (the agency's photo, or a calm category tile — RecallThumb), the plain
+ * headline (every word from the notice), and one quiet line under it. The
+ * only warm thing a row can carry is "Serious", and only where the agency's
+ * own class says so; "Announced" is a dashed neutral label for a recall FDA
+ * has not classified. No chevron: the whole row is the target.
+ *
+ * A search row leads its line with the verdict for the reader's state
+ * ("Not reported in New York · Sep 30 · United Sugar…"), in ink, never
+ * green: a shipping list is not an all-clear.
  * ───────────────────────────────────────────────────────────────────────── */
 
 const THIS_YEAR = new Date().getFullYear();
@@ -60,17 +64,18 @@ export function shortVerdict(r, loc) {
 
 const isEnded = (r) => (r.status ? r.status === "ended" : r.active === false);
 
-export function RowBadge({ recall }) {
+export function RowBadge({ recall, skipAnnounced = false }) {
   if (isAnnounced(recall) && !isEnded(recall)) {
+    if (skipAnnounced) return null;
     return (
-      <span className="rounded-md border border-dashed border-line-strong px-1.5 py-px text-[11px] font-semibold text-fog">
+      <span className="mr-1.5 inline-flex -translate-y-px items-center rounded-full border border-dashed border-line-strong px-2 py-px align-middle text-[11.5px] font-medium leading-[18px] text-fog">
         Announced
       </span>
     );
   }
   if (recall.severity === "high" && !isEnded(recall)) {
     return (
-      <span className="rounded-md border border-alert-line bg-alert-soft px-1.5 py-px text-[11px] font-semibold text-alert">
+      <span className="mr-1.5 inline-flex -translate-y-px items-center rounded-full bg-alert-soft px-2 py-px align-middle text-[11.5px] font-semibold leading-[18px] text-alert shadow-[inset_0_0_0_1px_var(--rr-alert-line)]">
         Serious
       </span>
     );
@@ -81,42 +86,48 @@ export function RowBadge({ recall }) {
 /**
  * @param {object}   props.recall
  * @param {Function} props.onOpen       (recall) => void
- * @param {string}   [props.verdict]    search rows: the short verdict line
+ * @param {string}   [props.verdict]    search rows: the short verdict, leads the meta line
  * @param {string}   [props.meta]       the muted line; built from the record when omitted
  * @param {string}   [props.inState]    "NY" — lets the meta line say "In NY"
+ * @param {number}   [props.index]      position, for the first-render stagger
+ * @param {boolean}  [props.animate]    fade in (first render of a list only)
  */
-export default function RecallRow({ recall, onOpen, verdict, meta, inState, className, style }) {
+export default function RecallRow({ recall, onOpen, verdict, meta, inState, className, style, index = 0, animate = false }) {
   const headline = plainHeadline(recall) || recall.product || "Recall notice";
   /* "Other reason" / "Reason not stated" are filter buckets, not news; the
    * headline already carries the hazard when there is one. */
   const reason = reasonFor(recall);
+  /* An announced recall with no geography says so with its "Announced"
+   * label — FDA hasn't published a distribution list yet — so the row does
+   * not spend a second line repeating "Region not stated". */
+  const where = rowWhere(recall, { inState });
+  const quietWhere = isAnnounced(recall) && !isEnded(recall) && where === "Region not stated";
   const line = meta != null ? meta : [
     reason.key === "other" || reason.key === "unspecified" ? "" : reason.label,
     rowDate(recall),
-    rowWhere(recall, { inState }),
+    quietWhere ? "" : where,
   ].filter(Boolean).join(" · ");
   return (
-    <li className={className} style={style}>
+    <li className={cn(animate && "row-in", className)} style={animate ? { ...style, "--i": Math.min(index, 12) } : style}>
       <button
         type="button"
         onClick={() => onOpen && onOpen(recall)}
         className={cn(
-          "group flex w-full items-start gap-3 py-3.5 text-left",
-          "rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60",
+          "press group -mx-2 flex w-[calc(100%+1rem)] items-center gap-3.5 rounded-[20px] px-2 py-2.5 text-left",
+          "hover:bg-panel-3/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint",
         )}
       >
+        <RecallThumb recall={recall} size="md" />
         <span className="min-w-0 flex-1">
-          <span className="line-clamp-2 text-[15px] font-semibold leading-snug text-paper group-hover:underline group-hover:decoration-line-strong group-hover:underline-offset-2">
+          <span className="line-clamp-2 text-[15.5px] font-semibold leading-[1.3] tracking-[-0.011em] text-paper">
             {headline}
           </span>
-          {verdict && (
-            <span className="verdict-line mt-1 block text-[13px] font-medium leading-snug text-paper">{verdict}</span>
-          )}
-          <span className="tnum mt-0.5 block truncate text-[12.5px] leading-snug text-subtle">{line}</span>
-        </span>
-        <span className="flex shrink-0 items-center gap-1.5 pt-0.5">
-          <RowBadge recall={recall} />
-          <ChevronRight aria-hidden="true" className="size-4 text-subtle transition-colors group-hover:text-paper" />
+          <span className="tnum mt-1 line-clamp-2 text-[13px] leading-snug text-subtle">
+            <RowBadge recall={recall} skipAnnounced={!!verdict && /^Announced/.test(verdict)} />
+            {verdict && <span className="verdict-line font-medium text-paper">{verdict}</span>}
+            {verdict && line && <span aria-hidden="true"> · </span>}
+            {line}
+          </span>
         </span>
       </button>
     </li>

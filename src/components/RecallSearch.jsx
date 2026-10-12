@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { LoaderCircle, RotateCw, ScanLine, Search, SearchX, X } from "lucide-react";
+import { ArrowRight, LoaderCircle, RotateCw, ScanBarcode, SearchX, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import RecallRow, { shortVerdict, rowDate } from "@/components/RecallRow";
+import CategoryPills from "@/components/CategoryPills";
+import { countByPrimary, inPrimary, primaryNoun, PRIMARY_CATEGORIES } from "@/lib/primary-category";
 import FreshnessLine, { fmtAsOf, oldestAsOf } from "@/components/FreshnessLine";
 import { prepareSearch, searchIndex, liveLookup } from "@/lib/search-index";
 import { verdictFor, resolveLoc, VERDICTS } from "@/lib/verdict";
@@ -150,25 +152,25 @@ function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
   else fdaLine = "not in our database, and openFDA couldn't be reached — not checked";
 
   return (
-    <div className="fade-item rounded-xl border border-dashed border-line bg-panel-2/40 px-4 py-5 sm:px-5">
-      <div className="flex items-start gap-3">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-full border border-line bg-panel-3">
-          <SearchX aria-hidden="true" className="size-4 text-fog" />
+    <div className="fade-item card px-5 py-5 sm:px-6">
+      <div className="flex items-start gap-3.5">
+        <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-sunken">
+          <SearchX aria-hidden="true" className="size-5 text-fog" />
         </span>
         <div className="min-w-0">
-          <p className="text-sm font-semibold leading-snug text-paper">
+          <p className="text-[15px] font-semibold leading-snug text-paper">
             {fdaChecked
               ? <>No FDA, USDA or CPSC recall matches “{query}” in {span}.</>
               : <>No USDA or CPSC recall matches “{query}” in {span}. FDA recalls couldn't be checked just now.</>}
           </p>
-          <p className="mt-1 text-xs leading-relaxed text-fog">
+          <p className="mt-1 text-[13px] leading-relaxed text-fog">
             That means no notice we hold uses those words — not that the product has never been
             recalled, and not that any particular package is fine.
           </p>
         </div>
       </div>
 
-      <p className="microlabel mt-4">Checked</p>
+      <p className="microlabel mt-5">What we checked</p>
       <ul className="mt-1 divide-y divide-line">
         <SourceRow name="FDA" covers="food, drugs, medical devices">{fdaLine}</SourceRow>
         <SourceRow name="USDA FSIS" covers="meat, poultry, eggs">{freshness(s.fsis)}</SourceRow>
@@ -207,10 +209,10 @@ function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
         );
       })()}
 
-      <p className="microlabel mt-4">Not covered here</p>
+      <p className="microlabel mt-5">Not covered here</p>
       <p className="mt-1 text-[13px] leading-relaxed text-fog">{NOT_COVERED}.</p>
 
-      <p className="microlabel mt-4">Try</p>
+      <p className="microlabel mt-5">Try</p>
       <ul className="mt-1 list-disc pl-5 text-[13px] leading-relaxed text-fog">
         <li>the brand on the package, or the company name (notices often use the maker, not the store brand)</li>
         <li>one distinctive word — “sausage” rather than “Italian pork sausage links”</li>
@@ -243,11 +245,15 @@ function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
  *                                           results and "not reported" cards
  * @param {Function} [props.onSearch]      ({ query, results, live }) => void, once per
  *                                           query that has settled (see SETTLED_MS)
+ * @param {string}   [props.category]        primary category key ("all" | food | meat | drug | device | product)
+ * @param {Function} [props.onCategory]      (key) => void — the pills under the box
+ * @param {Map}      [props.listCounts]      pill counts for the list under the box (no query)
  * @param {string}   [props.className]
  */
 export default function RecallSearch({
   loc, onOpenRecall, onOpenShared, initialRecallId, autoFocus = false, onSearch, onScan, className,
   scope = "near", freshness, children, index = null, byId = null, dataStatus = "empty", dataPartial = false, onRetry,
+  category = "all", onCategory, listCounts,
 }) {
   /* Nothing on the device and the sync could not get any: say so, rather
    * than spin. With data on the device, a failed refresh is the list's
@@ -419,21 +425,40 @@ export default function RecallSearch({
   const liveFailed = live.q === q && live.status === "error";
   const fdaChecked = fdaInIndex || (live.q === q && live.status === "done");
 
-  const count = ordered.length;
+  /* The pills count what is below them: search results while there is a
+   * query (before the category filter, so every pill says what it would
+   * show), the latest list otherwise. */
+  const resultCounts = useMemo(() => (q ? countByPrimary(ordered) : null), [q, ordered]);
+  const filtered = useMemo(
+    () => (category === "all" ? ordered : ordered.filter((r) => inPrimary(r, category))),
+    [ordered, category],
+  );
+  const catLabel = (PRIMARY_CATEGORIES.find((c) => c.key === category) || {}).label || "";
+  const hiddenByCategory = category !== "all" && ordered.length > 0 && filtered.length === 0;
+
+  const count = filtered.length;
   const stateName = L && L.state;
+
+  const submit = (e) => {
+    e.preventDefault();
+    setQ(query.trim());
+    /* On a phone the keyboard covers the answers; Search puts it away. */
+    inputRef.current?.blur();
+  };
 
   return (
     <section className={cn("flex flex-col", className)} aria-label="Search recalls">
-      {/* ── the box ── */}
-      <div>
-        <h1 className="text-[28px] font-bold leading-tight tracking-tight text-paper sm:text-[32px]">
+      {/* ── the question, and the box ── */}
+      <div className="flex flex-col items-center text-center">
+        <h1 className="display text-paper">
           <label htmlFor="rs-query">Is it recalled?</label>
         </h1>
-        <p className="mt-1.5 text-[15px] leading-snug text-fog">
+        <p className="mt-3 max-w-[30ch] text-[16px] leading-snug text-fog sm:text-[17px]">
           Check what you own, or plan to buy.
         </p>
-        <div className="relative mt-4">
-          <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-4 size-5 -translate-y-1/2 text-subtle" />
+      </div>
+      <form role="search" aria-label="Recall search" onSubmit={submit} className="search-card mt-7 p-2 sm:mt-9">
+        <div className="relative">
           <input
             ref={inputRef}
             id="rs-query"
@@ -446,40 +471,59 @@ export default function RecallSearch({
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Escape" && query) { e.preventDefault(); setQuery(""); } }}
             className={cn(
-              "h-14 w-full rounded-2xl border border-line-strong bg-panel pl-12 text-[16px] text-paper",
-              onScan ? (query ? "pr-24" : "pr-14") : "pr-12",
-              "shadow-[var(--rr-field)] transition-shadow placeholder:text-subtle",
-              "focus-visible:border-mint/60 focus-visible:outline-none",
-              "focus-visible:shadow-[var(--rr-field),0_0_0_3px_var(--rr-accent-soft)]",
+              "h-12 w-full rounded-2xl bg-transparent pl-3.5 text-[17px] text-paper sm:text-[18px]",
+              query ? "pr-12" : "pr-3.5",
+              "placeholder:text-subtle focus-visible:outline-none",
               "[&::-webkit-search-cancel-button]:appearance-none",
             )}
           />
-          <div className="absolute top-1/2 right-1.5 flex -translate-y-1/2 items-center">
-            {query && (
-              <button
-                type="button"
-                onClick={() => { setQuery(""); inputRef.current?.focus(); }}
-                aria-label="Clear search"
-                className="grid size-11 place-items-center rounded-xl text-fog hover:bg-panel-3 hover:text-paper"
-              >
-                <X aria-hidden="true" className="size-4" />
-              </button>
-            )}
-            {onScan && (
-              <button
-                id="btn-scan"
-                type="button"
-                onClick={onScan}
-                aria-label="Scan a barcode"
-                title="Scan a barcode"
-                className="grid size-11 place-items-center rounded-xl text-fog hover:bg-panel-3 hover:text-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60"
-              >
-                <ScanLine aria-hidden="true" className="size-5" />
-              </button>
-            )}
-          </div>
+          {query && (
+            <button
+              type="button"
+              onClick={() => { setQuery(""); inputRef.current?.focus(); }}
+              aria-label="Clear search"
+              className="icon-btn absolute right-0 top-1/2 -translate-y-1/2"
+            >
+              <X aria-hidden="true" className="size-[18px]" />
+            </button>
+          )}
         </div>
-      </div>
+        <div className="mt-1 flex items-center justify-between gap-2">
+          {onScan ? (
+            <button
+              id="btn-scan"
+              type="button"
+              onClick={onScan}
+              title="Scan a barcode"
+              className="inline-flex h-11 items-center gap-2 rounded-full bg-panel-2 pl-3 pr-4 text-[14px] font-medium text-paper shadow-[var(--rr-shadow-1),inset_0_0_0_1px_var(--rr-line)] transition-[transform,box-shadow] hover:shadow-[var(--rr-shadow-2),inset_0_0_0_1px_var(--rr-line-strong)] active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint"
+            >
+              <ScanBarcode aria-hidden="true" className="size-[18px] text-fog" />
+              Scan a barcode
+            </button>
+          ) : <span />}
+          <button
+            type="submit"
+            aria-label="Search"
+            disabled={!query.trim()}
+            className={cn(
+              "grid size-11 shrink-0 place-items-center rounded-full transition-[background-color,color,transform] active:scale-[0.94]",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--rr-surface)]",
+              query.trim() ? "bg-mint text-mint-ink shadow-[var(--rr-shadow-2)]" : "bg-[var(--rr-track)] text-subtle",
+            )}
+          >
+            <ArrowRight aria-hidden="true" className="size-5" strokeWidth={2.25} />
+          </button>
+        </div>
+      </form>
+      {onCategory && (
+        <CategoryPills
+          className="mt-3"
+          value={category}
+          onChange={onCategory}
+          counts={q ? resultCounts : listCounts}
+          label={q ? "Filter results by category" : "Filter recalls by category"}
+        />
+      )}
 
       {/* ── loading / failure ── */}
       {!index && !loadError && (
@@ -519,21 +563,24 @@ export default function RecallSearch({
       )}
 
       {/* ── nothing typed: whatever the page puts here (the latest list) ── */}
-      {!q && children && <div className="mt-10">{children}</div>}
+      {!q && children && <div className="mt-9">{children}</div>}
 
       {/* ── results ── */}
       {q && index && (
-        <div className="mt-6 flex flex-col">
+        <div className="mt-8 flex flex-col">
           <p className="sr-only" role="status" aria-live="polite">
-            {results.length
-              ? `${results.length} ${results.length === 1 ? "recall matches" : "recalls match"} ${q}`
+            {count
+              ? `${count} ${count === 1 ? "recall matches" : "recalls match"} ${q}${catLabel && category !== "all" ? ` in ${catLabel}` : ""}`
               : livePending ? `Checking FDA for ${q}` : `No recall matches ${q}`}
           </p>
 
           {count > 0 && (
-            <p className="tnum text-[13px] text-subtle">
-              {count} {count === 1 ? "recall" : "recalls"}{flat ? " across the US" : ` · checked for ${stateName}`}
-            </p>
+            <div className="flex items-baseline justify-between gap-3">
+              <h2 className="section-title text-paper">Results</h2>
+              <p className="tnum truncate text-[13px] text-subtle">
+                {count} {category !== "all" ? `${primaryNoun(category)} ` : ""}{count === 1 ? "recall" : "recalls"}{flat ? " across the US" : ` · checked for ${stateName}`}
+              </p>
+            </div>
           )}
 
           {(livePending || (liveFailed && !fdaInIndex && results.length > 0)) && (
@@ -552,14 +599,29 @@ export default function RecallSearch({
             </p>
           )}
 
+          {hiddenByCategory && (
+            <div className="card px-5 py-5 text-[14px] leading-relaxed text-fog">
+              <p>
+                <span className="font-semibold text-paper">
+                  {ordered.length} {ordered.length === 1 ? "recall matches" : "recalls match"} “{q}”, none of them in {catLabel}.
+                </span>{" "}
+                We searched every category; the filter is hiding the rest.
+              </p>
+              <button type="button" onClick={() => onCategory && onCategory("all")}
+                      className="tap mt-2 inline-flex items-center gap-1 text-[14px] font-semibold text-mint hover:underline">
+                Show all {ordered.length} <ArrowRight aria-hidden="true" className="size-4" />
+              </button>
+            </div>
+          )}
+
           {count > 0 && (
-            <ul className="mt-2 divide-y divide-line border-t border-line">
-              {ordered.map((r) => (
+            <ul className="mt-3 flex flex-col">
+              {filtered.map((r) => (
                 <RecallRow
                   key={r.id}
                   recall={r}
                   verdict={shortVerdict(r, L)}
-                  meta={[r.viaLookup ? "From FDA directly" : null, rowDate(r), r.firm].filter(Boolean).join(" · ") || undefined}
+                  meta={[r.viaLookup ? "From FDA directly" : null, rowDate(r), r.firm].filter(Boolean).join(" · ")}
                   onOpen={onOpenRecall}
                 />
               ))}
@@ -567,7 +629,7 @@ export default function RecallSearch({
           )}
 
           {weak.length > 0 && (
-            <p className="mt-3 text-[12px] leading-snug text-fog">
+            <p className="mt-3 text-[13px] leading-snug text-fog">
               {showWeak
                 ? <>Including {weak.length} {weak.length === 1 ? "notice" : "notices"} that {weak.length === 1 ? "mentions" : "mention"} “{q}” only in passing. </>
                 : <>{weak.length} more {weak.length === 1 ? "notice mentions" : "notices mention"} “{q}” only in passing, such as in an ingredient list. </>}

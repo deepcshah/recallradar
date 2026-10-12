@@ -5,6 +5,9 @@ import { SpeedInsights } from "@vercel/speed-insights/react";
 import { initAnalytics } from "./lib/analytics";
 import { registerServiceWorker } from "./lib/push";
 import App from "./App";
+/* Inter, variable weight and optical size, bundled — no request to a font
+ * CDN, and the display headline gets Inter's tighter display cut. */
+import "@fontsource-variable/inter/opsz.css";
 import "./index.css";
 
 /* Before first render, so the initial pageview is not attributed to

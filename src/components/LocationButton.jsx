@@ -37,17 +37,18 @@ const LocationButton = forwardRef(function LocationButton(
       aria-label={aria}
       aria-busy={busy || undefined}
       className={cn(
-        "tap inline-flex h-9 min-w-0 max-w-[10.5rem] shrink items-center gap-1.5 rounded-full px-2.5 sm:px-3",
-        "text-[13px] font-semibold text-paper transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60",
+        "tap inline-flex h-9 min-w-0 max-w-[10.5rem] shrink items-center gap-1.5 rounded-full px-3",
+        "text-[14px] font-semibold text-paper transition-[background-color,box-shadow,transform] active:scale-[0.97]",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint",
+        "bg-glass-strong shadow-[var(--rr-shadow-1),inset_0_0_0_1px_var(--rr-line)] hover:shadow-[var(--rr-shadow-2),inset_0_0_0_1px_var(--rr-line-strong)]",
         compact
-          ? "h-10 text-[14px] hover:bg-panel-3 pointer-coarse:h-11"
-          : "border border-line bg-panel-2 shadow-[var(--rr-bevel),var(--rr-shadow-1)] hover:border-line-strong pointer-coarse:h-10 sm:max-w-[16rem] lg:max-w-[20rem]",
-        open && (compact ? "bg-panel-3" : "border-line-strong bg-panel-3"),
+          ? "h-10 pointer-coarse:h-11"
+          : "pointer-coarse:h-11 sm:max-w-[16rem] lg:max-w-[20rem]",
+        open && "bg-panel-3",
         className,
       )}
     >
-      <Pin aria-hidden="true" className={cn("size-3.5 shrink-0 text-fog", busy && "animate-spin")} />
+      <Pin aria-hidden="true" className={cn("size-4 shrink-0 text-fog", busy && "animate-spin")} />
       {loc ? (
         <>
           {/* The label is the reader's place; session replay masks all text

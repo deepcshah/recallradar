@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight } from "lucide-react";
 import RecallRow from "@/components/RecallRow";
+import { Button } from "@/components/ui/button";
+import { inPrimary, primaryNoun } from "@/lib/primary-category";
 import ScopeSwitch from "@/components/ScopeSwitch";
 import FreshnessLine, { FdaGapNote, fdaMissing, fmtAsOf, oldestAsOf } from "@/components/FreshnessLine";
 import { freshnessOf, indexRecordInArea } from "@/lib/search-index";
@@ -11,10 +13,14 @@ import { newsDay } from "@/lib/digest";
  * LATEST RECALLS — the home screen's list
  *
  *   Latest recalls                       [ Near me · NY | All US ]
- *   142 active · Data: FDA as of Sep 30 · USDA Oct 7 · CPSC Oct 8
- *   ─────────────────────────────────────────────────────────────
- *   Listeria in bagged spinach                              Serious
- *   Listeria · Oct 8 · In NY
+ *   142 active in NY · data as of Sep 30
+ *
+ *   [tile]  Listeria in bagged spinach
+ *           [Serious] Listeria · Oct 8 · In NY
+ *
+ * The category pills above (Home) narrow it to one primary category; the
+ * count line and the empty state then say which, so "nothing here" always
+ * names what was looked at.
  *
  * One dataset: the local copy of our database (lib/data-sync.js). Near me
  * is that copy through the area rule (isInArea, via indexRecordInArea); All
@@ -34,11 +40,25 @@ const PAGE = 20;
 const sev = { high: 0, med: 1, low: 2 };
 const ended = (r) => (r.status ? r.status === "ended" : r.active === false);
 
+/** Active records in the scope, newest first — the list before any category
+ *  filter. Exported so the page can count the category pills from the very
+ *  same set the list shows. */
+export function latestInScope(records, { us, loc }) {
+  if (!records) return [];
+  const L = resolveLoc(loc);
+  const list = records.filter((r) => !ended(r) && (us || indexRecordInArea(r, L)));
+  const day = new Map(list.map((r) => [r, newsDay(r)]));
+  return list.sort((a, b) => day.get(b).localeCompare(day.get(a)) || (sev[a.severity] ?? 1) - (sev[b.severity] ?? 1));
+}
+
 function RowSkeleton() {
   return (
-    <li className="py-3.5" aria-hidden="true">
-      <div className="shimmer h-4 w-4/5 rounded" />
-      <div className="shimmer mt-2 h-3 w-2/5 rounded" />
+    <li className="flex items-center gap-3.5 py-2.5" aria-hidden="true">
+      <div className="shimmer size-14 shrink-0 rounded-2xl" />
+      <div className="min-w-0 flex-1">
+        <div className="shimmer h-4 w-4/5 rounded-full" />
+        <div className="shimmer mt-2 h-3 w-2/5 rounded-full" />
+      </div>
     </li>
   );
 }
@@ -81,21 +101,17 @@ export function SyncNote({ status, lastSynced, hasData, className = "" }) {
  * @param {Function} props.onBrowseAll  () => void — the full list with filters
  */
 export default function LatestRecalls({
-  loc, hasLocation, scope, dataset, sync, onChangeScope, onOpenRecall, onBrowseAll,
+  loc, hasLocation, scope, dataset, sync, onChangeScope, onOpenRecall, onBrowseAll, category = "all", onClearCategory,
 }) {
   const L = resolveLoc(loc);
   const us = scope === "us" || !hasLocation || !L;
   const abbr = L && L.stateAbbr;
   const [limit, setLimit] = useState(PAGE);
-  useEffect(() => { setLimit(PAGE); }, [us, abbr]);
+  useEffect(() => { setLimit(PAGE); }, [us, abbr, category]);
 
   const records = dataset ? dataset.recalls : null;
-  const sorted = useMemo(() => {
-    if (!records) return [];
-    const list = records.filter((r) => !ended(r) && (us || indexRecordInArea(r, L)));
-    const day = new Map(list.map((r) => [r, newsDay(r)]));
-    return list.sort((a, b) => day.get(b).localeCompare(day.get(a)) || (sev[a.severity] ?? 1) - (sev[b.severity] ?? 1));
-  }, [records, us, abbr]); // eslint-disable-line react-hooks/exhaustive-deps
+  const scoped = useMemo(() => latestInScope(records, { us, loc: L }), [records, us, abbr]); // eslint-disable-line react-hooks/exhaustive-deps
+  const sorted = useMemo(() => (category === "all" ? scoped : scoped.filter((r) => inPrimary(r, category))), [scoped, category]);
   const freshness = useMemo(() => (dataset ? freshnessOf(dataset) : []), [dataset]);
   const status = (sync && sync.status) || "empty";
   const fdaGap = !!records && sorted.length > 0 && fdaMissing(freshness, sorted);
@@ -106,23 +122,32 @@ export default function LatestRecalls({
   const shown = sorted.slice(0, limit);
   const remaining = sorted.length - shown.length;
   const place = us ? "in the US" : `in ${abbr}`;
+  const noun = category === "all" ? "" : primaryNoun(category);
   const asOf = oldestAsOf(freshness);
   const anyStale = freshness.some((e) => e.stale);
+
+  /* Rows fade in on the list's first render with data, and never again — a
+   * scope switch or a filter is an answer, and answers should not perform. */
+  const animatedRef = useRef(false);
+  const animate = !animatedRef.current && shown.length > 0;
+  useEffect(() => { if (shown.length) animatedRef.current = true; }, [shown.length]);
 
   return (
     <section aria-labelledby="latest-title" className="flex flex-col">
       <div className="flex items-center justify-between gap-3">
-        <h2 id="latest-title" className="text-[17px] font-semibold tracking-tight text-paper">Latest recalls</h2>
+        <h2 id="latest-title" className="section-title text-paper">Latest recalls</h2>
         <ScopeSwitch scope={us ? "us" : "near"} stateAbbr={hasLocation ? abbr : null}
                      onChange={(next) => onChangeScope(next, "home_list")} />
       </div>
       {/* One line: how many, and the oldest agency date among what was read —
           the honest bound on "a recall after this may not be here yet". The
           per-agency dates sit under the list. */}
-      <p className="tnum mt-1 min-h-5 truncate text-[13px] leading-relaxed text-subtle">
+      <p className="tnum mt-1 min-h-5 truncate text-[13px] leading-relaxed text-subtle" id="latest-count">
         {!loading && !failedEmpty && (
           <>
-            {sorted.length.toLocaleString("en-US")} active {place}
+            {/* The number is on the category pills; this line says what the
+                list is and how fresh it is. */}
+            {noun ? `${noun.charAt(0).toUpperCase()}${noun.slice(1)} recalls active ${place}` : `Active ${place}, newest first`}
             {asOf && (
               <>
                 {" · "}
@@ -137,16 +162,17 @@ export default function LatestRecalls({
       <SyncNote status={status} lastSynced={sync && sync.lastSynced} hasData={!!records} />
       {fdaGap && <FdaGapNote className="mt-2" />}
 
-      <ul aria-busy={loading || undefined} className="mt-2 divide-y divide-line border-t border-line">
+      <ul aria-busy={loading || undefined} aria-describedby="latest-count" className="mt-3 flex flex-col">
         {loading
           ? [0, 1, 2, 3, 4].map((i) => <RowSkeleton key={i} />)
-          : shown.map((r) => (
-            <RecallRow key={r.id} recall={r} onOpen={onOpenRecall} inState={us ? null : abbr} />
+          : shown.map((r, i) => (
+            <RecallRow key={r.id} recall={r} onOpen={onOpenRecall} inState={us ? null : abbr}
+                       index={i} animate={animate} />
           ))}
       </ul>
 
       {failedEmpty && (
-        <p className="border-b border-line py-5 text-[14px] leading-relaxed text-fog">
+        <p className="card mt-2 px-5 py-5 text-[14px] leading-relaxed text-fog">
           {status === "offline"
             ? "You're offline, and recall data hasn't been saved on this device yet. Connect once and it stays available offline."
             : "The recall data didn't load. Nothing has been checked yet — this is not an empty result."}
@@ -154,22 +180,26 @@ export default function LatestRecalls({
       )}
 
       {!loading && !failedEmpty && !sorted.length && (
-        <p className="border-b border-line py-5 text-[14px] leading-relaxed text-fog">
-          No active recall {us ? "in the notices we read" : `naming ${abbr}, or nationwide, in the notices we read`}.
-          That is a statement about these notices, not about any product — search above to check a specific one.
-        </p>
+        <div className="card mt-2 px-5 py-5 text-[14px] leading-relaxed text-fog">
+          <p>
+            No active {noun ? `${noun} ` : ""}recall {us ? "in the notices we read" : `naming ${abbr}, or nationwide, in the notices we read`}
+            {asOf ? ` (data as of ${fmtAsOf(asOf)})` : ""}.
+            That is a statement about these notices, not about any product — search above to check a specific one.
+          </p>
+          {noun && scoped.length > 0 && onClearCategory && (
+            <button type="button" onClick={onClearCategory}
+                    className="tap mt-2 inline-flex items-center gap-1 text-[14px] font-semibold text-mint hover:underline">
+              Show all {scoped.length.toLocaleString("en-US")} active {place} <ArrowRight aria-hidden="true" className="size-4" />
+            </button>
+          )}
+        </div>
       )}
 
-      <div className="mt-4 flex flex-col items-center gap-3">
-        {!loading && freshness.length > 0 && <FreshnessLine entries={freshness} className="order-last text-center" />}
+      <div className="mt-5 flex flex-col items-center gap-4">
         {remaining > 0 && (
-          <button
-            type="button"
-            onClick={() => setLimit((n) => n + PAGE)}
-            className="tap inline-flex h-11 items-center rounded-full border border-line bg-panel px-5 text-[14px] font-semibold text-paper shadow-[var(--rr-bevel),var(--rr-shadow-1)] hover:border-line-strong"
-          >
+          <Button type="button" variant="secondary" onClick={() => setLimit((n) => n + PAGE)} className="min-w-40">
             Show more
-          </button>
+          </Button>
         )}
         {!loading && !failedEmpty && onBrowseAll && (
           <button type="button" onClick={onBrowseAll}
@@ -177,6 +207,7 @@ export default function LatestRecalls({
             Browse all with filters <ArrowRight aria-hidden="true" className="size-4" />
           </button>
         )}
+        {!loading && freshness.length > 0 && <FreshnessLine entries={freshness} className="text-center" />}
       </div>
     </section>
   );

@@ -67,12 +67,12 @@ export default function ScopeSwitch({ scope, stateAbbr, onChange, className }) {
       role="radiogroup"
       aria-label="Which recalls to show"
       onKeyDown={onKeyDown}
-      className={cn("relative inline-flex shrink-0 items-center rounded-full border border-line bg-panel-2 p-0.5", className)}
+      className={cn("relative inline-flex shrink-0 items-center rounded-full bg-[var(--rr-track)] p-1", className)}
     >
       {pill && (
         <span
           aria-hidden="true"
-          className="scope-pill absolute left-0 top-0.5 bottom-0.5 rounded-full border border-line bg-panel shadow-[var(--rr-shadow-1),var(--rr-bevel)]"
+          className="scope-pill absolute left-0 top-1 bottom-1 rounded-full bg-[var(--rr-thumb)] shadow-[var(--rr-shadow-2)]"
           style={{ width: pill.w, transform: `translateX(${pill.x}px)` }}
         />
       )}
@@ -90,8 +90,8 @@ export default function ScopeSwitch({ scope, stateAbbr, onChange, className }) {
             title={titles[key]}
             onClick={() => onChange(key, "header")}
             className={cn(
-              "relative z-[1] inline-flex h-8 items-center whitespace-nowrap rounded-full px-2.5 text-[13px] font-semibold transition-colors sm:px-3",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 pointer-coarse:h-10",
+              "relative z-[1] inline-flex h-8 items-center whitespace-nowrap rounded-full px-3 text-[13px] font-semibold transition-colors sm:px-3.5",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint pointer-coarse:h-11",
               on ? "text-paper" : "text-fog hover:text-paper",
             )}
           >

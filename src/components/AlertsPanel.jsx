@@ -50,7 +50,7 @@ function fmtDay(d) {
 
 function Section({ title, aside, children, className }) {
   return (
-    <section className={cn("border-t border-line px-4 py-3.5 first:border-t-0", className)}>
+    <section className={cn("border-t border-line px-5 py-4 first:border-t-0", className)}>
       <div className="mb-2 flex items-baseline justify-between gap-2">
         <h3 className="microlabel">{title}</h3>
         {aside}
@@ -108,7 +108,7 @@ function Unavailable({ reason }) {
 
 function ChannelRow({ icon: Icon, title, status, children }) {
   return (
-    <div className="rounded-xl border border-line bg-panel-2 px-3.5 py-3">
+    <div className="rounded-2xl bg-sunken px-4 py-3.5">
       <div className="flex items-center gap-2">
         <Icon className="size-4 shrink-0 text-fog" aria-hidden="true" />
         <span className="flex-1 text-[14px] font-semibold text-paper">{title}</span>
@@ -175,7 +175,7 @@ function EmailChannel({ available, reason, stateAbbr, onRequestLocation }) {
     body = (
       <>
         <p>Alerts go to <span className="font-semibold text-paper [overflow-wrap:anywhere]">{sub.address}</span>.</p>
-        <Button variant="outline" size="sm" className="pointer-coarse:h-10" disabled={busy} onClick={off}>
+        <Button variant="outline" size="sm" className="pointer-coarse:h-11" disabled={busy} onClick={off}>
           {busy ? <Loader2 className="animate-spin" /> : <BellOff />} Turn off email
         </Button>
       </>
@@ -189,11 +189,11 @@ function EmailChannel({ available, reason, stateAbbr, onRequestLocation }) {
           Nothing is emailed until you open it and confirm. Not there? Check spam.
         </p>
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" size="sm" className="pointer-coarse:h-10" disabled={busy}
+          <Button variant="secondary" size="sm" className="pointer-coarse:h-11" disabled={busy}
                   onClick={async () => { setBusy(true); await refreshEmailStatus(); setSub(getEmailSub()); setBusy(false); }}>
             {busy ? <Loader2 className="animate-spin" /> : <Check />} I've confirmed
           </Button>
-          <Button variant="ghost" size="sm" className="pointer-coarse:h-10" disabled={busy} onClick={off}>Cancel</Button>
+          <Button variant="ghost" size="sm" className="pointer-coarse:h-11" disabled={busy} onClick={off}>Cancel</Button>
         </div>
       </>
     );
@@ -201,7 +201,7 @@ function EmailChannel({ available, reason, stateAbbr, onRequestLocation }) {
     body = <Unavailable reason={reason} />;
   } else if (!stateAbbr) {
     body = (
-      <Button variant="secondary" size="sm" className="pointer-coarse:h-10" onClick={onRequestLocation}>
+      <Button variant="secondary" size="sm" className="pointer-coarse:h-11" onClick={onRequestLocation}>
         <MapPin /> Set a location first
       </Button>
     );
@@ -220,12 +220,12 @@ function EmailChannel({ available, reason, stateAbbr, onRequestLocation }) {
           maxLength={254}
           disabled={busy}
           className={cn(
-            "h-9 min-w-0 flex-1 rounded-lg border border-line-strong bg-panel px-3 text-[13px] text-paper",
-            "shadow-[var(--rr-field)] placeholder:text-subtle focus-visible:border-mint/60 focus-visible:outline-none",
+            "h-11 min-w-0 flex-1 rounded-xl border border-line bg-panel-2 px-3.5 text-[14px] text-paper",
+            "shadow-[var(--rr-field)] placeholder:text-subtle focus-visible:border-mint focus-visible:outline-none",
             "focus-visible:shadow-[var(--rr-field),0_0_0_3px_var(--rr-accent-soft)]",
           )}
         />
-        <Button type="submit" size="sm" className="h-9 shrink-0" disabled={busy || !draft.trim()}>
+        <Button type="submit" size="sm" className="h-11 shrink-0" disabled={busy || !draft.trim()}>
           {busy ? <Loader2 className="animate-spin" /> : <Mail />} Email me
         </Button>
       </form>
@@ -250,7 +250,7 @@ function PushChannel({ available, reason, push, stateAbbr, onEnable, onDisable, 
   if (push.state === "subscribed") {
     status = <OnPill />;
     body = (
-      <Button variant="outline" size="sm" className="pointer-coarse:h-10" disabled={push.busy} onClick={onDisable}>
+      <Button variant="outline" size="sm" className="pointer-coarse:h-11" disabled={push.busy} onClick={onDisable}>
         {push.busy ? <Loader2 className="animate-spin" /> : <BellOff />} Turn off on this device
       </Button>
     );
@@ -270,13 +270,13 @@ function PushChannel({ available, reason, push, stateAbbr, onEnable, onDisable, 
     body = <p>Notifications are blocked for this site. Allow them in your browser's site settings, then come back.</p>;
   } else if (!stateAbbr) {
     body = (
-      <Button variant="secondary" size="sm" className="pointer-coarse:h-10" onClick={onRequestLocation}>
+      <Button variant="secondary" size="sm" className="pointer-coarse:h-11" onClick={onRequestLocation}>
         <MapPin /> Set a location first
       </Button>
     );
   } else {
     body = (
-      <Button size="sm" className="pointer-coarse:h-10" disabled={push.busy || push.state === "unknown"} onClick={onEnable}>
+      <Button size="sm" className="pointer-coarse:h-11" disabled={push.busy || push.state === "unknown"} onClick={onEnable}>
         {push.busy ? <Loader2 className="animate-spin" /> : <Bell />} Turn on notifications
       </Button>
     );
@@ -336,7 +336,7 @@ function RestoreLink({ link, onRestored }) {
     onRestored(out);
   };
   return (
-    <div className="mx-4 mt-3 rounded-xl border border-mint-line bg-mint-soft px-3.5 py-3">
+    <div className="mx-4 mt-3 rounded-2xl bg-mint-soft px-4 py-3.5">
       <p className="text-[13px] font-semibold text-paper">Restore your follows on this device</p>
       {state.status === "done" ? (
         <p className="mt-1 flex items-start gap-1.5 text-[12px] leading-snug text-paper" role="status">
@@ -382,7 +382,7 @@ function RestoreRequest({ prominent }) {
     );
   }
   return (
-    <div className={cn("mt-3 rounded-xl border border-line px-3.5 py-3", prominent ? "bg-panel-2" : "bg-transparent")}>
+    <div className={cn("mt-3 rounded-2xl border border-line px-4 py-3.5", prominent ? "bg-panel-2" : "bg-transparent")}>
       <p className="text-[13px] font-semibold text-paper">Followed things here before?</p>
       <p className="mt-1 text-[12px] leading-snug text-fog">
         Browsers can clear what a site saved — Safari on iPhone does after 7 days without a visit. If you had email
@@ -397,7 +397,7 @@ function RestoreRequest({ prominent }) {
           <label htmlFor="rr-restore-email" className="sr-only">Email address your alerts go to</label>
           <input id="rr-restore-email" type="email" inputMode="email" autoComplete="email" required
                  value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com"
-                 className="h-9 min-w-0 flex-1 rounded-lg border border-line bg-panel px-3 text-[13px] text-paper placeholder:text-subtle focus:border-line-strong focus:outline-none" />
+                 className="h-11 min-w-0 flex-1 rounded-xl border border-line bg-panel-2 px-3.5 text-[14px] text-paper placeholder:text-subtle focus:border-line-strong focus:outline-none" />
           <Button size="sm" type="submit" variant="secondary" disabled={state.status === "busy"}>
             {state.status === "busy" ? <Loader2 className="size-3.5 animate-spin" aria-hidden="true" /> : <Mail className="size-3.5" aria-hidden="true" />}
             Email me a link
@@ -429,7 +429,7 @@ function KeepNudge() {
     track("keep_nudge_dismissed", {});
   };
   return (
-    <div className="mb-3 rounded-xl border border-line bg-panel-2 px-3.5 py-3">
+    <div className="mb-3 rounded-2xl bg-sunken px-4 py-3.5">
       <div className="flex items-start gap-2">
         <Smartphone className="mt-0.5 size-4 shrink-0 text-paper" aria-hidden="true" />
         <div className="min-w-0 flex-1">
@@ -441,7 +441,7 @@ function KeepNudge() {
           </p>
         </div>
         <button type="button" onClick={dismiss} aria-label="Dismiss"
-                className="-mr-1 -mt-1 grid size-8 shrink-0 place-items-center rounded-lg text-subtle hover:bg-panel-3 hover:text-paper">
+                className="-mr-1 -mt-1 grid size-10 shrink-0 place-items-center rounded-full text-subtle hover:bg-panel-3 hover:text-paper">
           <X className="size-3.5" />
         </button>
       </div>
@@ -508,19 +508,19 @@ export default function AlertsPanel({
       width={400}
       initialFocusRef={titleRef}
       renderHeader={(sheet) => (
-        <div className="relative shrink-0 border-b border-line px-4 pb-3 pt-4">
-          {sheet && <span aria-hidden="true" className="absolute inset-x-0 top-1.5 mx-auto h-1 w-9 rounded-full bg-line-strong" />}
+        <div className="relative shrink-0 border-b border-line px-5 pb-3 pt-5">
+          {sheet && <span aria-hidden="true" className="sheet-grabber absolute inset-x-0 top-2" />}
           <div className="flex items-start gap-2">
             <div className="min-w-0 flex-1">
               <p id="alerts-panel-title" ref={titleRef} tabIndex={-1}
-                 className={cn("text-sm font-bold text-paper outline-none", sheet && "mt-1")}>Alerts</p>
+                 className={cn("text-[17px] font-semibold tracking-tight text-paper outline-none", sheet && "mt-1")}>Alerts</p>
               <p className="mt-0.5 text-[12px] leading-snug text-subtle">
                 What you follow, and what's new for it{st ? ` · ${st}` : ""}.
               </p>
             </div>
             {sheet && (
               <button type="button" onClick={onClose} aria-label="Close"
-                      className="-mr-1 grid size-9 shrink-0 place-items-center rounded-lg text-fog hover:bg-panel-3 hover:text-paper">
+                      className="-mr-1 grid size-10 shrink-0 place-items-center rounded-full text-fog hover:bg-panel-3 hover:text-paper pointer-coarse:size-11">
                 <X className="size-4" />
               </button>
             )}
@@ -556,7 +556,7 @@ export default function AlertsPanel({
                   type="button"
                   onClick={() => u.record && onOpenRecall(u.record)}
                   disabled={!u.record}
-                  className="tap flex w-full items-start gap-2.5 rounded-lg px-1.5 py-2 text-left hover:bg-panel-3 disabled:cursor-default"
+                  className="tap flex w-full items-start gap-2.5 rounded-xl px-2 py-2 text-left hover:bg-panel-3 disabled:cursor-default"
                 >
                   <BellRing className="mt-0.5 size-4 shrink-0 text-paper" aria-hidden="true" />
                   <span className="min-w-0 flex-1">
@@ -586,7 +586,7 @@ export default function AlertsPanel({
                       <button
                         type="button"
                         onClick={() => onOpenRecall(r)}
-                        className="tap flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-panel-3"
+                        className="tap flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-left hover:bg-panel-3"
                       >
                         {/* An announcement has no class yet: neutral and dashed,
                             as everywhere else — never the amber of a Class II. */}
@@ -634,7 +634,7 @@ export default function AlertsPanel({
                     type="button"
                     onClick={() => r && onOpenRecall(r)}
                     disabled={!r}
-                    className="tap flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-panel-3 disabled:cursor-default"
+                    className="tap flex min-w-0 flex-1 items-center gap-2 rounded-xl px-2 py-1.5 text-left hover:bg-panel-3 disabled:cursor-default"
                   >
                     <BellRing className="size-3.5 shrink-0 text-fog" aria-hidden="true" />
                     <span className="line-clamp-1 min-w-0 flex-1 text-[13px] text-paper">{r ? plainHeadline(r) : (f.title || f.id)}</span>
@@ -642,7 +642,7 @@ export default function AlertsPanel({
                   </button>
                   <button type="button" onClick={() => unfollowRecall(f.id)}
                           aria-label={`Stop following ${f.title || f.id}`}
-                          className="grid size-8 shrink-0 place-items-center rounded-lg text-subtle hover:bg-panel-3 hover:text-paper">
+                          className="grid size-10 shrink-0 place-items-center rounded-full text-subtle hover:bg-panel-3 hover:text-paper">
                     <X className="size-3.5" />
                   </button>
                 </li>
@@ -676,8 +676,8 @@ export default function AlertsPanel({
             autoComplete="off"
             enterKeyHint="done"
             className={cn(
-              "h-9 min-w-0 flex-1 rounded-full border border-line-strong bg-panel-2 px-3.5 text-[13px] text-paper",
-              "shadow-[var(--rr-field)] placeholder:text-subtle focus-visible:border-mint/60 focus-visible:outline-none",
+              "h-11 min-w-0 flex-1 rounded-full border border-line bg-panel-2 px-4 text-[14px] text-paper",
+              "shadow-[var(--rr-field)] placeholder:text-subtle focus-visible:border-mint focus-visible:outline-none",
               "focus-visible:shadow-[var(--rr-field),0_0_0_3px_var(--rr-accent-soft)]",
             )}
           />

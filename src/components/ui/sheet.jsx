@@ -37,19 +37,66 @@ export function useSheetPresence(open) {
   return { mounted, shown };
 }
 
-/* A bottom sheet: dimmed ground, rounded top, grabber, safe-area padding.
+/* Drag the grabber down to dismiss. The panel follows the finger 1:1 (the
+ * `is-dragging` class drops the transition); release past DISMISS_PX or with
+ * a downward flick closes, anything less springs back on --rr-spring. Only
+ * the grabber strip starts a drag, so scrolling the body never fights it. */
+const DISMISS_PX = 120;
+const FLICK_PX_PER_MS = 0.6;
+
+export function useDragToDismiss(panelRef, onClose) {
+  const st = useRef(null);
+  const set = (y) => panelRef.current?.style.setProperty("--rr-drag", `${Math.max(0, y)}px`);
+  return {
+    onPointerDown(e) {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      st.current = { y0: e.clientY, t0: performance.now(), dy: 0 };
+      e.currentTarget.setPointerCapture?.(e.pointerId);
+      panelRef.current?.classList.add("is-dragging");
+    },
+    onPointerMove(e) {
+      if (!st.current) return;
+      st.current.dy = e.clientY - st.current.y0;
+      set(st.current.dy);
+    },
+    onPointerUp() {
+      const d = st.current;
+      st.current = null;
+      const el = panelRef.current;
+      if (!d || !el) return;
+      el.classList.remove("is-dragging");
+      const v = d.dy / Math.max(1, performance.now() - d.t0);
+      if (d.dy > DISMISS_PX || (d.dy > 24 && v > FLICK_PX_PER_MS)) onClose();
+      else set(0);
+    },
+    onPointerCancel() {
+      st.current = null;
+      panelRef.current?.classList.remove("is-dragging");
+      set(0);
+    },
+  };
+}
+
+/* One sheet, two shapes:
  *
- * Portalled, because every sheet in this app is triggered from inside a panel
- * that is `relative z-10` — a stacking context, which quietly traps a `fixed`
- * child underneath anything above z-10 in the page. That is not hypothetical;
- * it is how the filter sheet's own confirm button ended up under the footer.
+ *   phone  a bottom sheet — scrim, 28px top corners, a grabber you can drag,
+ *          safe-area padding, rising on the app's spring.
+ *   ≥640   a centred dialog, 28px corners, growing in place (a 1440px-wide
+ *          bottom sheet is a phone pattern at four times its size).
  *
- * Focus moves in on open, is trapped while open, and returns to whatever
- * opened it — the sheet claims `aria-modal`, and that has to be true.
- */
-export function Sheet({ open, onClose, title, children, footer }) {
+ * `variant="detail"` is the recall sheet: no title bar — the grabber and a
+ * floating close button sit over the content, so the content's own title is
+ * the title — and `footer` floats as a frosted action bar over the bottom of
+ * the scroll instead of taking a band of its own.
+ *
+ * Portalled, because sheets are triggered from inside panels that are
+ * stacking contexts. Focus moves in on open, is trapped while open, and
+ * returns to whatever opened it — the sheet claims `aria-modal`. */
+export function Sheet({ open, onClose, title, children, footer, variant = "default", size = "md", labelledBy }) {
   const boxRef = useRef(null);
   const { mounted, shown } = useSheetPresence(open);
+  const drag = useDragToDismiss(boxRef, onClose);
+  const detail = variant === "detail";
 
   useEffect(() => {
     if (!open) return;
@@ -58,7 +105,10 @@ export function Sheet({ open, onClose, title, children, footer }) {
     const focusables = () => [...(box?.querySelectorAll(
       "button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex='-1'])"
     ) || [])];
-    (focusables()[0] || box)?.focus?.();
+    /* The detail sheet lands focus on the dialog itself, not on its first
+     * button: the first button is Close, and a screen reader opening a
+     * recall should hear the recall, not "Close, button". */
+    (detail ? box : (focusables()[0] || box))?.focus?.({ preventScroll: true });
 
     const onKey = (e) => {
       if (e.key === "Escape") { onClose(); return; }
@@ -66,7 +116,7 @@ export function Sheet({ open, onClose, title, children, footer }) {
       const items = focusables();
       if (!items.length) return;
       const edge = e.shiftKey ? items[0] : items[items.length - 1];
-      if (document.activeElement === edge) {
+      if (document.activeElement === edge || document.activeElement === box) {
         e.preventDefault();
         (e.shiftKey ? items[items.length - 1] : items[0]).focus();
       }
@@ -74,44 +124,65 @@ export function Sheet({ open, onClose, title, children, footer }) {
     document.addEventListener("keydown", onKey);
     return () => {
       document.removeEventListener("keydown", onKey);
-      if (returnTo && document.contains(returnTo)) returnTo.focus();
+      if (returnTo && document.contains(returnTo)) returnTo.focus({ preventScroll: true });
     };
-  }, [open, onClose]);
+  }, [open, onClose, detail]);
 
   if (!mounted) return null;
 
+  const width = size === "lg" ? "sm:max-w-[640px]" : "sm:max-w-[480px]";
+
   return createPortal(
-    /* Inert on the way out. The sheet is still on screen for the length of the
-       slide, and a tap that lands on a surface already leaving would fire a
-       control the user has just dismissed. */
-    <div className={"fixed inset-0 z-[75] " + (shown ? "" : "pointer-events-none")}>
-      <div className={"sheet-scrim absolute inset-0 bg-ink/60 backdrop-blur-[1px] " + (shown ? "is-shown" : "")}
+    /* Inert on the way out: a tap landing on a surface already leaving would
+       fire a control the user has just dismissed. */
+    <div className={"fixed inset-0 z-[75] flex items-end justify-center sm:items-center sm:p-6 " + (shown ? "" : "pointer-events-none")}>
+      <div className={"sheet-scrim absolute inset-0 bg-[var(--rr-scrim)] " + (shown ? "is-shown" : "")}
            onClick={onClose} />
       <div
         ref={boxRef}
         role="dialog"
         aria-modal="true"
-        aria-label={title}
+        aria-label={labelledBy ? undefined : title}
+        aria-labelledby={labelledBy}
         tabIndex={-1}
-        className={"sheet-panel absolute inset-x-0 bottom-0 flex max-h-[85dvh] flex-col overflow-hidden " +
-          "rounded-t-2xl border border-b-0 border-line bg-panel shadow-[var(--rr-shadow-3)] " +
+        className={"sheet-panel sheet-centered relative flex w-full flex-col overflow-hidden outline-none " +
+          "max-h-[92dvh] rounded-t-[28px] bg-panel shadow-[var(--rr-shadow-3)] " +
+          "sm:max-h-[88dvh] sm:rounded-[28px] " + width + " " +
           (shown ? "is-shown" : "")}
       >
-        <div className="relative flex shrink-0 items-center gap-2 border-b border-line px-4 pb-3 pt-4">
-          <span aria-hidden="true" className="absolute inset-x-0 top-1.5 mx-auto h-1 w-9 rounded-full bg-line-strong" />
-          <p className="text-sm font-bold">{title}</p>
-          <button onClick={onClose} aria-label="Close"
-                  className="ml-auto grid size-8 place-items-center rounded-lg text-fog hover:bg-panel-3 hover:text-paper">
-            <X className="size-4" />
-          </button>
+        {/* The grabber strip: 28px tall, the whole width, the drag target. */}
+        <div {...drag}
+             className="relative z-[2] flex h-7 shrink-0 touch-none items-start justify-center pt-2 sm:hidden"
+             aria-hidden="true">
+          <span className="sheet-grabber" />
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">{children}</div>
-        {footer && (
-          <div className="shrink-0 border-t border-line px-4 pt-3"
+        {detail ? (
+          <button type="button" onClick={onClose} aria-label="Close"
+                  className="glass absolute right-3 top-3 z-[3] grid size-11 place-items-center rounded-full text-paper shadow-[var(--rr-shadow-2)] hover:bg-panel-3 sm:right-4 sm:top-4 sm:size-10">
+            <X className="size-[18px]" aria-hidden="true" />
+          </button>
+        ) : (
+          <div className="flex shrink-0 items-center gap-2 px-5 pb-2 sm:pt-5">
+            <p className="text-[17px] font-semibold tracking-tight">{title}</p>
+            <button onClick={onClose} aria-label="Close"
+                    className="icon-btn -mr-2 ml-auto">
+              <X className="size-[18px]" />
+            </button>
+          </div>
+        )}
+        <div data-sheet-scroll className="min-h-0 flex-1 overflow-y-auto overscroll-contain">{children}</div>
+        {footer && (detail ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[2] px-3 pt-6 sm:px-4"
+               style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))",
+                        background: "linear-gradient(to top, var(--rr-surface) 55%, transparent)" }}>
+            <div className="pointer-events-auto">{footer}</div>
+          </div>
+        ) : (
+          <div className="shrink-0 border-t border-line px-5 pt-3"
                style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom, 0px))" }}>
             {footer}
           </div>
-        )}
+        ))}
       </div>
     </div>,
     document.body

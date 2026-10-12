@@ -185,7 +185,15 @@ export function matchUpc(recalls, raw, product) {
  * effort throughout, and never as evidence about a product's safety.
  */
 const OFF = "https://world.openfoodfacts.org/api/v2/product";
-const OFF_FIELDS = "product_name,brands,image_front_small_url,image_small_url,quantity";
+const OFF_FIELDS = "product_name,brands,image_front_small_url,image_small_url,image_front_url,quantity";
+/* Only Open Food Facts' own image host, over https — never an arbitrary URL
+ * out of a community record. */
+function offImage(u) {
+  try {
+    const x = new URL(String(u || ""));
+    return x.protocol === "https:" && /(^|\.)openfoodfacts\.(org|net)$/.test(x.hostname) ? x.href : "";
+  } catch (_) { return ""; }
+}
 const offCache = new Map();
 
 export async function lookupProduct(raw, { timeoutMs = 7000 } = {}) {
@@ -207,7 +215,8 @@ export async function lookupProduct(raw, { timeoutMs = 7000 } = {}) {
       ? {
           name: p.product_name || "",
           brand: (p.brands || "").split(",")[0].trim(),
-          image: p.image_front_small_url || p.image_small_url || "",
+          image: offImage(p.image_front_small_url || p.image_small_url),
+          imageLarge: offImage(p.image_front_url || p.image_front_small_url || p.image_small_url),
           quantity: p.quantity || "",
         }
       : null;

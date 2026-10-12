@@ -5,9 +5,10 @@ import {
   ExternalLink, Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package,
   PanelRightOpen, PawPrint, Pill, Plug, Plus, Radar, Rows2, Columns2, Search, SearchX,
   ShieldCheck, Soup, Stethoscope, Sun, Moon, MonitorSmartphone, MoreHorizontal, Store,
-  ClipboardList, UtensilsCrossed, Wheat, X, Zap,
+  ClipboardList, ListFilter, UtensilsCrossed, Wheat, X, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import LocationButton from "@/components/LocationButton";
 import LocationPicker from "@/components/LocationPicker";
 import ScopeSwitch from "@/components/ScopeSwitch";
@@ -19,17 +20,17 @@ import { Tooltip, InfoTip } from "@/components/ui/tooltip";
 import { FilterButton, FilterSheet, FilterGroup, FilterChoice } from "@/components/FilterSheet";
 import ScanSheet from "@/components/ScanSheet";
 import RecallSearch from "@/components/RecallSearch";
-import LatestRecalls, { SyncNote } from "@/components/LatestRecalls";
-import VerdictCard from "@/components/VerdictCard";
+import LatestRecalls, { SyncNote, latestInScope } from "@/components/LatestRecalls";
+import RecallDetail, { RecallActionBar } from "@/components/RecallDetail";
+import RecallThumb from "@/components/RecallThumb";
 import AlertsPanel from "@/components/AlertsPanel";
 import WatchButton from "@/components/WatchButton";
 import { Sheet, useSheetPresence } from "@/components/ui/sheet";
 import {
   Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
-import { recallUpcs, lookupProduct } from "@/lib/upc";
 import { browserPosition, reverseGeocode, geocodeInput, geoError, locLabel } from "@/lib/geo";
-import { isInArea, verdictFor, isAnnounced } from "@/lib/verdict";
+import { isInArea, verdictFor, isAnnounced, resolveLoc } from "@/lib/verdict";
 import { freshnessOf } from "@/lib/search-index";
 import { recallData } from "@/lib/data-sync";
 import { coverageLine } from "@/lib/coverage-line";
@@ -45,6 +46,7 @@ import { alertChannels, channelPayload, computeInbox, syncChannels, restoreParam
 import { findStores, STORE_CAPS, DEFAULT_STORE_CAP } from "@/lib/stores";
 import { byId, chainsInText, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
 import { categoryFor } from "@/lib/category";
+import { countByPrimary, isPrimaryKey } from "@/lib/primary-category";
 import { classInfo, severityLabel, severityVariant } from "@/lib/classification";
 import { reasonFor, REASON_ORDER } from "@/lib/reason";
 import { DialRoot } from "dialkit";
@@ -196,6 +198,23 @@ function writeScopeParam(scope) {
     const url = new URL(window.location.href);
     if (scope === "us") url.searchParams.set("scope", "us");
     else url.searchParams.delete("scope");
+    window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
+  } catch (_) { /* sandboxed frame */ }
+}
+
+/* The Home category pill, in the URL as ?cat= so a filtered view can be
+ * shared and survives a reload. Absent means All. */
+function readCatParam() {
+  try {
+    const v = new URLSearchParams(window.location.search).get("cat");
+    return isPrimaryKey(v) ? v : "all";
+  } catch (_) { return "all"; }
+}
+function writeCatParam(cat) {
+  try {
+    const url = new URL(window.location.href);
+    if (cat && cat !== "all") url.searchParams.set("cat", cat);
+    else url.searchParams.delete("cat");
     window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
   } catch (_) { /* sandboxed frame */ }
 }
@@ -362,40 +381,12 @@ function plural(n, one, many) {
   return `${n} ${n === 1 ? one : many}`;
 }
 
-/* A photo of the recalled product, where one can be had.
- *
- * CPSC publishes images; FDA and FSIS publish none at all. The gap closes
- * through the barcode: where a notice prints one, Open Food Facts can usually
- * turn it into a product shot. That lookup is a third-party request, so it
- * only happens for a card that has actually scrolled into view, once per
- * barcode per session, and it is silent when it fails — a missing photo is a
- * missing photo, never an error the reader has to deal with. */
+/* The recall's picture in a list card: the agency's own photo where there is
+ * one (CPSC), otherwise a calm category tile. Never an Open Food Facts lookup
+ * — a list of cards must not fire a third-party request per row; that photo
+ * is fetched only when a recall is opened (RecallDetail), and labelled. */
 function RecallImage({ recall }) {
-  const [src, setSrc] = useState(recall.image || "");
-  const ref = useRef(null);
-
-  useEffect(() => {
-    if (recall.image) return;
-    const code = recallUpcs(recall)[0];
-    const el = ref.current;
-    if (!code || !el || typeof IntersectionObserver === "undefined") return;
-    let done = false;
-    const io = new IntersectionObserver((entries) => {
-      if (done || !entries.some((e) => e.isIntersecting)) return;
-      done = true;
-      io.disconnect();
-      lookupProduct(code).then((p) => p?.image && setSrc(p.image)).catch(() => {});
-    }, { rootMargin: "200px" });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [recall]);
-
-  if (!src) return <span ref={ref} aria-hidden="true" className="size-0 shrink-0" />;
-  return (
-    <img ref={ref} src={src} alt="" loading="lazy" referrerPolicy="no-referrer"
-         className="size-14 shrink-0 rounded-lg border border-line bg-panel object-cover"
-         onError={(e) => { e.currentTarget.style.display = "none"; }} />
-  );
+  return <RecallThumb recall={recall} size="md" />;
 }
 
 /* What each feed is the only source for. When one is down, this is what is
@@ -860,6 +851,8 @@ export default function App() {
   /* A recall opened from the digest (its headline, a follow match, a story),
    * answered in a sheet over wherever the reader is. */
   const [sheetRecall, setSheetRecall] = useState(null);
+  const [homeCat, setHomeCat] = useState(readCatParam);
+  const [headerSolid, setHeaderSolid] = useState(false);
   const [sheetShared, setSheetShared] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [push, setPush] = useState({ state: "unknown", busy: false, msg: null, dropped: [] });
@@ -1152,6 +1145,19 @@ export default function App() {
   }, [loc]);
   const verdictState = verdictLoc && verdictLoc.stateAbbr ? verdictLoc.stateAbbr : null;
 
+  /* Pill counts for Home's list: the same set LatestRecalls shows (active, in
+   * the current scope), counted per primary category. */
+  const homeCounts = useMemo(() => {
+    if (!index) return null;
+    const us = viewScope === "us" || !loc || !resolveLoc(verdictLoc);
+    return countByPrimary(latestInScope(index.recalls, { us, loc: verdictLoc }));
+  }, [index, viewScope, loc, verdictLoc]);
+  const changeCat = useCallback((k) => {
+    setHomeCat(k);
+    writeCatParam(k);
+    track("category_filtered", { category: k, scope: viewScope });
+  }, [viewScope]);
+
   /* One event per place the list is shown for, once the data is there —
    * the funnel's "the list loaded" step, now read from the local copy. */
   const loadedForRef = useRef("");
@@ -1213,6 +1219,13 @@ export default function App() {
     setSheetRecall(rec);
     onVerdictOpened(rec, via);
   }, [onVerdictOpened, data.byId]);
+
+  const closeRecallSheet = useCallback(() => setSheetRecall(null), []);
+  /* The sheet keeps showing the recall it was opened on while it slides
+   * away; clearing it first left an empty panel travelling off screen. */
+  const lastSheetRecallRef = useRef(null);
+  if (sheetRecall) lastSheetRecallRef.current = sheetRecall;
+  const sheetShownRecall = sheetRecall || lastSheetRecallRef.current;
 
   /* A shared link (?r=<id>&st=) opens its recall straight away, in the same
    * sheet, labelled as shared. Its view is tracked by the deep-link effect
@@ -2008,25 +2021,29 @@ export default function App() {
   );
 
   return (
-    <div className="flex h-[100dvh] flex-col overflow-hidden bg-ink" style={motionStyle}>
+    <div className="relative flex h-[100dvh] flex-col overflow-hidden bg-ink" style={motionStyle}>
       {/* ================= top bar =================
           Four things, at every width: who this is, where you are, what's new
-          for you, and everything else. The Home / Stores tabs, the scope
-          switch and the Scan button used to sit here too — seven controls
-          competing before the reader had read a word. Scope now lives on the
-          list it scopes, Scan inside the search field it feeds, and the
-          stores view is a link at the foot of Home. */}
-      <header className="z-20 shrink-0 border-b border-line bg-panel">
-        {/* On Home the bar lines up with the 640px column under it; the map
-            view keeps the full width it needs. */}
-        <div className={"mx-auto flex h-14 w-full items-center gap-2 px-3 sm:px-4 lg:h-16 " + (tab === "home" ? "max-w-[672px]" : "")}>
+          for you, and everything else. On Home the bar floats over the page —
+          transparent over the gradient at the top, frosted once the page
+          scrolls under it — so the headline gets the whole first screen. In
+          the stores and full-list views it is an ordinary solid bar. */}
+      <header className={cn(
+        "z-30 shrink-0 transition-[background-color,box-shadow,backdrop-filter] duration-200",
+        tab === "home"
+          ? cn("absolute inset-x-0 top-0", headerSolid ? "bg-glass-strong backdrop-blur-xl backdrop-saturate-150 shadow-[0_1px_0_var(--rr-glass-line)]" : "bg-transparent")
+          : "relative border-b border-line bg-panel",
+      )}>
+        <div className={"mx-auto flex h-14 w-full items-center gap-1.5 px-3 sm:px-4 lg:h-16 " + (tab === "home" ? "max-w-[712px]" : "")}>
           <button type="button" onClick={() => setTab("home")} aria-label="Yanked — home"
-                  className="tap -ml-1 flex shrink-0 items-center gap-2 rounded-lg px-1 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60">
-            <Radar className="size-6 text-mint" aria-hidden="true" />
-            <span className="hidden text-[17px] font-bold tracking-tight text-paper sm:inline">Yanked</span>
+                  className="tap -ml-0.5 flex shrink-0 items-center gap-2 rounded-full py-1 pl-0.5 pr-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint">
+            <span aria-hidden="true" className="grid size-9 place-items-center rounded-[12px] bg-paper text-ink shadow-[var(--rr-shadow-2)]">
+              <Radar className="size-5" strokeWidth={2.25} />
+            </span>
+            <span className="text-[17px] font-semibold tracking-[-0.02em] text-paper max-[359px]:sr-only">Yanked</span>
           </button>
 
-          <div className="ml-auto flex min-w-0 items-center gap-1.5">
+          <div className="ml-auto flex min-w-0 items-center gap-1">
             <LocationButton
               loc={loc}
               busy={locating || (productsBusy && !recalls.length)}
@@ -2042,15 +2059,13 @@ export default function App() {
               aria-controls="alerts-panel"
               aria-label={unreadAlerts ? `Alerts, ${unreadAlerts} new` : "Alerts"}
               title={unreadAlerts ? `Alerts — ${unreadAlerts} new for what you follow` : "Alerts — what you follow, and how you're told"}
-              className={"tap relative grid size-10 shrink-0 place-items-center rounded-full text-fog hover:bg-panel-3 hover:text-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 pointer-coarse:size-11 " +
-                (alertsOpen ? "bg-panel-3 text-paper" : "")}
+              className={"icon-btn relative text-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint " +
+                (alertsOpen ? "bg-panel-3" : "")}
             >
-              <Bell className="size-5" aria-hidden="true" />
+              <Bell className="size-[21px]" aria-hidden="true" strokeWidth={1.9} />
               {unreadAlerts > 0 && (
                 <span aria-hidden="true"
-                      className="tnum absolute right-0.5 top-0.5 grid h-[18px] min-w-[18px] place-items-center rounded-full border-2 border-panel bg-paper px-1 text-[10px] font-bold leading-none text-panel">
-                  {unreadAlerts > 99 ? "99+" : unreadAlerts}
-                </span>
+                      className="absolute right-[11px] top-[10px] size-[9px] rounded-full bg-mint ring-2 ring-[var(--rr-bg)]" />
               )}
             </button>
             <button
@@ -2058,9 +2073,9 @@ export default function App() {
               onClick={() => setMoreOpen(true)}
               aria-label="More: theme, data sources, about"
               title="Theme, data sources, about"
-              className="tap grid size-10 shrink-0 place-items-center rounded-full text-fog hover:bg-panel-3 hover:text-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint/60 pointer-coarse:size-11"
+              className="icon-btn -mr-1.5 text-paper focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint"
             >
-              <MoreHorizontal className="size-5" aria-hidden="true" />
+              <MoreHorizontal className="size-[21px]" aria-hidden="true" />
             </button>
           </div>
         </div>
@@ -2143,19 +2158,20 @@ export default function App() {
       )}
 
       {/* ================= home =================
-          Two jobs, in the order people arrive with them:
+          The question, the box, the categories, then the latest recalls —
+          one centred 680px column at every width: a verdict is a sentence,
+          and a sentence 1400px wide is not one anybody reads.
 
-            1. Is it recalled?  one field (search, or the barcode button in
-               it); typing replaces the list below with compact answers.
-            2. Latest recalls   newest first, Near me · ST | All US on the
-               list itself, each row one tap from the full answer.
-
-          Then a quiet way to the stores view and the full list with filters.
-          One centred column at every width: a verdict is a sentence, and a
-          sentence 1400px wide is not one anybody reads. */}
+            Is it recalled?          display type, centred
+            [ search card ]          frosted, scan bottom-left, go bottom-right
+            ( All )( Food )( … )     category pills, filter list AND results
+            Latest recalls  [Near me · NY | All US]
+            rows                     tile · headline · meta
+            footer                   two ways on, sources, beta */}
       <div id="home-scroll"
-           className={(tab === "home" ? "block " : "hidden ") + "min-h-0 flex-1 overflow-y-auto"}>
-        <div className="mx-auto flex w-full max-w-[640px] flex-col px-4 pt-6 pb-[calc(2.5rem+env(safe-area-inset-bottom,0px))] sm:pt-10 lg:pt-14">
+           onScroll={(e) => { const y = e.currentTarget.scrollTop > 6; if (y !== headerSolid) setHeaderSolid(y); }}
+           className={(tab === "home" ? "block " : "hidden ") + "home-wash min-h-0 flex-1 overflow-y-auto"}>
+        <div className="mx-auto flex w-full max-w-[680px] flex-col px-4 pt-[92px] pb-[calc(2.5rem+env(safe-area-inset-bottom,0px))] sm:px-6 sm:pt-[120px] lg:pt-[136px]">
           <RecallSearch
             loc={verdictLoc}
             scope={viewScope}
@@ -2170,6 +2186,9 @@ export default function App() {
             dataStatus={data.status}
             dataPartial={data.partial}
             onRetry={() => sync.sync({ force: true })}
+            category={homeCat}
+            onCategory={changeCat}
+            listCounts={homeCounts}
           >
             <LatestRecalls
               loc={verdictLoc}
@@ -2179,27 +2198,36 @@ export default function App() {
               sync={{ status: data.status, lastSynced: data.lastSynced }}
               onChangeScope={changeScope}
               onOpenRecall={(r) => openRecallSheet(r, "latest")}
+              category={homeCat}
+              onClearCategory={() => changeCat("all")}
             />
           </RecallSearch>
 
-          <nav aria-label="More ways in" className="mt-10 flex flex-col border-t border-line">
+          <nav aria-label="More ways in" className="card mt-12 flex flex-col overflow-hidden p-1.5">
             {[
-              ["home-stores", "Stores near you named in recalls", goStores],
-              ["home-browse", "Browse all with filters", goRecalls],
-            ].map(([id, label, go]) => (
+              ["home-stores", "Stores near you named in recalls", "A map of the chains notices name", Store, goStores],
+              ["home-browse", "Browse all with filters", "By type, reason and source", ListFilter, goRecalls],
+            ].map(([id, label, sub, Icon, go]) => (
               <button key={id} id={id} type="button" onClick={go}
-                      className="tap group flex min-h-12 items-center justify-between gap-3 border-b border-line text-left text-[15px] font-medium text-paper hover:text-mint">
-                {label}
-                <ArrowRight className="size-4 shrink-0 text-subtle group-hover:text-mint" aria-hidden="true" />
+                      className="press group flex min-h-16 items-center gap-3.5 rounded-[18px] px-3 py-2.5 text-left hover:bg-panel-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint">
+                <span className="grid size-10 shrink-0 place-items-center rounded-[14px] bg-sunken text-fog">
+                  <Icon className="size-5" aria-hidden="true" strokeWidth={1.9} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[15px] font-semibold leading-snug text-paper">{label}</span>
+                  <span className="block truncate text-[13px] leading-snug text-subtle">{sub}</span>
+                </span>
+                <ChevronRight className="size-[18px] shrink-0 text-subtle transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
               </button>
             ))}
           </nav>
 
-          <p className="mt-6 text-[12px] leading-relaxed text-subtle">
-            Recall data from public FDA, USDA and CPSC feeds.{" "}
+          <p className="mx-auto mt-8 max-w-[52ch] text-center text-[12.5px] leading-relaxed text-subtle">
+            Recall data from public FDA, USDA and CPSC feeds, kept on this device and refreshed when you open the app.{" "}
             <span className="font-semibold text-fog">Beta</span> — informational only; always check the product
             codes against the official notice.{" "}
-            <button type="button" onClick={() => setAboutOpen(true)} className="font-semibold text-fog underline-offset-2 hover:text-paper hover:underline">
+            <button type="button" onClick={() => setAboutOpen(true)}
+                    className="-my-3 inline-block py-3 font-semibold text-fog underline decoration-line-strong underline-offset-2 hover:text-paper">
               About this data
             </button>
           </p>
@@ -2855,7 +2883,6 @@ export default function App() {
                   {sorted.slice(0, limit).map((r, i) => {
                     const cat = categoryFor(r);
                     const why = reasonFor(r);
-                    const CatIcon = CATEGORY_ICONS[cat.key] || Package;
                     /* Store chips only for a recall that reaches this state:
                        in All US a Texas-only notice naming Target must not
                        point at the Target down the road. */
@@ -2865,7 +2892,7 @@ export default function App() {
                     const unlinked = (r.retailerIds || []).filter((id) => !linked.has(id));
                     return (
                       <li key={r.id} style={{ animationDelay: `${Math.min(i, 8) * stagger}ms` }}
-                          className="recall-item fade-item elev-1 rounded-xl border border-line bg-panel-2 p-3.5">
+                          className="recall-item fade-item card p-4">
                         <div className="flex flex-wrap items-center gap-1.5">
                           {isAnnounced(r) ? <AnnouncedBadge /> : <SeverityBadge recall={r} />}
                           {/* USDA closes a notice when the recalling firm has
@@ -2885,15 +2912,11 @@ export default function App() {
                             {r.posted ? `Posted ${fmtDate(new Date(`${r.posted}T12:00:00Z`))}` : fmtDate(r.date)}
                           </span>
                         </div>
-                        <div className="mt-2 flex items-start gap-2.5">
-                          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-mint-line bg-mint-soft"
-                                title={cat.label} aria-label={cat.label}>
-                            <CatIcon className="size-4 text-mint" aria-hidden="true" />
-                          </span>
+                        <div className="mt-3 flex items-start gap-3">
+                          <span title={cat.label}><RecallImage recall={r} /></span>
                           <div className="min-w-0 flex-1">
-                            <p className="recall-product text-sm font-semibold [overflow-wrap:anywhere]">{truncate(r.product, 150)}</p>
+                            <p className="recall-product text-[15px] font-semibold leading-snug [overflow-wrap:anywhere]">{truncate(r.product, 150)}</p>
                           </div>
-                          <RecallImage recall={r} />
                         </div>
                         {r.reason && <p className="recall-reason mt-2 text-[13px] leading-relaxed text-paper [overflow-wrap:anywhere]">{truncate(r.reason, 160)}</p>}
                         {/* Where it went, on every card in All US — the
@@ -3036,18 +3059,18 @@ export default function App() {
           notice" all land here: the same card search answers with, open, in
           a sheet over wherever the reader was — so the answer never costs
           them their place in the digest. */}
-      <Sheet open={Boolean(sheetRecall)} onClose={() => setSheetRecall(null)} title="Recall">
-        {sheetRecall && (
-          <div className="px-4 py-4">
-            <VerdictCard
-              recall={sheetRecall}
-              eyebrow={sheetShared ? "Shared with you" : undefined}
-              loc={verdictLoc}
-              expanded
-              freshness={searchFreshness}
-              onRequestLocation={() => openLocationPicker("to check your state", "search_card")}
-            />
-          </div>
+      <Sheet open={Boolean(sheetRecall)} onClose={closeRecallSheet} title="Recall"
+             variant="detail" size="lg" labelledBy="recall-title"
+             footer={sheetShownRecall && <RecallActionBar recall={sheetShownRecall} loc={verdictLoc} />}>
+        {sheetShownRecall && (
+          <RecallDetail
+            key={sheetShownRecall.id}
+            recall={sheetShownRecall}
+            eyebrow={sheetShared ? "Shared with you" : undefined}
+            loc={verdictLoc}
+            freshness={searchFreshness}
+            onRequestLocation={() => openLocationPicker("to check your state", "search_card")}
+          />
         )}
       </Sheet>
 
@@ -3077,23 +3100,23 @@ export default function App() {
 
       {/* ---- theme, sources, about ---- */}
       <Sheet open={moreOpen} onClose={() => setMoreOpen(false)} title="Yanked">
-        <div className="flex flex-col divide-y divide-line">
-          <div className="px-4 py-3">
+        <div className="flex flex-col gap-1 pb-[calc(1rem+env(safe-area-inset-bottom,0px))]">
+          <div className="px-5 py-3">
             <p className="microlabel">Appearance</p>
             <div className="mt-2 flex gap-1.5" role="group" aria-label="Theme">
               {[["light", "Light", Sun], ["dark", "Dark", Moon], ["system", "System", MonitorSmartphone]].map(([k, lbl, Icon]) => (
                 <button key={k} type="button" aria-pressed={theme === k} onClick={() => setTheme(k)}
                         className={"chip flex-1 " + (theme === k ? "chip-on" : "chip-off")}>
-                  <Icon className="size-3.5" />
-                  <span className="normal-case tracking-normal">{lbl}</span>
+                  <Icon className="size-4" />
+                  <span>{lbl}</span>
                 </button>
               ))}
             </div>
           </div>
 
-          <div className="px-4 py-3">
+          <div className="mx-5 my-2 rounded-2xl bg-sunken px-4 py-3">
             <p className="microlabel">Data sources</p>
-            <ul className="mt-2 flex flex-col gap-1.5">
+            <ul className="mt-2 flex flex-col gap-2">
               {listSources.map((src) => (
                 <li key={src.name} className="flex items-center gap-2 text-[13px]">
                   <span className={"size-1.5 shrink-0 rounded-full " + (src.ok ? "bg-mint" : "bg-amber")} aria-hidden="true" />
@@ -3106,12 +3129,12 @@ export default function App() {
             </ul>
           </div>
 
-          <div className="px-4 py-3">
-            <Button variant="secondary" className="mb-2 h-11 w-full"
+          <div className="px-5 py-3">
+            <Button variant="secondary" className="mb-2 h-12 w-full"
                     onClick={() => { setMoreOpen(false); openAlerts(); }}>
               <Bell /> Alerts{unreadAlerts ? ` · ${unreadAlerts} new` : ""}
             </Button>
-            <Button variant="secondary" className="h-11 w-full"
+            <Button variant="secondary" className="h-12 w-full"
                     onClick={() => { setMoreOpen(false); setAboutOpen(true); }}>
               <Info /> About this data
             </Button>
@@ -3154,14 +3177,14 @@ export default function App() {
               dialog out, so the two can move independently: the dim fades
               while the surface travels. It is `absolute`, so it is out of the
               flow and the panel is still the only flex item. */}
-          <div className={"sheet-scrim absolute inset-0 bg-ink/70 " + (aboutShown ? "is-shown" : "")}
+          <div className={"sheet-scrim absolute inset-0 bg-[var(--rr-scrim)] " + (aboutShown ? "is-shown" : "")}
                onClick={() => setAboutOpen(false)} />
-          <div className={"sheet-panel sheet-centered relative max-h-[85dvh] w-full max-w-xl overflow-y-auto overscroll-contain rounded-t-2xl border border-b-0 border-line bg-panel p-5 text-sm text-fog sm:rounded-2xl sm:border-b " +
+          <div className={"sheet-panel sheet-centered relative max-h-[88dvh] w-full max-w-xl overflow-y-auto overscroll-contain rounded-t-[28px] bg-panel p-6 text-[14px] leading-relaxed text-fog shadow-[var(--rr-shadow-3)] sm:rounded-[28px] " +
                  (aboutShown ? "is-shown" : "")}
                style={{ paddingBottom: "calc(1.25rem + env(safe-area-inset-bottom, 0px))" }}>
             <div className="flex items-center justify-between">
-              <p className="microlabel text-paper">About this data</p>
-              <button onClick={() => setAboutOpen(false)} aria-label="Close" className="grid size-8 place-items-center rounded-lg text-fog hover:bg-panel-3 hover:text-paper"><X className="size-4" /></button>
+              <p className="text-[20px] font-semibold tracking-tight text-paper">About this data</p>
+              <button onClick={() => setAboutOpen(false)} aria-label="Close" className="icon-btn -mr-2"><X className="size-[18px]" /></button>
             </div>
             <p className="mt-3">
               Yanked aggregates public recall data from{" "}
@@ -3231,8 +3254,8 @@ export default function App() {
               incomplete — distributors re-ship, and people travel — so an answer that your state isn&rsquo;t
               listed is grey, never green, and the evidence is always one tap away.
             </p>
-            <div className="mt-4 rounded-xl border border-amber/40 bg-amber-soft p-3.5">
-              <p className="text-[11px] font-bold uppercase tracking-[0.08em] text-amber">
+            <div className="mt-5 rounded-2xl bg-amber-soft p-4">
+              <p className="text-[13px] font-semibold text-amber">
                 Beta — no warranty, no liability
               </p>
               <p className="mt-1.5 text-xs leading-relaxed">
