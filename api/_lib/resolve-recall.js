@@ -13,6 +13,31 @@
  */
 import { readIndex, findRecall } from "../../src/lib/index-server.js";
 import { normalizeFda } from "../../src/lib/sources.js";
+import { sharedDb } from "../../src/lib/db.js";
+import { toIndexRecord } from "../../src/lib/publication.js";
+
+/* When the recall database is configured (DATABASE_URL), it is asked first:
+ * it holds every recall the sync has ever seen, not only the published
+ * window. Any failure there falls through to the committed index. */
+async function fromDatabase(id) {
+  try {
+    const db = await sharedDb();
+    if (!db) return null;
+    const [row] = await db.query(
+      `select r.id, r.source, r.product, r.firm, r.reason, r.classification, r.severity, r.status,
+              r.distribution, to_jsonb(r.states) as states, r.coverage, r.initiated::text as initiated,
+              r.posted::text as posted, r.ended::text as ended, r.url, to_jsonb(r.upcs) as upcs, r.image,
+              r.announcement, i.category, i.reason_key
+         from recalls r
+         join lateral (select category, reason_key from recall_index
+                        where recall_id = r.id order by classifier_version desc limit 1) i on true
+        where r.id = $1 and r.initiated is not null`, [id]);
+    return row ? toIndexRecord(row) : null;
+  } catch (err) {
+    console.error(`resolve-recall: database unavailable — ${(err && err.message) || err}`);
+    return null;
+  }
+}
 
 /* Only ids built from a real recall number ("fda-food-H-1339-2026"); ids
  * made for "N/A" records (fda-food-e<event>-<hash>) have no number to ask by. */
@@ -36,12 +61,14 @@ async function fromOpenFda(kind, recallNumber) {
 /** `index` says whether the national index could be read at all, so a "not
  *  found" can be told apart from "this function cannot see the index" — the
  *  second would break every shared link and look exactly like the first.
- *  @returns {Promise<{record: object|null, from: 'index'|'openfda'|null, index: object|null}>} */
+ *  @returns {Promise<{record: object|null, from: 'database'|'index'|'openfda'|null, index: object|null}>} */
 export async function resolveRecall(id) {
   const clean = String(id || "").slice(0, 120);
   const idx = await readIndex();
   const index = idx ? { builtAt: idx.builtAt || null, recalls: idx.recalls.length } : null;
   if (!clean) return { record: null, from: null, index };
+  const stored = await fromDatabase(clean);
+  if (stored) return { record: stored, from: "database", index };
   const hit = findRecall(idx, clean);
   if (hit) return { record: hit, from: "index", index };
   const m = clean.match(FDA_ID);

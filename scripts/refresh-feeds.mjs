@@ -46,7 +46,7 @@
  */
 import { writeFile, mkdir, readFile, appendFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { slimFsis, slimCpsc, fsisIsActive, CPSC_LOOKBACK_DAYS } from "../src/lib/sources.js";
 import { FEED_HEADERS, FSIS_ENDPOINTS, FSIS_HEADER_SETS, cpscUrl, fetchFirstOk } from "../src/lib/feeds.js";
@@ -70,7 +70,7 @@ const GAP_MS = 5000;
  * something upstream has changed shape. `collapse` is the same question asked
  * relatively — a feed that drops to a fifth of the copy already committed has
  * not had a quiet week, it has broken. */
-const HEALTH = {
+export const HEALTH = {
   fsis: { floor: 5, collapse: 0.2 },
   cpsc: { floor: 20, collapse: 0.2 },
 };
@@ -161,7 +161,7 @@ function describeCpsc(raw) {
   };
 }
 
-const FEEDS = [
+export const FEEDS = [
   {
     name: "fsis",
     label: "USDA FSIS",
@@ -189,7 +189,7 @@ const FEEDS = [
 /** Is this result fit to replace what is already committed?
  *  @returns {string[]} the reasons it is not; empty means healthy.
  */
-function healthProblems(name, notices, shape, prev) {
+export function healthProblems(name, notices, shape, prev) {
   const { floor, collapse } = HEALTH[name];
   const problems = [];
 
@@ -336,4 +336,8 @@ async function main() {
   console.log(`All ${results.length} feeds refreshed and healthy.`);
 }
 
-await main();
+/* Imported by scripts/sync/ (the recall database's ingest reuses FEEDS and
+ * healthProblems), so the job only runs when this file is the entry point. */
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
+}

@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   AlertCircle, ArrowLeft, ArrowRight, Armchair, Baby, Beef, Bell, Bike, Candy, Carrot, Check, ChevronDown, ChevronRight, ChevronUp,
   CupSoda,
@@ -19,7 +19,7 @@ import { Tooltip, InfoTip } from "@/components/ui/tooltip";
 import { FilterButton, FilterSheet, FilterGroup, FilterChoice } from "@/components/FilterSheet";
 import ScanSheet from "@/components/ScanSheet";
 import RecallSearch from "@/components/RecallSearch";
-import LatestRecalls from "@/components/LatestRecalls";
+import LatestRecalls, { SyncNote } from "@/components/LatestRecalls";
 import VerdictCard from "@/components/VerdictCard";
 import AlertsPanel from "@/components/AlertsPanel";
 import WatchButton from "@/components/WatchButton";
@@ -29,9 +29,9 @@ import {
 } from "@/components/ui/select";
 import { recallUpcs, lookupProduct } from "@/lib/upc";
 import { browserPosition, reverseGeocode, geocodeInput, geoError, locLabel } from "@/lib/geo";
-import { fetchAll, fetchNational, recoverBlockedSources, sortRecalls } from "@/lib/sources";
 import { isInArea, verdictFor, isAnnounced } from "@/lib/verdict";
-import { loadIndex, freshnessOf, recentForUs } from "@/lib/search-index";
+import { freshnessOf } from "@/lib/search-index";
+import { recallData } from "@/lib/data-sync";
 import { coverageLine } from "@/lib/coverage-line";
 import { cleanState } from "@/lib/share";
 import { ABBR_TO_NAME } from "@/lib/states";
@@ -43,7 +43,7 @@ import {
 } from "@/lib/push";
 import { alertChannels, channelPayload, computeInbox, syncChannels, restoreParamFromUrl, PREFS_EVENT } from "@/lib/alerts";
 import { findStores, STORE_CAPS, DEFAULT_STORE_CAP } from "@/lib/stores";
-import { byId, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
+import { byId, chainsInText, DEFAULT_NEARBY_CHAINS } from "@/lib/retailers";
 import { categoryFor } from "@/lib/category";
 import { classInfo, severityLabel, severityVariant } from "@/lib/classification";
 import { reasonFor, REASON_ORDER } from "@/lib/reason";
@@ -422,6 +422,32 @@ function shortSourceName(name) {
   return String(name).replace(/\s*\([^)]*\)\s*$/, "");
 }
 
+/* Per-agency rows for a list, from the manifest's `sources`: how many of
+ * this list's recalls came from each feed, and whether our database's last
+ * pull of that feed worked. `ok: false` is "not refreshed", not "absent" —
+ * the database still holds what it had. */
+const SOURCE_ROWS = [
+  ["FDA Food", "fda"], ["FDA Drug", "fda"], ["FDA Device", "fda"],
+  ["USDA FSIS", "fsis"], ["CPSC", "cpsc"], ["FDA announcement", "fdaAnnouncements"],
+];
+function sourcesFor(list, manifestSources) {
+  const counts = new Map();
+  for (const r of list || []) counts.set(r.source, (counts.get(r.source) || 0) + 1);
+  const ms = manifestSources || {};
+  return SOURCE_ROWS
+    .filter(([name, key]) => counts.has(name) || (ms[key] && name !== "FDA announcement"))
+    .map(([name, key]) => {
+      const m = ms[key] || null;
+      const ok = !m || m.ok !== false;
+      return {
+        name, ok, count: counts.get(name) || 0,
+        ...(m && m.syncedAt ? { syncedAt: m.syncedAt } : null),
+        ...(m && m.lastUpdated ? { lastUpdated: m.lastUpdated } : null),
+        ...(ok ? null : { error: m.syncedAt ? `last refreshed ${new Date(m.syncedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : "not refreshed" }),
+      };
+    });
+}
+
 /* A source that is *down*, said in the list it is missing from.
  *
  * "USDA data still never shows" was true and the app was close to silent
@@ -465,9 +491,9 @@ function SourceNotice({ sources }) {
         <p key={s.name} className="flex items-start gap-2 text-[12px] leading-relaxed">
           <AlertCircle className="mt-0.5 size-3.5 shrink-0 text-amber" />
           <span>
-            <span className="font-semibold text-paper">{shortSourceName(s.name)} is unavailable right now.</span>{" "}
-            {coverageFor(s.name)} are missing from this list — an empty list is not the same as no
-            recalls. <span className="text-subtle">({s.error || "no response"})</span>
+            <span className="font-semibold text-paper">{shortSourceName(s.name)} didn't refresh in our last update.</span>{" "}
+            {coverageFor(s.name)} published since then may be missing from this list — an empty list is
+            not the same as no recalls. <span className="text-subtle">({s.error || "no response"})</span>
           </span>
         </p>
       ))}
@@ -762,8 +788,6 @@ export default function App() {
   /* Near me · ST | All US. See THE GLOBAL SCOPE above. Named `viewScope`
    * because `scope` below is the panel's store scope (named | area). */
   const [viewScope, setViewScope] = useState(() => initialViewScope(Boolean(loadSavedLoc())));
-  /* The All US list, fetched the first time it is needed and kept. */
-  const [national, setNational] = useState({ status: "idle", recalls: [], sources: [] });
   /* Polite announcements: a new place, a new scope. */
   const [liveMsg, setLiveMsg] = useState("");
   const [radius, setRadius] = useState(16093);
@@ -775,9 +799,31 @@ export default function App() {
   const [storeCap, setStoreCap] = useState(() => loadPref("rr-store-cap", DEFAULT_STORE_CAP));
   useEffect(() => { savePref("rr-store-cap", storeCap); }, [storeCap]);
 
-  const [recalls, setRecalls] = useState([]);
-  const [sources, setSources] = useState([]);
-  const [productsBusy, setProductsBusy] = useState(false);
+  /* ── THE ONE DATASET ──
+   * Every list on every screen reads the local copy of our database
+   * (lib/data-sync.js: IndexedDB, kept current from /api/data). There is no
+   * per-state fetch and no national fetch any more: Near me is that copy
+   * through isInArea, All US is all of it that is active. */
+  const sync = recallData({ onEvent: track });
+  const data = useSyncExternalStore(sync.subscribe, sync.getState);
+  const index = data.dataset; // { recalls, sources } — search, freshness, verdict lookups
+  /* Nothing on the device yet, and the first sync still on its way. */
+  const productsBusy = !index && (data.status === "empty" || data.status === "syncing");
+
+  /* The records as the list views use them: `date` as a Date (their sorting
+   * and "Posted" lines read it), and the chains each notice names, read
+   * from the same text verdict.js reads, for the store matching. Everything
+   * else is the stored record untouched. */
+  const appRecords = useMemo(() => (index ? index.recalls.map((r) => ({
+    ...r,
+    date: r.date ? new Date(`${String(r.date).slice(0, 10)}T12:00:00Z`) : null,
+    retailerIds: Array.isArray(r.retailerIds) ? r.retailerIds
+      : chainsInText([r.distribution, r.product, r.reason, r.firm].filter(Boolean).join(" \n ")).map((c) => c.id),
+  })) : []), [index]);
+  const activeRecords = useMemo(() => appRecords.filter((r) => r.status !== "ended"), [appRecords]);
+  /* The area list: the one area rule, over the one dataset. */
+  const recalls = useMemo(() => (loc ? activeRecords.filter((r) => isInArea(r, loc)) : []), [activeRecords, loc]);
+  const sources = useMemo(() => sourcesFor(recalls, data.sources), [recalls, data.sources]);
 
   const [stores, setStores] = useState([]);
   const [storesStatus, setStoresStatus] = useState(null);
@@ -811,10 +857,6 @@ export default function App() {
    * camera. */
   const [storesWanted, setStoresWanted] = useState(false);
   useEffect(() => { if (tab !== "home") setStoresWanted(true); }, [tab]);
-  /* The national index (public/feeds/index.json). RecallSearch loads it for
-   * itself; this is the same memoized promise, held here for the digest.
-   * Started after first paint, never awaited by it. */
-  const [index, setIndex] = useState(null);
   /* A recall opened from the digest (its headline, a follow match, a story),
    * answered in a sheet over wherever the reader is. */
   const [sheetRecall, setSheetRecall] = useState(null);
@@ -943,61 +985,6 @@ export default function App() {
     }
   }, []);
 
-  /* A place changed while its list was still loading (a recent picked, then
-   * another, in two taps) must not have the first answer land on the second
-   * place. Each load takes a ticket; only the newest may write. */
-  const recallsRunRef = useRef(0);
-  const loadRecalls = useCallback(async (locArg) => {
-    const run = ++recallsRunRef.current;
-    const current = () => run === recallsRunRef.current;
-    setProductsBusy(true);
-    setRecalls([]);
-    setSources([]);
-    setLimit(25);
-    try {
-      /* The normalizers keep notices naming only other states ('elsewhere')
-       * so a verdict can say "not reported in your state". This list is the
-       * area list, so it filters through the one area rule. fetchAll already
-       * applies it on every path; this is the guard at the point of use. */
-      const { recalls: all, sources: srcs } = await fetchAll(locArg);
-      if (!current()) return;
-      const fetched = all.filter((r) => isInArea(r, locArg));
-      setRecalls(fetched);
-      setSources(srcs);
-
-      track("recalls_loaded", {
-        count: fetched.length,
-        state: locArg.stateAbbr || null,
-        sources_ok: srcs.filter((x) => x.ok).length,
-        sources_failed: srcs.filter((x) => !x.ok).length,
-      });
-      /* One event per failed feed, not a list on the load event — a feed
-       * going dark is the thing worth alerting on, and it needs its own
-       * breakdown by name. See the four-tier fallback in the README. */
-      for (const x of srcs) {
-        if (!x.ok) track("source_failed", { source: x.name, error: String(x.error || "failed").slice(0, 120) });
-      }
-
-      /* USDA blocks our server but usually not the browser, so retry it here and
-       * fold the result in when it lands. Deliberately not awaited: the stores
-       * lookup is the slow part of the page and must not wait on a source that
-       * may well be blocked here too. */
-      // Deliberately not awaited: the store lookup is the slow part of this
-      // page and must not wait on sources that may be unreachable from here
-      // too. Whatever comes back is folded in and re-sorted.
-      recoverBlockedSources(locArg, srcs).then((late) => {
-        if (!late || !current()) return;
-        // Whether the browser can reach what the server could not is the
-        // whole premise of the fallback; without this it is unmeasurable.
-        track("sources_recovered", { count: late.recalls.length });
-        setRecalls((prev) => sortRecalls([...prev, ...late.recalls.filter((r) => isInArea(r, locArg))]));
-        setSources(late.sources);
-      });
-    } finally {
-      if (current()) setProductsBusy(false);
-    }
-  }, []);
-
   /* Store loading has exactly one trigger: this effect. The first load, a new
    * location and a radius change all take the same path — previously the first
    * load was an imperative tail-call inside the recall fetch and the radius
@@ -1025,8 +1012,6 @@ export default function App() {
     const from = viewScopeRef.current;
     if (next === from) return;
     setViewScope(next);
-    // A national list that failed earlier gets another try on the way back.
-    if (next === "us") setNational((n) => (n.status === "failed" ? { ...n, status: "idle" } : n));
     savePref(SCOPE_KEY, next);
     writeScopeParam(next);
     registerSuper({ scope: next });
@@ -1062,8 +1047,7 @@ export default function App() {
       applyScope("near", "location_set", newLoc.state || newLoc.stateAbbr);
       setLiveMsg(`Location set to ${locLabel(newLoc)}. Showing Near me · ${newLoc.stateAbbr}.`);
     }
-    await loadRecalls(newLoc);
-  }, [loadRecalls, applyScope]);
+  }, [applyScope]);
 
   const [locating, setLocating] = useState(false);
 
@@ -1126,10 +1110,6 @@ export default function App() {
   const forgetLocation = useCallback(() => {
     saveLoc(null);
     setLoc(null);
-    recallsRunRef.current += 1; // a list still loading for the old place must not land
-    setProductsBusy(false);
-    setRecalls([]);
-    setSources([]);
     setStores([]);
     setStoresStatus(null);
     setActiveStore(-1);
@@ -1172,27 +1152,33 @@ export default function App() {
   }, [loc]);
   const verdictState = verdictLoc && verdictLoc.stateAbbr ? verdictLoc.stateAbbr : null;
 
-  // ── the national index, after first paint ─────────────────────────────
+  /* One event per place the list is shown for, once the data is there —
+   * the funnel's "the list loaded" step, now read from the local copy. */
+  const loadedForRef = useRef("");
   useEffect(() => {
-    let alive = true;
-    loadIndex().then((ix) => { if (alive) setIndex(ix); }).catch(() => { /* RecallSearch shows the retry */ });
-    return () => { alive = false; };
-  }, []);
+    const st = loc && loc.stateAbbr;
+    if (!st || !index || loadedForRef.current === st) return;
+    loadedForRef.current = st;
+    track("recalls_loaded", { count: recalls.length, state: st, from: "local" });
+  }, [loc, index, recalls.length]);
 
   /* A shared link's verdict counts as viewed once the record is known —
    * RecallSearch opens it itself, without a click to hang the event on. */
   const deepTrackedRef = useRef(false);
   useEffect(() => {
     if (!index || !DEEP_LINK.recallId || deepTrackedRef.current) return;
+    const r = data.byId.get(DEEP_LINK.recallId);
+    // Not there yet while months are still arriving: only a complete copy
+    // may call a link "not found".
+    if (!r && (data.partial || data.status === "syncing" || data.status === "empty")) return;
     deepTrackedRef.current = true;
-    const r = (index.recalls || []).find((x) => x.id === DEEP_LINK.recallId);
     track("verdict_viewed", {
       verdict: r ? verdictFor(r, verdictLoc).verdict : "not_found",
       source: r ? r.source : null,
       via: "share_link",
       state: verdictState,
     });
-  }, [index, verdictLoc, verdictState]);
+  }, [index, data.byId, data.status, data.partial, verdictLoc, verdictState]);
 
   // ── analytics hooks for the Home components ───────────────────────────
   const onVerdictOpened = useCallback((r, via = "search") => {
@@ -1218,19 +1204,15 @@ export default function App() {
 
   const openRecallSheet = useCallback((r, via = "latest") => {
     if (!r) return;
-    /* One recall, one answer. normalizeFsis and the index now share one
-     * rule for when USDA's "not active" flag means ended (fsisStatus and
-     * FSIS_TRUST_CLOSED_DAYS in lib/sources.js), so the two should agree; the
-     * index's status still wins here as a guard against a live record cached
-     * before that rule, which called a days-old notice "ended". Everything
-     * else — lot codes, photo — stays the live record's, which has more of
-     * it. `active` (USDA's raw flag, for the Closed chip) is left alone. */
-    const ix = index && Array.isArray(index.recalls) ? index.recalls.find((x) => x.id === r.id) : null;
+    /* One recall, one answer: the local database's status wins, so a row
+     * that came from somewhere else (a /api/lookup result) cannot contradict
+     * it. Everything else stays the record that was opened. */
+    const ix = data.byId.get(r.id) || null;
     const rec = ix ? { ...r, status: ix.status, endDate: ix.endDate } : r;
     setSheetShared(false);
     setSheetRecall(rec);
     onVerdictOpened(rec, via);
-  }, [onVerdictOpened, index]);
+  }, [onVerdictOpened, data.byId]);
 
   /* A shared link (?r=<id>&st=) opens its recall straight away, in the same
    * sheet, labelled as shared. Its view is tracked by the deep-link effect
@@ -1240,30 +1222,6 @@ export default function App() {
     setSheetShared(true);
     setSheetRecall(r);
   }, []);
-
-  /* ── the All US list ──
-   * Fetched lazily, the first time the reader is in All US, and kept for the
-   * session: it is one CDN-cached URL for everybody, but it is also the
-   * biggest payload the app asks for. Until it lands (or if it fails) the
-   * surfaces read the national index instead and say so. */
-  useEffect(() => {
-    if (viewScope !== "us" || national.status !== "idle") return;
-    setNational((n) => ({ ...n, status: "loading" }));
-    fetchNational().then((got) => {
-      if (!got) {
-        setNational({ status: "failed", recalls: [], sources: [] });
-        track("recalls_failed", { scope: "us" });
-        return;
-      }
-      setNational({ status: "done", recalls: got.recalls, sources: got.sources });
-      track("recalls_loaded", {
-        count: got.recalls.length,
-        scope: "us",
-        sources_ok: got.sources.filter((x) => x.ok).length,
-        sources_failed: got.sources.filter((x) => !x.ok).length,
-      });
-    });
-  }, [viewScope, national.status]);
 
   const goStores = useCallback(() => {
     setTab("near");
@@ -1413,27 +1371,23 @@ export default function App() {
   }, [refreshChannels]);
 
   /* ── the Alerts inbox ──
-   * Computed here, in the browser, from the national index plus the live
-   * lists this page already loaded (the index copy wins on an id both have,
-   * as in the recall sheet). No channel needed: this is what the bell's
+   * Computed here, in the browser, from the local database — the same
+   * records every list reads. No channel needed: this is what the bell's
    * count and the panel's "New for you" read. */
   const { inbox, recordsById } = useMemo(() => {
-    if (!index || !Array.isArray(index.recalls)) return { inbox: null, recordsById: null };
-    const records = [...index.recalls, ...recalls, ...(national.recalls || [])];
-    const map = new Map();
-    for (const r of records) if (r && r.id && !map.has(r.id)) map.set(r.id, r);
+    if (!index) return { inbox: null, recordsById: null };
     return {
       inbox: computeInbox({
-        records: [...map.values()],
+        records: index.recalls,
         terms: getFollows(),
         followed: getFollowedRecalls(),
         since: getAlertsSeen() || lastVisit,
         stateAbbr: ownState,
       }),
-      recordsById: map,
+      recordsById: data.byId,
     };
     // followsRev: re-read localStorage after any follow / read-marker change.
-  }, [index, recalls, national, ownState, lastVisit, followsRev]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [index, data.byId, ownState, lastVisit, followsRev]); // eslint-disable-line react-hooks/exhaustive-deps
   const unreadAlerts = (inbox && inbox.count) || 0;
 
   /** Selecting a store is one action: focus its pin and scope the product list.
@@ -1617,32 +1571,23 @@ export default function App() {
   const selectedStore = activeStore >= 0 ? stores[activeStore] : null;
 
   /* ── which list the Recalls panel reads ──
-   *   Near me   the area list (live, state-scoped)
-   *   All US    the national list (live, ?scope=us), or while it loads / if
-   *             it failed, the national index — never a mix of the two
+   * One dataset, three views of it:
+   *   Near me   the area list (isInArea over the local copy)
+   *   All US    every active record in the local copy
    *   a store   always the area list, whatever the scope: a store is a place,
    *             and a Texas-only recall naming Target does not concern the
    *             Target on 34th St. */
   const usMode = viewScope === "us";
-  const nationalIndexList = useMemo(() => {
-    if (!usMode || national.status === "done" || !index) return [];
-    return recentForUs(index, { sinceDays: 400 })
-      .map((r) => ({ ...r, date: r.date ? new Date(`${r.date}T12:00:00Z`) : null }));
-  }, [usMode, national.status, index]);
-  const listFrom = selectedStore || !usMode ? "area" : national.status === "done" ? "us" : "index";
-  const listRecalls = listFrom === "area" ? recalls : listFrom === "us" ? national.recalls : nationalIndexList;
-  const listSources = listFrom === "area" ? sources : listFrom === "us" ? national.sources : [];
-  const listBusy = listFrom === "area" ? productsBusy : national.status === "loading" && !nationalIndexList.length;
-  const listFreshness = useMemo(
-    () => (index || listSources.length ? freshnessOf(index, listFrom === "index" ? null : listSources) : []),
-    [index, listSources, listFrom],
+  const listFrom = selectedStore || !usMode ? "area" : "us";
+  const listRecalls = listFrom === "area" ? recalls : activeRecords;
+  const listSources = useMemo(
+    () => (listFrom === "area" ? sources : sourcesFor(activeRecords, data.sources)),
+    [listFrom, sources, activeRecords, data.sources],
   );
-  /* Search is national in both scopes: its freshness is the index's, with the
-   * live list's dates winning where the reader has one loaded. */
-  const searchFreshness = useMemo(
-    () => (index ? freshnessOf(index, usMode ? (national.status === "done" ? national.sources : null) : (loc ? sources : null)) : []),
-    [index, usMode, national.status, national.sources, loc, sources],
-  );
+  const listBusy = productsBusy;
+  /* Freshness is the manifest's, everywhere: one database, one answer. */
+  const listFreshness = useMemo(() => (index ? freshnessOf(index) : []), [index]);
+  const searchFreshness = listFreshness;
   const listFdaGap = !listBusy && listRecalls.length > 0 && fdaMissing(listFreshness, listRecalls);
   /* All US, one card: does it reach the reader's state? Neutral words only. */
   const ownAbbr = loc && loc.stateAbbr;
@@ -2120,7 +2065,7 @@ export default function App() {
           </div>
         </div>
 
-        {(productsBusy || storesStatus?.busy || (usMode && national.status === "loading")) && <div id="progress" className="progress-track" />}
+        {(productsBusy || storesStatus?.busy) && <div id="progress" className="progress-track" />}
 
         {/* Announcements for a new place or a new scope. Nothing visible:
             the header button and the switch already show both. */}
@@ -2220,16 +2165,18 @@ export default function App() {
             onOpenShared={openSharedRecall}
             onScan={() => setScanOpen(true)}
             onSearch={onSearchSettled}
+            index={index}
+            byId={data.byId}
+            dataStatus={data.status}
+            dataPartial={data.partial}
+            onRetry={() => sync.sync({ force: true })}
           >
             <LatestRecalls
               loc={verdictLoc}
               hasLocation={Boolean(loc)}
               scope={viewScope}
-              index={index}
-              live={usMode
-                ? (national.status === "done" ? { records: national.recalls, sources: national.sources } : null)
-                : (loc && !productsBusy ? { records: recalls, sources } : null)}
-              busy={usMode ? national.status === "loading" : productsBusy}
+              dataset={index}
+              sync={{ status: data.status, lastSynced: data.lastSynced }}
               onChangeScope={changeScope}
               onOpenRecall={(r) => openRecallSheet(r, "latest")}
             />
@@ -2881,13 +2828,7 @@ export default function App() {
               <div id="recalls-list-scroll" ref={productsScrollRef}
                    className="sunken min-h-0 flex-1 overflow-y-auto px-3 py-3">
                 {!listBusy && <SourceNotice sources={listSources} />}
-                {!listBusy && listFrom === "index" && listRecalls.length > 0 && (
-                  <p className="mb-2 text-[12px] leading-snug text-subtle">
-                    {national.status === "failed"
-                      ? "The live national list didn't load, so this is our recall index."
-                      : "Showing our recall index while the live national list loads."}
-                  </p>
-                )}
+                {!listBusy && <SyncNote status={data.status} lastSynced={data.lastSynced} hasData={!!index} className="mb-2 mt-0" />}
                 {listFdaGap && !usMode && <FdaGapNote className="mb-2" />}
                 {listBusy && (
                   <ul className="flex flex-col gap-2">{[0, 1, 2, 3].map((i) => <RecallSkeleton key={i} delay={i * stagger * 2} />)}</ul>
@@ -3043,15 +2984,6 @@ export default function App() {
                 {!listBusy && listFreshness.length > 0 && (
                   <div className="mt-3 space-y-0.5 px-1 pb-1 text-center">
                     <FreshnessLine entries={listFreshness} />
-                    {listSources.some((x) => x.truncated) && (
-                      <p className="text-[11px] text-subtle">
-                        FDA: the newest notices only
-                        {(() => {
-                          const o = listSources.filter((x) => x.truncated && x.oldest).map((x) => x.oldest).sort().pop();
-                          return o ? `, back to ${new Date(`${o}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}` : "";
-                        })()}.
-                      </p>
-                    )}
                   </div>
                 )}
               </div>
@@ -3074,8 +3006,8 @@ export default function App() {
         </p>
         <div className="flex items-center gap-2">
           {listSources.map((s) => (
-            <Tooltip key={s.name} content={s.ok ? `${s.name} — ${s.count} ${listFrom === "us" ? "in the US list" : "matching your area"}` : `${s.name} — unavailable (${s.error || "error"})`}>
-              <span tabIndex={0} aria-label={s.ok ? `${s.name}: ${s.count} matching` : `${s.name}: unavailable`}
+            <Tooltip key={s.name} content={s.ok ? `${s.name} — ${s.count} ${listFrom === "us" ? "in the US list" : "matching your area"}` : `${s.name} — not refreshed in our last update (${s.error || "error"})`}>
+              <span tabIndex={0} aria-label={s.ok ? `${s.name}: ${s.count} matching` : `${s.name}: not refreshed`}
                     className={"size-1.5 rounded-full " + (s.ok ? "bg-mint" : "bg-amber")} />
             </Tooltip>
           ))}
@@ -3167,7 +3099,7 @@ export default function App() {
                   <span className={"size-1.5 shrink-0 rounded-full " + (src.ok ? "bg-mint" : "bg-amber")} aria-hidden="true" />
                   <span className="min-w-0 flex-1 truncate">{src.name}</span>
                   <span className="tnum shrink-0 text-[11px] text-fog">
-                    {src.ok ? `${fmtCount(src.count)} ${listFrom === "us" ? "in the US" : "matching"}` : "unavailable"}
+                    {src.ok ? `${fmtCount(src.count)} ${listFrom === "us" ? "in the US" : "matching"}` : `${fmtCount(src.count)} · not refreshed`}
                   </span>
                 </li>
               ))}
@@ -3323,7 +3255,7 @@ export default function App() {
                   <span className={"size-1.5 shrink-0 rounded-full " + (s.ok ? "bg-mint" : "bg-amber")} aria-hidden="true" />
                   <span>{s.name}</span>
                   <span className="ml-auto tnum text-[11px]">
-                    {s.ok ? `${s.count} matching` : `unavailable (${s.error || "error"})`}
+                    {s.ok ? `${s.count} matching` : `${s.count} · ${s.error || "not refreshed"}`}
                   </span>
                   {s.note && <p className="w-full pl-3.5 text-[11px] text-amber">{s.note}</p>}
                 </li>

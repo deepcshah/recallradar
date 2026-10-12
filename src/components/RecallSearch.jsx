@@ -3,8 +3,8 @@ import { LoaderCircle, RotateCw, ScanLine, Search, SearchX, X } from "lucide-rea
 import { Button } from "@/components/ui/button";
 import RecallRow, { shortVerdict, rowDate } from "@/components/RecallRow";
 import FreshnessLine, { fmtAsOf, oldestAsOf } from "@/components/FreshnessLine";
-import { loadIndex, searchIndex, liveLookup } from "@/lib/search-index";
-import { verdictFor, resolveLoc, VERDICTS, isAnnounced } from "@/lib/verdict";
+import { prepareSearch, searchIndex, liveLookup } from "@/lib/search-index";
+import { verdictFor, resolveLoc, VERDICTS } from "@/lib/verdict";
 import { relevanceOf } from "@/lib/relevance";
 import { cn } from "@/lib/utils";
 
@@ -13,9 +13,9 @@ import { cn } from "@/lib/utils";
  *
  * The rest of the app starts from a place and asks what reached it. People
  * mostly arrive the other way round: they saw a headline about a sausage and
- * want to know whether it is *their* sausage. This searches the national
- * index (every FDA, USDA and CPSC notice for the last year, ended ones
- * included) and answers each hit with verdictFor, grouped by that answer:
+ * want to know whether it is *their* sausage. This searches the local
+ * copy of our database (lib/data-sync.js: every FDA, USDA and CPSC notice
+ * for the last year, ended ones included) and answers each hit with verdictFor, grouped by that answer:
  *
  *   In your area            the notice names your state, or nationwide
  *   Region not stated       the notice names nowhere — not the same as "nowhere"
@@ -30,11 +30,12 @@ import { cn } from "@/lib/utils";
  *    car seats, boats, pesticides). It is grey, never green, and never says
  *    "safe".
  *
- * 2. "Not checked" is not "not found". When the index could not get FDA data
- *    (`sources.fda.ok === false`) — or simply has no FDA hit for the query —
- *    openFDA is asked directly through liveLookup, and while that is in
- *    flight the page says so. If that fails too, the empty-state headline
- *    stops claiming anything about the FDA.
+ * 2. "Not checked" is not "not found". When the database could not get FDA
+ *    data (`sources.fda.ok === false`) — or holds no strong match for the
+ *    query at all — openFDA is asked directly through liveLookup, as a last
+ *    resort, and while that is in flight the page says so. Rows that came
+ *    from it are labelled "From FDA directly". If it fails too, the
+ *    empty-state headline stops claiming anything about the FDA.
  *
  * 3. Without a location there is no verdict, only coverage. Each row then
  *    says where the notice sent it ("Sent to AZ, NM, TX"), and the opened
@@ -83,10 +84,6 @@ function ago(iso) {
   return rtf.format(Math.round(hrs / 24), "day");
 }
 
-/* An FDA *announcement* (press release, not yet classified) is not an openFDA
- * enforcement hit: letting it count would stop the live openFDA check for a
- * query whose enforcement record the index does not have. */
-const isFda = (r) => String(r && r.source).startsWith("FDA") && !isAnnounced(r);
 
 /* ───────────────────────────── grouping ────────────────────────────────── */
 
@@ -130,8 +127,9 @@ function SourceRow({ name, covers, children }) {
 
 function freshness(src) {
   if (!src) return "not in the index";
-  if (!src.ok) return src.fetchedAt ? `last good copy ${ago(src.fetchedAt)}` : "not in the index";
-  return `${src.count} notices · updated ${ago(src.fetchedAt)}`;
+  const at = src.syncedAt || src.fetchedAt;
+  if (!src.ok) return at ? `last good copy ${ago(at)}` : "not in the index";
+  return `${src.count} notices · updated ${ago(at)}`;
 }
 
 function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
@@ -141,15 +139,15 @@ function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
 
   let fdaLine;
   if (fdaInIndex) fdaLine = freshness(s.fda);
-  else if (live.status === "pending") fdaLine = "not in today's index · checking openFDA directly…";
+  else if (live.status === "pending") fdaLine = "not in our database · checking openFDA directly…";
   else if (live.status === "done") {
     const asOf = live.records && live.records.lastUpdated;
     fdaLine = asOf
-      ? `not in today's index · checked openFDA directly: its data runs to ${fmtAsOf(asOf)}`
-      : "not in today's index · checked openFDA directly just now";
+      ? `not in our database · checked openFDA directly: its data runs to ${fmtAsOf(asOf)}`
+      : "not in our database · checked openFDA directly just now";
   }
-  else if (live.status === "idle") fdaLine = `not in today's index · type ${LIVE_MIN_CHARS}+ letters to check openFDA directly`;
-  else fdaLine = "not in today's index, and openFDA couldn't be reached — not checked";
+  else if (live.status === "idle") fdaLine = `not in our database · type ${LIVE_MIN_CHARS}+ letters to check openFDA directly`;
+  else fdaLine = "not in our database, and openFDA couldn't be reached — not checked";
 
   return (
     <div className="fade-item rounded-xl border border-dashed border-line bg-panel-2/40 px-4 py-5 sm:px-5">
@@ -227,6 +225,11 @@ function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
 /**
  * @param {object}   props
  * @param {object}   [props.loc]             { state, stateAbbr } or null
+ * @param {object}   [props.index]           data-sync `dataset` ({ recalls, sources }), or null
+ * @param {Map}      [props.byId]            data-sync `byId`
+ * @param {string}   [props.dataStatus]      data-sync `status`
+ * @param {boolean}  [props.dataPartial]     data-sync `partial` (stored months still being read)
+ * @param {Function} [props.onRetry]         () => void, retry a failed first sync
  * @param {Function} [props.onOpenRecall]    (record) => void, a result row was tapped
  *                                           (the page opens the recall sheet)
  * @param {string}   [props.initialRecallId] a shared recall (/r/:id deep links)
@@ -244,11 +247,15 @@ function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
  */
 export default function RecallSearch({
   loc, onOpenRecall, onOpenShared, initialRecallId, autoFocus = false, onSearch, onScan, className,
-  scope = "near", freshness, children,
+  scope = "near", freshness, children, index = null, byId = null, dataStatus = "empty", dataPartial = false, onRetry,
 }) {
-  const [index, setIndex] = useState(null);
-  const [loadError, setLoadError] = useState("");
-  const [loadTry, setLoadTry] = useState(0);
+  /* Nothing on the device and the sync could not get any: say so, rather
+   * than spin. With data on the device, a failed refresh is the list's
+   * business (LatestRecalls' SyncNote), not search's. */
+  const loadError = !index && (dataStatus === "offline" || dataStatus === "error") ? dataStatus : "";
+  /* Still fetching chunks beyond `latest`: a miss is not yet a miss. */
+  const complete = !!index && !dataPartial && dataStatus !== "syncing" && dataStatus !== "empty";
+  const [engineRev, setEngineRev] = useState(0);
   const [query, setQuery] = useState("");
   const [q, setQ] = useState("");               // debounced
   const [live, setLive] = useState({ q: "", status: "idle", records: [] });
@@ -257,15 +264,15 @@ export default function RecallSearch({
   const L = resolveLoc(loc);
   const flat = scope === "us" || !L;
 
-  // ── the index ──────────────────────────────────────────────────────────
+  // ── the search engine, built off the critical path ─────────────────────
   useEffect(() => {
+    if (!index) return undefined;
     let alive = true;
-    setLoadError("");
-    loadIndex()
-      .then((ix) => { if (alive) setIndex(ix); })
-      .catch((err) => { if (alive) setLoadError((err && err.message) || "couldn't load"); });
-    return () => { alive = false; };
-  }, [loadTry]);
+    const t = setTimeout(() => {
+      prepareSearch(index).then(() => { if (alive) setEngineRev((x) => x + 1); }).catch(() => { /* scan fallback */ });
+    }, 0);
+    return () => { alive = false; clearTimeout(t); };
+  }, [index]);
 
   useEffect(() => {
     if (autoFocus) inputRef.current?.focus({ preventScroll: true });
@@ -279,14 +286,17 @@ export default function RecallSearch({
 
   const hits = useMemo(
     () => (index && q ? searchIndex(index, q, { limit: RESULT_LIMIT }) : []),
-    [index, q],
+    [index, q, engineRev], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const fdaInIndex = !!(index && index.sources && index.sources.fda && index.sources.fda.ok);
-  /* Only a real FDA answer stops the live check: a cookie whose ingredient
-   * list mentions sugar is not the sugar recall, and must not stand in for it. */
-  const wantLive = !!index && q.length >= LIVE_MIN_CHARS &&
-    (!fdaInIndex || !hits.some((r) => isFda(r) && relevanceOf(r, q) >= 2));
+  /* /api/lookup is the last resort, asked only when the local database has
+   * no strong match (a cookie whose ingredient list mentions sugar is not a
+   * strong match for "sugar"), or has no FDA data at all — and only once the
+   * whole database is on the device, so a month still downloading is not
+   * mistaken for a miss. A barcode has no "strong": any hit is the answer. */
+  const strongLocal = /^\d[\d\s-]*$/.test(q) ? hits.length > 0 : hits.some((r) => relevanceOf(r, q) >= 2);
+  const wantLive = complete && q.length >= LIVE_MIN_CHARS && (!fdaInIndex || !strongLocal);
 
   /* openFDA, directly — see rule 2 at the top. One request per settled query,
    * cached for the life of the component so backspacing to an earlier query
@@ -321,7 +331,9 @@ export default function RecallSearch({
   const { results, weak } = useMemo(() => {
     if (!q) return { results: [], weak: [] };
     const seen = new Set(hits.map((r) => r.id));
-    const extra = live.q === q ? live.records.filter((r) => r && !seen.has(r.id)) : [];
+    const extra = live.q === q
+      ? live.records.filter((r) => r && !seen.has(r.id)).map((r) => ({ ...r, viaLookup: true }))
+      : [];
     const all = [...hits, ...extra];
     if (/^\d[\d\s-]*$/.test(q)) return { results: all, weak: [] }; // a barcode has no "about"
     const rel = new Map(all.map((r) => [r.id, relevanceOf(r, q)]));
@@ -374,15 +386,15 @@ export default function RecallSearch({
 
   const inIndex = useMemo(() => {
     if (!initialRecallId || !index) return null;
-    return index.recalls.find((r) => r.id === initialRecallId) || null;
-  }, [index, initialRecallId]);
+    return (byId && byId.get(initialRecallId)) || index.recalls.find((r) => r.id === initialRecallId) || null;
+  }, [index, byId, initialRecallId]);
 
-  /* A shared id the browser's index lacks — it can lag a refresh, and an FDA
-   * id can be answered from openFDA directly — is asked of /api/share before
-   * the card says it couldn't be found. */
+  /* A shared id the local database lacks once it is complete — it can lag a
+   * refresh, and an FDA id can be answered from openFDA directly — is asked
+   * of /api/share before the card says it couldn't be found. */
   const [fetched, setFetched] = useState({ id: null, status: "idle", record: null });
   useEffect(() => {
-    if (!initialRecallId || !index || inIndex || fetched.id === initialRecallId) return;
+    if (!initialRecallId || !complete || inIndex || fetched.id === initialRecallId) return;
     let alive = true;
     setFetched({ id: initialRecallId, status: "pending", record: null });
     fetch(`/api/share?format=json&id=${encodeURIComponent(initialRecallId)}`, { headers: { Accept: "application/json" } })
@@ -390,7 +402,7 @@ export default function RecallSearch({
       .then((b) => { if (alive) setFetched({ id: initialRecallId, status: "done", record: (b && b.record) || null }); })
       .catch(() => { if (alive) setFetched({ id: initialRecallId, status: "done", record: null }); });
     return () => { alive = false; };
-  }, [initialRecallId, index, inIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [initialRecallId, complete, inIndex]); // eslint-disable-line react-hooks/exhaustive-deps
   const pinned = inIndex || (fetched.id === initialRecallId ? fetched.record : null);
   const pinnedPending = !inIndex && fetched.id === initialRecallId && fetched.status === "pending";
 
@@ -479,10 +491,12 @@ export default function RecallSearch({
       {loadError && (
         <div className="mt-3 flex flex-wrap items-center gap-3 rounded-xl border border-line bg-panel-2 px-3.5 py-3" role="alert">
           <p className="min-w-0 flex-1 text-[13px] leading-snug text-fog">
-            <span className="font-semibold text-paper">The recall index didn't load.</span>{" "}
+            <span className="font-semibold text-paper">
+              {loadError === "offline" ? "You're offline, and no recall data is saved on this device yet." : "The recall data didn't load."}
+            </span>{" "}
             Nothing has been searched yet — this is not an empty result.
           </p>
-          <Button type="button" size="sm" variant="secondary" onClick={() => setLoadTry((x) => x + 1)}>
+          <Button type="button" size="sm" variant="secondary" onClick={() => onRetry && onRetry()}>
             <RotateCw aria-hidden="true" /> Try again
           </Button>
         </div>
@@ -545,7 +559,7 @@ export default function RecallSearch({
                   key={r.id}
                   recall={r}
                   verdict={shortVerdict(r, L)}
-                  meta={[rowDate(r), r.firm].filter(Boolean).join(" · ") || undefined}
+                  meta={[r.viaLookup ? "From FDA directly" : null, rowDate(r), r.firm].filter(Boolean).join(" · ") || undefined}
                   onOpen={onOpenRecall}
                 />
               ))}

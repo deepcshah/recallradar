@@ -11,7 +11,7 @@
  *     "Email me" — see the README's privacy section.
  *   - The in-app inbox (computeInbox): what is new for the reader's follows
  *     since they last marked it read, computed entirely here from the
- *     national index plus whatever live lists the app has loaded. It needs no
+ *     local copy of our database (./data-sync.js). It needs no
  *     channel, no server and no account.
  *
  * Functions that can fail return { ok:false, message } with a sentence that
@@ -229,9 +229,9 @@ export const INBOX_FIRST_DAYS = 14;
  * What is new for the reader's follows. Pure.
  *
  * @param {object}   o
- * @param {object[]} o.records     every record available: the index's recalls
- *                                 plus live lists (deduped by id here; the
- *                                 index copy wins, as in the recall sheet)
+ * @param {object[]} o.records     every record available: the local database
+ *                                 (data-sync `records`; deduped by id here,
+ *                                 first copy wins)
  * @param {string[]} o.terms       follow terms
  * @param {object[]} o.followed    follows.js getFollowedRecalls()
  * @param {string|null} o.since    ISO marker (getAlertsSeen), or null

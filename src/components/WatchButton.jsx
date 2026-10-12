@@ -5,7 +5,7 @@ import {
   followRecall, unfollowRecall, isFollowingRecall, FOLLOWS_EVENT, MAX_FOLLOWED_RECALLS,
 } from "@/lib/follows";
 import { recallSnapshot, isRecallId } from "@/lib/recall-watch";
-import { loadIndex } from "@/lib/search-index";
+import { recallData } from "@/lib/data-sync";
 import { track } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
 
@@ -18,7 +18,7 @@ import { cn } from "@/lib/utils";
  * release) FDA publishing the enforcement record. Updates land in the Alerts
  * inbox with no setup, and go out by push or email when one is on.
  *
- * The baseline is the national index's copy of the record when there is one
+ * The baseline is the local database's copy of the record when there is one
  * (the same copy the inbox and the server diff against), so a live record
  * that spells its states slightly differently can't produce a false "states
  * added" the moment the index is read.
@@ -40,10 +40,9 @@ function useWatching(id) {
   return on;
 }
 
-async function bestCopy(recall) {
+function bestCopy(recall) {
   try {
-    const index = await loadIndex();
-    const hit = index && Array.isArray(index.recalls) && index.recalls.find((r) => r.id === recall.id);
+    const hit = recallData().getState().byId.get(recall.id);
     if (hit) return hit;
   } catch (_) { /* the record we were given will do */ }
   return recall;
@@ -71,7 +70,7 @@ export default function WatchButton({ recall, compact = false, className }) {
       track("recall_unfollowed", { recall_id: id });
       return;
     }
-    const copy = await bestCopy(recall);
+    const copy = bestCopy(recall);
     const out = followRecall({ id, title: String(recall.product || "").slice(0, 160), snap: recallSnapshot(copy) });
     if (out.full) setMsg(`You can follow up to ${MAX_FOLLOWED_RECALLS} recalls. Remove one in Alerts first.`);
     else {

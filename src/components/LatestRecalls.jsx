@@ -3,8 +3,9 @@ import { ArrowRight } from "lucide-react";
 import RecallRow from "@/components/RecallRow";
 import ScopeSwitch from "@/components/ScopeSwitch";
 import FreshnessLine, { FdaGapNote, fdaMissing, fmtAsOf, oldestAsOf } from "@/components/FreshnessLine";
-import { recentFor, recentForUs, freshnessOf } from "@/lib/search-index";
+import { freshnessOf, indexRecordInArea } from "@/lib/search-index";
 import { resolveLoc } from "@/lib/verdict";
+import { newsDay } from "@/lib/digest";
 
 /* ─────────────────────────────────────────────────────────────────────────
  * LATEST RECALLS — the home screen's list
@@ -15,22 +16,21 @@ import { resolveLoc } from "@/lib/verdict";
  *   Listeria in bagged spinach                              Serious
  *   Listeria · Oct 8 · In NY
  *
- * Where the records come from is the digest's old rule, unchanged: the app's
- * live list for the current scope (the area list for Near me, the national
- * one for All US) whenever it has anything in it; while it loads, or if every
- * live source failed, the national index read through the same area rule
- * (recentFor) or none (recentForUs). Never a mix of the two — and the
- * freshness line says which one this is, per agency.
+ * One dataset: the local copy of our database (lib/data-sync.js). Near me
+ * is that copy through the area rule (isInArea, via indexRecordInArea); All
+ * US is every active record in it. The freshness line is the manifest's.
  *
- * Newest first by the day the agency published the notice (`posted || date`,
- * the same rule as the full list). Ended notices are left out: this is the
- * list of what is in force. An empty list says what was read, never "safe".
+ * Newest first by newsDay (the day the agency published the notice,
+ * `posted || date`). Ended notices are left out: this is the list of what is
+ * in force. An empty list says what was read, never "safe".
+ *
+ * Loading: a first-ever visit shows the skeleton until the `latest` chunk
+ * lands; a return visit renders the stored copy at once, with "Updating…"
+ * only while a sync runs; offline says so, with when the copy was last
+ * brought up to date.
  * ───────────────────────────────────────────────────────────────────────── */
 
 const PAGE = 20;
-const INDEX_LOOKBACK_DAYS = 400;
-
-const t = (r) => { const d = r.posted || r.date; return d ? new Date(d).getTime() || 0 : 0; };
 const sev = { high: 0, med: 1, low: 2 };
 const ended = (r) => (r.status ? r.status === "ended" : r.active === false);
 
@@ -43,19 +43,45 @@ function RowSkeleton() {
   );
 }
 
+function fmtWhen(ms) {
+  if (!Number.isFinite(ms)) return "";
+  const d = new Date(ms);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay
+    ? d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/* The sync's state, in one quiet line — only when it is news: an update in
+ * progress over data already on screen, or a copy that could not be
+ * refreshed. Nothing at all once the data is current. */
+export function SyncNote({ status, lastSynced, hasData, className = "" }) {
+  if (!hasData) return null;
+  let text = null;
+  if (status === "syncing") text = "Updating…";
+  else if (status === "offline") text = `Offline · last updated ${fmtWhen(lastSynced) || "earlier"}`;
+  else if (status === "error") text = `Couldn't update just now · showing data from ${fmtWhen(lastSynced) || "earlier"}`;
+  if (!text) return null;
+  return (
+    <p id="sync-note" role="status" data-sync-status={status}
+       className={"mt-1 text-[12px] leading-snug text-subtle " + className}>
+      {text}
+    </p>
+  );
+}
+
 /**
  * @param {object}   props.loc          verdict location ({ state, stateAbbr }) or null
  * @param {boolean}  props.hasLocation  the reader set a place of their own
  * @param {string}   props.scope        "near" | "us"
- * @param {object}   props.index        national index, or null while loading
- * @param {object}   props.live         { records, sources } for the scope, or null
- * @param {boolean}  props.busy         the live list for this scope is loading
+ * @param {object}   props.dataset      data-sync `dataset` ({ recalls, sources }), or null
+ * @param {object}   props.sync         { status, lastSynced } from data-sync
  * @param {Function} props.onChangeScope (next, via) => void — App's changeScope
  * @param {Function} props.onOpenRecall (record) => void
  * @param {Function} props.onBrowseAll  () => void — the full list with filters
  */
 export default function LatestRecalls({
-  loc, hasLocation, scope, index, live, busy, onChangeScope, onOpenRecall, onBrowseAll,
+  loc, hasLocation, scope, dataset, sync, onChangeScope, onOpenRecall, onBrowseAll,
 }) {
   const L = resolveLoc(loc);
   const us = scope === "us" || !hasLocation || !L;
@@ -63,27 +89,20 @@ export default function LatestRecalls({
   const [limit, setLimit] = useState(PAGE);
   useEffect(() => { setLimit(PAGE); }, [us, abbr]);
 
-  const { records, from, sources } = useMemo(() => {
-    if (live && Array.isArray(live.records) && live.records.length) {
-      return { records: live.records, from: "live", sources: live.sources || null };
-    }
-    if (index && Array.isArray(index.recalls)) {
-      const recs = us
-        ? recentForUs(index, { sinceDays: INDEX_LOOKBACK_DAYS })
-        : recentFor(index, L, { sinceDays: INDEX_LOOKBACK_DAYS });
-      return { records: recs, from: "index", sources: null };
-    }
-    return { records: [], from: "none", sources: null };
-  }, [live, index, us, abbr]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const sorted = useMemo(
-    () => records.filter((r) => !ended(r))
-      .sort((a, b) => t(b) - t(a) || (sev[a.severity] ?? 1) - (sev[b.severity] ?? 1)),
-    [records],
-  );
-  const freshness = useMemo(() => (index || sources ? freshnessOf(index, sources) : []), [index, sources]);
-  const fdaGap = from !== "none" && sorted.length > 0 && fdaMissing(freshness, sorted);
-  const loading = from === "none" || (busy && from !== "live" && !sorted.length);
+  const records = dataset ? dataset.recalls : null;
+  const sorted = useMemo(() => {
+    if (!records) return [];
+    const list = records.filter((r) => !ended(r) && (us || indexRecordInArea(r, L)));
+    const day = new Map(list.map((r) => [r, newsDay(r)]));
+    return list.sort((a, b) => day.get(b).localeCompare(day.get(a)) || (sev[a.severity] ?? 1) - (sev[b.severity] ?? 1));
+  }, [records, us, abbr]); // eslint-disable-line react-hooks/exhaustive-deps
+  const freshness = useMemo(() => (dataset ? freshnessOf(dataset) : []), [dataset]);
+  const status = (sync && sync.status) || "empty";
+  const fdaGap = !!records && sorted.length > 0 && fdaMissing(freshness, sorted);
+  /* Skeleton only while there is nothing on the device yet and a sync is
+   * (or is about to be) on its way. A failed first sync is said, below. */
+  const loading = !records && (status === "empty" || status === "syncing");
+  const failedEmpty = !records && (status === "offline" || status === "error");
   const shown = sorted.slice(0, limit);
   const remaining = sorted.length - shown.length;
   const place = us ? "in the US" : `in ${abbr}`;
@@ -101,7 +120,7 @@ export default function LatestRecalls({
           the honest bound on "a recall after this may not be here yet". The
           per-agency dates sit under the list. */}
       <p className="tnum mt-1 min-h-5 truncate text-[13px] leading-relaxed text-subtle">
-        {!loading && (
+        {!loading && !failedEmpty && (
           <>
             {sorted.length.toLocaleString("en-US")} active {place}
             {asOf && (
@@ -115,6 +134,7 @@ export default function LatestRecalls({
           </>
         )}
       </p>
+      <SyncNote status={status} lastSynced={sync && sync.lastSynced} hasData={!!records} />
       {fdaGap && <FdaGapNote className="mt-2" />}
 
       <ul aria-busy={loading || undefined} className="mt-2 divide-y divide-line border-t border-line">
@@ -125,7 +145,15 @@ export default function LatestRecalls({
           ))}
       </ul>
 
-      {!loading && !sorted.length && (
+      {failedEmpty && (
+        <p className="border-b border-line py-5 text-[14px] leading-relaxed text-fog">
+          {status === "offline"
+            ? "You're offline, and recall data hasn't been saved on this device yet. Connect once and it stays available offline."
+            : "The recall data didn't load. Nothing has been checked yet — this is not an empty result."}
+        </p>
+      )}
+
+      {!loading && !failedEmpty && !sorted.length && (
         <p className="border-b border-line py-5 text-[14px] leading-relaxed text-fog">
           No active recall {us ? "in the notices we read" : `naming ${abbr}, or nationwide, in the notices we read`}.
           That is a statement about these notices, not about any product — search above to check a specific one.
@@ -143,7 +171,7 @@ export default function LatestRecalls({
             Show more
           </button>
         )}
-        {!loading && onBrowseAll && (
+        {!loading && !failedEmpty && onBrowseAll && (
           <button type="button" onClick={onBrowseAll}
                   className="tap inline-flex min-h-11 items-center gap-1 text-[14px] font-semibold text-mint hover:underline">
             Browse all with filters <ArrowRight aria-hidden="true" className="size-4" />

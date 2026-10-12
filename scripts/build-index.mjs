@@ -56,14 +56,15 @@ import { reasonFor } from "../src/lib/reason.js";
 import { upcsIn } from "../src/lib/upc.js";
 import { coverageFromText } from "../src/lib/search-index.js";
 import { firmTokens, sameFirm } from "../src/lib/firm.js";
+import { officialImage } from "../src/lib/official-image.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const FEED_DIR = resolve(ROOT, "public/feeds");
 const OUT = resolve(FEED_DIR, "index.json");
 
 const DAY_MS = 86400000;
-const FDA_KINDS = ["food", "drug", "device"];
-const FDA_LABEL = { food: "FDA Food", drug: "FDA Drug", device: "FDA Device" };
+export const FDA_KINDS = ["food", "drug", "device"];
+export const FDA_LABEL = { food: "FDA Food", drug: "FDA Drug", device: "FDA Device" };
 const FDA_URL = "https://www.accessdata.fda.gov/scripts/ires/index.cfm"; // FDA IRES recall search
 
 /* openFDA's paging limits: 1000 per page, and skip may not pass 25000. A
@@ -80,12 +81,12 @@ const GAP_MS = 4000;
  * fallen below `collapse` of the FDA records already committed. A year of
  * enforcement reports across three centres is thousands of records; a few
  * hundred means something upstream changed shape. */
-const FDA_HEALTH = { floor: 300, collapse: 0.5 };
+export const FDA_HEALTH = { floor: 300, collapse: 0.5 };
 
 const SIZE_BUDGET = 3 * 1024 * 1024;
 /* Text caps, loosest first. `text` covers product and reason, `firm` the
  * company name, `dist` the verbatim distribution text. */
-const CAP_TIERS = [
+export const CAP_TIERS = [
   { text: 320, firm: 120, dist: 400 },
   { text: 220, firm: 100, dist: 320 },
   { text: 160, firm: 80, dist: 240 },
@@ -95,7 +96,7 @@ const CAP_TIERS = [
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function cap(s, n) {
+export function cap(s, n) {
   const t = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
   return t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t;
 }
@@ -119,6 +120,21 @@ function severityFromFdaClass(cls) {
   return "med";
 }
 
+/* What kind of thing it is and why it was recalled — the two text classifiers,
+ * in one place. The index build calls it through finish() and
+ * announcementToIndex; the recall database's derived layer
+ * (scripts/sync/derive.mjs) calls it from stored canonical rows, so a change
+ * here plus a CLASSIFIER_VERSION bump re-derives every row without
+ * refetching anything. `hints` carries what a canonical row does not hold:
+ * an announcement is classified as the FDA centre its text suggests, and its
+ * hazard is read from the whole release rather than the stored reason. */
+export function classifyRecord(rec, hints = {}) {
+  return {
+    category: categoryFor(hints.categorySource ? { ...rec, source: hints.categorySource } : rec).key,
+    reasonKey: reasonFor(hints.reasonText != null ? { reason: hints.reasonText, classification: "" } : rec).key,
+  };
+}
+
 /* Fields every source fills the same way, applied last so the three mappers
  * below only decide what is genuinely source-specific. `upcs` is omitted when
  * empty: most notices carry none, and an empty array on thousands of records
@@ -127,8 +143,9 @@ function finish(rec, upcText) {
   const { coverage, states } = coverageFromText(rec.distribution, rec.source);
   rec.states = states;
   rec.coverage = coverage;
-  rec.category = categoryFor(rec).key;
-  rec.reasonKey = reasonFor(rec).key;
+  const { category, reasonKey } = classifyRecord(rec);
+  rec.category = category;
+  rec.reasonKey = reasonKey;
   const upcs = upcsIn(upcText);
   if (upcs.length) rec.upcs = upcs;
   return rec;
@@ -236,11 +253,17 @@ export function cpscToIndex(r, caps = CAP_TIERS[0]) {
     distribution: cap([retailers, r.SoldAtLabel].filter(Boolean).join(" · ") || "Nationwide (consumer product)", caps.dist),
     url: r.URL || "https://www.cpsc.gov/Recalls",
   };
-  return finish(rec, [r.Title, products.join(" "), r.Description].filter(Boolean).join(" \n "));
+  finish(rec, [r.Title, products.join(" "), r.Description].filter(Boolean).join(" \n "));
+  /* CPSC's own product photo (slimCpsc keeps Images[0].URL as `Image`), and
+   * only when it is https on cpsc.gov — see src/lib/official-image.js. Absent
+   * means absent: nothing is ever substituted for it. */
+  const image = officialImage(r.Image || (((r.Images || [])[0] || {}).URL), "CPSC");
+  if (image) rec.image = image;
+  return rec;
 }
 
 // ------------------------------------------------------------ openFDA
-async function fetchJson(url) {
+export async function fetchJson(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
@@ -281,7 +304,7 @@ function fdaUrl(kind, from, to, skip) {
 }
 
 /* `meta` collects openFDA's meta.last_updated (newest seen) for the caller. */
-async function fetchFdaWindow(kind, from, to, meta = {}) {
+export async function fetchFdaWindow(kind, from, to, meta = {}) {
   const first = await withRetries(`fda ${kind}`, () => fetchJson(fdaUrl(kind, from, to, 0)));
   const updated = fdaLastUpdated(first);
   if (updated && !(meta.lastUpdated >= updated)) meta.lastUpdated = updated;
@@ -333,8 +356,8 @@ async function fetchFdaWindow(kind, from, to, meta = {}) {
  * ───────────────────────────────────────────────────────────────────────── */
 export const FDA_RSS_URL = "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/recalls/rss.xml";
 export const ANNOUNCE_SOURCE = "FDA announcement";
-const ANNOUNCE_DAYS = 60;
-const ANNOUNCE_DEDUPE_DAYS = 45;
+export const ANNOUNCE_DAYS = 60;
+export const ANNOUNCE_DEDUPE_DAYS = 45;
 
 const NAMED_ENTITIES = {
   amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", rsquo: "\u2019", lsquo: "\u2018",
@@ -454,6 +477,13 @@ function guessFdaSource(text) {
   return "FDA Food";
 }
 
+/** The classifier inputs of one announcement (see classifyRecord): the FDA
+ *  centre its words suggest, and the whole release as the hazard text. */
+export function announcementHints(item) {
+  const text = `${item.title || ""} ${item.description || ""}`;
+  return { categorySource: guessFdaSource(text), reasonText: text };
+}
+
 function shortHash(s) {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
@@ -483,9 +513,9 @@ export function announcementToIndex(item, caps = CAP_TIERS[0]) {
     coverage: geo.coverage,
     url: item.link,
   };
-  const guessed = { ...rec, source: guessFdaSource(`${title} ${description}`) };
-  rec.category = categoryFor(guessed).key;
-  rec.reasonKey = reasonFor({ reason: `${title} ${description}`, classification: "" }).key;
+  const { category, reasonKey } = classifyRecord(rec, announcementHints(item));
+  rec.category = category;
+  rec.reasonKey = reasonKey;
   const upcs = upcsIn(description);
   if (upcs.length) rec.upcs = upcs;
   return rec;
@@ -507,7 +537,7 @@ export function dropAnnouncedDuplicates(announcements, fdaRecords) {
   return { kept, dropped };
 }
 
-async function fetchText(url) {
+export async function fetchText(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 30000);
   try {
