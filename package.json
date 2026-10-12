@@ -23,6 +23,7 @@
     "maplibre-gl": "^4.7.1",
     "minisearch": "^7.2.0",
     "motion": "13.1.1",
+    "postgres": "^3.4.9",
     "posthog-js": "^1.422.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -30,6 +31,7 @@
     "web-push": "^3.6.7"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@tailwindcss/vite": "^4.0.0",
     "@vitejs/plugin-react": "^4.3.1",
     "tailwindcss": "^4.0.0",
