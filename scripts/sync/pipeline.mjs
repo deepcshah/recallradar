@@ -23,19 +23,30 @@ async function syncSource(db, source, opts) {
     `insert into sync_runs (source, mode, started_at, dry_run) values ($1, $2, $3::timestamptz, $4::boolean)
      returning id::int as id`, [source, snap ? "snapshot" : "pending", started.toISOString(), !!dryRun]);
   const result = { source, runId, ok: false, mode: snap ? "snapshot" : null, fetched: 0, raw_new: 0,
-    inserted: 0, updated: 0, unchanged: 0, changes: 0, upstreamLastUpdated: null, newestPosted: null, error: null, warnings: [] };
+    inserted: 0, updated: 0, unchanged: 0, changes: 0, upstreamLastUpdated: null, newestPosted: null, error: null, warnings: [], upstream: false };
   let details = {};
   try {
     log(`${source}:`);
-    const got = snap
-      ? await fromSnapshots(source, opts.snapshotPaths)
-      : await LIVE[source]({ db, now, full: opts.full, lookbackDays: opts.lookbackDays, fdaRaw: opts.fdaRaw, log });
+    /* Failures while FETCHING (network, a 4xx/5xx, a timeout) or a health
+     * refusal are the agency's side — `upstream: true`. Anything after that
+     * (writing raw, normalizing, publishing) is ours. The PR dry run uses the
+     * difference: an agency outage is a warning there, our bug is a failure. */
+    let got;
+    try {
+      got = snap
+        ? await fromSnapshots(source, opts.snapshotPaths)
+        : await LIVE[source]({ db, now, full: opts.full, lookbackDays: opts.lookbackDays, fdaRaw: opts.fdaRaw, log });
+    } catch (err) {
+      result.upstream = !snap;
+      throw err;
+    }
     result.mode = got.mode;
     result.fetched = got.items.length;
     result.upstreamLastUpdated = got.upstreamLastUpdated || null;
     result.warnings = got.warnings || [];
     details = { ...(got.details || {}), fetchedAt: got.fetchedAt || null, ...(result.warnings.length ? { warnings: result.warnings } : null) };
     if (got.problems.length) {
+      result.upstream = true;
       throw new Error(`refused (health check): ${got.problems.join("; ")}`);
     }
     const raw = await writeRaw(db, { source, runId, now, items: got.items });

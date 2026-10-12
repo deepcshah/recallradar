@@ -22,6 +22,9 @@
  * The summary goes to stdout, $GITHUB_STEP_SUMMARY and $SYNC_SUMMARY_FILE
  * when those are set.
  *
+ * --upstream-outage-ok: an agency outage (fetch failure or health refusal)
+ * is a warning, not exit 1 — for the PR dry run only.
+ *
  * Exit 1 when a required source failed (announcements are best-effort, as in
  * the index build) or an --expect id is missing; the summary says which.
  */
@@ -32,7 +35,7 @@ import { openDb } from "../../src/lib/db.js";
 import { runSync, spotCheck, summaryMarkdown, SOURCES, OPTIONAL_SOURCES } from "./pipeline.mjs";
 
 function args(argv) {
-  const a = { dryRun: false, pglite: null, source: "all", fromSnapshots: false, full: false, lookback: null, reindex: false, expect: [] };
+  const a = { dryRun: false, pglite: null, source: "all", fromSnapshots: false, full: false, lookback: null, reindex: false, expect: [], upstreamOutageOk: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     const next = () => argv[++i];
@@ -43,6 +46,7 @@ function args(argv) {
     else if (k === "--full") a.full = true;
     else if (k === "--lookback") a.lookback = Number(next());
     else if (k === "--reindex") a.reindex = true;
+    else if (k === "--upstream-outage-ok") a.upstreamOutageOk = true;
     else if (k === "--expect") a.expect = String(next() || "").split(",").map((s) => s.trim()).filter(Boolean);
     else throw new Error(`unknown argument ${k}`);
   }
@@ -89,7 +93,18 @@ export async function main(argv = process.argv.slice(2)) {
     if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, md + "\n");
     // The workflow posts this file as a pull-request comment.
     if (process.env.SYNC_SUMMARY_FILE) await appendFile(process.env.SYNC_SUMMARY_FILE, md + "\n");
-    const failed = out.results.filter((r) => !r.ok && !OPTIONAL_SOURCES.has(r.source));
+    let failed = out.results.filter((r) => !r.ok && !OPTIONAL_SOURCES.has(r.source));
+    /* --upstream-outage-ok (the PR dry run): an agency that is down or answered
+     * with data that failed its health check says nothing about this code, so
+     * it is a warning there. The scheduled sync never passes this flag: there
+     * an outage must go red, so someone hears about it. */
+    if (a.upstreamOutageOk) {
+      const outages = failed.filter((r) => r.upstream);
+      for (const r of outages) {
+        console.log(`::warning::${r.source} was unavailable or unhealthy upstream (${r.error}); not counted as a code failure in this dry run.`);
+      }
+      failed = failed.filter((r) => !r.upstream);
+    }
     const missing = spots.filter((s) => !s.inDb || !s.chunk);
     if (failed.length) console.log(`sync: ${failed.map((r) => r.source).join(", ")} failed.`);
     if (missing.length) console.log(`sync: expected recalls missing: ${missing.map((s) => s.id).join(", ")}.`);

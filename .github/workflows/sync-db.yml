@@ -123,7 +123,7 @@ jobs:
           SYNC_SUMMARY_FILE: ${{ runner.temp }}/sync-summary.md
         run: |
           echo "### Run 1 — fresh database, full backfill" >> "$SYNC_SUMMARY_FILE"
-          node scripts/sync/run.mjs --dry-run --pglite "$RUNNER_TEMP/yanked-db" \
+          node scripts/sync/run.mjs --dry-run --pglite "$RUNNER_TEMP/yanked-db" --upstream-outage-ok \
             --expect fda-food-H-1391-2026,fda-food-H-1392-2026
 
       - name: Second dry run into the same database (incremental openFDA, idempotency)
@@ -133,7 +133,7 @@ jobs:
           SYNC_SUMMARY_FILE: ${{ runner.temp }}/sync-summary.md
         run: |
           echo "### Run 2 — same database, minutes later" >> "$SYNC_SUMMARY_FILE"
-          node scripts/sync/run.mjs --dry-run --pglite "$RUNNER_TEMP/yanked-db" \
+          node scripts/sync/run.mjs --dry-run --pglite "$RUNNER_TEMP/yanked-db" --upstream-outage-ok \
             --expect fda-food-H-1391-2026,fda-food-H-1392-2026
 
       - name: Post the summary on the pull request
