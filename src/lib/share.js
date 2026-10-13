@@ -37,6 +37,19 @@ export function cleanState(st) {
   return L ? L.stateAbbr : null;
 }
 
+/** The recall id at the front of whatever a link delivered. Chat apps that
+ *  auto-link a pasted message sometimes run the link on into the text after
+ *  it, so /r/fda-ann-1wnofav arrives as "fda-ann-1wnofav Recall: Krasnyi…"
+ *  (or with a trailing "." from the end of a sentence). Ids are only
+ *  letters, digits, ".", "_" and "-", so the first run of those — minus
+ *  trailing punctuation — is the id; anything after it is the message. */
+export function idFromLink(raw) {
+  let s = String(raw || "");
+  try { s = decodeURIComponent(s.replace(/\+/g, " ")); } catch (_) { /* already plain */ }
+  const m = s.trim().match(/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}/);
+  return m ? m[0].replace(/[._-]+$/, "").slice(0, 80) : "";
+}
+
 function origin() {
   try {
     if (typeof window !== "undefined" && window.location && /^https?:$/.test(window.location.protocol)) {

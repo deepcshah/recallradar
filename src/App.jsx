@@ -34,7 +34,7 @@ import { isInArea, verdictFor, isAnnounced, resolveLoc } from "@/lib/verdict";
 import { freshnessOf } from "@/lib/search-index";
 import { recallData } from "@/lib/data-sync";
 import { coverageLine } from "@/lib/coverage-line";
-import { cleanState } from "@/lib/share";
+import { cleanState, idFromLink } from "@/lib/share";
 import { ABBR_TO_NAME } from "@/lib/states";
 import {
   FOLLOWS_EVENT, ALERTS_EVENT, getFollows, getLastVisit, markVisit, getFollowedRecalls, getAlertsSeen,
@@ -242,7 +242,7 @@ const fmtCount = (n) => {
 function readDeepLink() {
   try {
     const p = new URLSearchParams(window.location.search);
-    const id = (p.get("r") || "").trim().slice(0, 80);
+    const id = idFromLink(p.get("r"));
     return { recallId: id || null, st: cleanState(p.get("st")) };
   } catch (_) {
     return { recallId: null, st: null };
