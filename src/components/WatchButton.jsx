@@ -107,7 +107,7 @@ export default function WatchButton({ recall, compact = false, variant, classNam
 
   /* The sheet's floating action bar, full height, with its confirmation
    * floating above the bar rather than pushing it around. Only there while
-   * the recall is still waiting on details — so secondary to the notice. */
+   * the recall is still waiting on details, and secondary to Share. */
   if (variant === "bar") {
     return (
       <span className={cn("relative flex", className)}>
@@ -116,7 +116,7 @@ export default function WatchButton({ recall, compact = false, variant, classNam
           onClick={toggle}
           aria-pressed={on}
           className={cn(
-            "inline-flex h-12 w-full min-w-0 items-center justify-center gap-2 rounded-full px-5 text-[15px] font-semibold",
+            "inline-flex h-12 w-full min-w-0 items-center justify-center gap-1.5 rounded-full px-4 text-[15px] font-semibold sm:gap-2 sm:px-5",
             "transition-[transform,background-color,color] active:scale-[0.97]",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--rr-surface)]",
             on ? "bg-panel-2 text-paper shadow-[inset_0_0_0_1px_var(--rr-line-strong)]" : "bg-panel-2 text-paper shadow-[var(--rr-shadow-1),inset_0_0_0_1px_var(--rr-line)]",

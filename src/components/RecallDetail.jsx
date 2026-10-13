@@ -38,8 +38,9 @@ import { cn } from "@/lib/utils";
  *   What happened                     the hazard; the class, explained
  *   What to do                        whatToDo — generic, never invented
  *   How to identify it                description, codes, barcodes
- *   Dates · Official notice · Follow
- *   ( Share )( Notify me )( Official notice ↗ )   floating action bar —
+ *   Dates · Notify me · Follow
+ *   ( Share )( Notify me )( Official notice ↗ )   floating action bar,
+ *                                    Share primary —
  *                                    Notify me only while the recall is
  *                                    announced and waiting on details
  *
@@ -201,14 +202,14 @@ function FollowRow({ term }) {
 
 /* Notify me earns a place in the bar only while there is something still to
  * hear: a company's announcement the agency hasn't classified or given a
- * distribution for yet. Otherwise the notice is complete, the next step is
- * reading it, and Notify me waits as a row at the foot of the sheet. */
+ * distribution for yet. Otherwise the notice is complete and Notify me waits
+ * as a row at the foot of the sheet. */
 function watchInBar(recall) {
   return isAnnounced(recall) || !recall.url;
 }
 
-/** The floating bar at the foot of the sheet: Share, Notify me while the
- *  recall is pending, and the official notice — the primary action. */
+/** The floating bar at the foot of the sheet: Share — the primary action —
+ *  Notify me while the recall is pending, and the official notice. */
 export function RecallActionBar({ recall, loc }) {
   const L = resolveLoc(loc);
   const stateAbbr = L && L.stateAbbr;
@@ -234,31 +235,29 @@ export function RecallActionBar({ recall, loc }) {
           if (out === "copied") setSaid("Link copied");
           else if (out === "shared") setSaid("Shared");
         }}
-        aria-label={crowded && !said ? "Share" : undefined}
-        className={cn(
-          "inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-full bg-panel-2 text-[15px] font-semibold text-paper shadow-[var(--rr-shadow-1),inset_0_0_0_1px_var(--rr-line)] transition-transform active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint",
-          crowded ? "px-3.5 sm:px-5" : "px-5",
-          !recall.url && !watch && "flex-1",
-        )}
+        className="inline-flex h-12 min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-mint px-5 text-[15px] font-semibold text-mint-ink shadow-[var(--rr-shadow-2)] transition-transform active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--rr-surface)]"
       >
-        {said ? <Check aria-hidden="true" className="size-[18px]" /> : <Share2 aria-hidden="true" className="size-[18px]" />}
-        <span aria-live="polite" className={cn(crowded && !said && "sr-only sm:not-sr-only")}>{said || "Share"}</span>
+        {said ? <Check aria-hidden="true" className="size-[18px] shrink-0" /> : <Share2 aria-hidden="true" className="size-[18px] shrink-0" />}
+        <span aria-live="polite" className="truncate">{said || "Share"}</span>
       </button>
-      {watch && <WatchButton recall={recall} variant="bar" className={cn("min-w-0", recall.url ? "shrink-0" : "flex-1")} />}
+      {watch && <WatchButton recall={recall} variant="bar" className="min-w-0 shrink-0" />}
       {recall.url && (
         <a
           href={recall.url}
           target="_blank"
           rel="noopener noreferrer"
           onClick={() => track("official_notice_clicked", { source: recall.source || null, from: "bar" })}
-          className="inline-flex h-12 min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-mint px-5 text-[15px] font-semibold text-mint-ink shadow-[var(--rr-shadow-2)] transition-transform active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--rr-surface)]"
+          className={cn(
+            "inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-full bg-panel-2 text-[15px] font-semibold text-paper shadow-[var(--rr-shadow-1),inset_0_0_0_1px_var(--rr-line)] transition-transform active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint",
+            crowded ? "px-4 sm:px-5" : "px-5",
+          )}
         >
           {crowded ? (
             <span className="truncate"><span className="sm:hidden">Notice</span><span className="hidden sm:inline">Official notice</span></span>
           ) : (
             <span className="truncate">Official notice</span>
           )}
-          <ArrowUpRight aria-hidden="true" className="size-[18px] shrink-0" />
+          <ArrowUpRight aria-hidden="true" className={cn("size-[18px] shrink-0", crowded && "hidden sm:block")} />
           <span className="sr-only"> (opens {hostOf(recall.url) || agencyOf(recall.source)})</span>
         </a>
       )}
