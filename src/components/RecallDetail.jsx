@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import StateMap from "@/components/StateMap";
 import WatchButton from "@/components/WatchButton";
 import RecallThumb from "@/components/RecallThumb";
+import RecallAssist from "@/components/RecallAssist";
 import { AnnouncedBadge, ClassBadge, agencyOf, followTermFor } from "@/components/VerdictCard";
 import { fmtAsOf } from "@/components/FreshnessLine";
 import { verdictFor, coverageOf, resolveLoc, VERDICTS, isAnnounced } from "@/lib/verdict";
@@ -37,6 +38,8 @@ import { cn } from "@/lib/utils";
  *   Where it went                     the notice's words, quoted, + the map
  *   What happened                     the hazard; the class, explained
  *   What to do                        whatToDo — generic, never invented
+ *   Get help                          the assistant (RecallAssist), products
+ *                                     and devices only
  *   How to identify it                description, codes, barcodes
  *   Dates · Notify me · Follow
  *   ( Share )( Notify me )( Official notice ↗ )   floating action bar,
@@ -410,6 +413,8 @@ export default function RecallDetail({ recall, loc, eyebrow, freshness, onReques
             </p>
           )}
         </Section>
+
+        <RecallAssist recall={recall} />
 
         <Section title="How to identify it">
           <dl className="flex flex-col gap-3 text-[14px] leading-relaxed">
