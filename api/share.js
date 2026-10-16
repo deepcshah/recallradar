@@ -26,9 +26,10 @@
  * where an unescaped quote stops being cosmetic.
  */
 import { resolveRecall } from "./_lib/resolve-recall.js";
-import { cardVerdict, cleanState } from "../src/lib/share.js";
+import { cardVerdict, cleanState, idFromLink } from "../src/lib/share.js";
 import { VERDICTS } from "../src/lib/verdict.js";
 import ogHandler from "./_lib/og.js";
+import assistHandler from "./_lib/assist.js";
 
 const SITE = "https://yanked.app";
 
@@ -108,7 +109,8 @@ function page({ title, description, image, url, target }) {
 export default async function handler(req, res) {
   const q = req.query || {};
   if (q.format === "png") return ogHandler(req, res);
-  const id = String(q.id || "").slice(0, 120);
+  if (q.format === "assist") return assistHandler(req, res);
+  const id = idFromLink(q.id);
   const st = cleanState(q.st);
   const origin = originOf(req);
 

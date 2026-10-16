@@ -82,8 +82,32 @@ export default function WatchButton({ recall, compact = false, variant, classNam
   const label = on ? "Following updates" : "Notify me about updates";
   const Icon = on ? BellRing : BellPlus;
 
-  /* The sheet's floating action bar: the primary action, full height, with
-   * its confirmation floating above the bar rather than pushing it around. */
+  /* A row in the sheet's closing list, beside Follow <brand>: the quiet home
+   * for this control once the recall has its full notice. */
+  if (variant === "row") {
+    return (
+      <button
+        type="button"
+        onClick={toggle}
+        aria-pressed={on}
+        className={cn("press flex min-h-14 w-full items-center gap-3 rounded-2xl px-3 text-left hover:bg-panel-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint", className)}
+      >
+        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-sunken text-fog">
+          <Icon aria-hidden="true" className="size-[18px]" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[15px] font-medium text-paper">{label}</span>
+          <span role="status" className="block text-[12.5px] text-subtle">
+            {msg || (on ? "Changes to this recall show in Alerts" : "Hear if the agency changes or closes it")}
+          </span>
+        </span>
+      </button>
+    );
+  }
+
+  /* The sheet's floating action bar, full height, with its confirmation
+   * floating above the bar rather than pushing it around. Only there while
+   * the recall is still waiting on details, and secondary to Share. */
   if (variant === "bar") {
     return (
       <span className={cn("relative flex", className)}>
@@ -92,14 +116,14 @@ export default function WatchButton({ recall, compact = false, variant, classNam
           onClick={toggle}
           aria-pressed={on}
           className={cn(
-            "inline-flex h-12 w-full min-w-0 items-center justify-center gap-2 rounded-full px-5 text-[15px] font-semibold",
+            "inline-flex h-12 w-full min-w-0 items-center justify-center gap-1.5 rounded-full px-4 text-[15px] font-semibold sm:gap-2 sm:px-5",
             "transition-[transform,background-color,color] active:scale-[0.97]",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--rr-surface)]",
-            on ? "bg-panel-2 text-paper shadow-[inset_0_0_0_1px_var(--rr-line-strong)]" : "bg-mint text-mint-ink shadow-[var(--rr-shadow-2)]",
+            on ? "bg-panel-2 text-paper shadow-[inset_0_0_0_1px_var(--rr-line-strong)]" : "bg-panel-2 text-paper shadow-[var(--rr-shadow-1),inset_0_0_0_1px_var(--rr-line)]",
           )}
         >
           <Icon className="size-[18px] shrink-0" aria-hidden="true" />
-          <span className="truncate">{on ? "Following updates" : "Notify me"}</span>
+          <span className="truncate">{on ? "Following" : "Notify me"}</span>
           {!on && <span className="sr-only"> about updates to this recall</span>}
         </button>
         {msg && (

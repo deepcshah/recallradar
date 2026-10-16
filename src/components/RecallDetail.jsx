@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import StateMap from "@/components/StateMap";
 import WatchButton from "@/components/WatchButton";
 import RecallThumb from "@/components/RecallThumb";
+import RecallAssist from "@/components/RecallAssist";
 import { AnnouncedBadge, ClassBadge, agencyOf, followTermFor } from "@/components/VerdictCard";
 import { fmtAsOf } from "@/components/FreshnessLine";
 import { verdictFor, coverageOf, resolveLoc, VERDICTS, isAnnounced } from "@/lib/verdict";
@@ -37,9 +38,14 @@ import { cn } from "@/lib/utils";
  *   Where it went                     the notice's words, quoted, + the map
  *   What happened                     the hazard; the class, explained
  *   What to do                        whatToDo — generic, never invented
+ *   Get help                          the assistant (RecallAssist), products
+ *                                     and devices only
  *   How to identify it                description, codes, barcodes
- *   Dates · Official notice · Follow
- *   ( Notify me about updates )( Share )   floating action bar
+ *   Dates · Notify me · Follow
+ *   ( Share )( Notify me )( Official notice ↗ )   floating action bar,
+ *                                    Share primary —
+ *                                    Notify me only while the recall is
+ *                                    announced and waiting on details
  *
  * Photos: the agency's own (CPSC, https on cpsc.gov), or — only here, only
  * when the record carries a barcode, fetched when the sheet opens and cached
@@ -197,10 +203,21 @@ function FollowRow({ term }) {
 
 /* ───────────────────────────── action bar ──────────────────────────────── */
 
-/** The floating bar at the foot of the sheet: Notify me + Share. */
+/* Notify me earns a place in the bar only while there is something still to
+ * hear: a company's announcement the agency hasn't classified or given a
+ * distribution for yet. Otherwise the notice is complete and Notify me waits
+ * as a row at the foot of the sheet. */
+function watchInBar(recall) {
+  return isAnnounced(recall) || !recall.url;
+}
+
+/** The floating bar at the foot of the sheet: Share — the primary action —
+ *  Notify me while the recall is pending, and the official notice. */
 export function RecallActionBar({ recall, loc }) {
   const L = resolveLoc(loc);
   const stateAbbr = L && L.stateAbbr;
+  const watch = watchInBar(recall);
+  const crowded = watch && !!recall.url;
   const [said, setSaid] = useState("");
   useEffect(() => {
     if (!said) return undefined;
@@ -209,7 +226,6 @@ export function RecallActionBar({ recall, loc }) {
   }, [said]);
   return (
     <div className="glass flex items-center gap-2 rounded-full p-1.5 shadow-[var(--rr-shadow-3),inset_0_0_0_1px_var(--rr-glass-line)]">
-      <WatchButton recall={recall} variant="bar" className="min-w-0 flex-1" />
       <button
         type="button"
         onClick={async () => {
@@ -222,11 +238,32 @@ export function RecallActionBar({ recall, loc }) {
           if (out === "copied") setSaid("Link copied");
           else if (out === "shared") setSaid("Shared");
         }}
-        className="inline-flex h-12 shrink-0 items-center gap-2 rounded-full bg-panel-2 px-5 text-[15px] font-semibold text-paper shadow-[var(--rr-shadow-1),inset_0_0_0_1px_var(--rr-line)] transition-transform active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint"
+        className="inline-flex h-12 min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-mint px-5 text-[15px] font-semibold text-mint-ink shadow-[var(--rr-shadow-2)] transition-transform active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--rr-surface)]"
       >
-        {said ? <Check aria-hidden="true" className="size-[18px]" /> : <Share2 aria-hidden="true" className="size-[18px]" />}
-        <span aria-live="polite">{said || "Share"}</span>
+        {said ? <Check aria-hidden="true" className="size-[18px] shrink-0" /> : <Share2 aria-hidden="true" className="size-[18px] shrink-0" />}
+        <span aria-live="polite" className="truncate">{said || "Share"}</span>
       </button>
+      {watch && <WatchButton recall={recall} variant="bar" className="min-w-0 shrink-0" />}
+      {recall.url && (
+        <a
+          href={recall.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={() => track("official_notice_clicked", { source: recall.source || null, from: "bar" })}
+          className={cn(
+            "inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-full bg-panel-2 text-[15px] font-semibold text-paper shadow-[var(--rr-shadow-1),inset_0_0_0_1px_var(--rr-line)] transition-transform active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint",
+            crowded ? "px-4 sm:px-5" : "px-5",
+          )}
+        >
+          {crowded ? (
+            <span className="truncate"><span className="sm:hidden">Notice</span><span className="hidden sm:inline">Official notice</span></span>
+          ) : (
+            <span className="truncate">Official notice</span>
+          )}
+          <ArrowUpRight aria-hidden="true" className={cn("size-[18px] shrink-0", crowded && "hidden sm:block")} />
+          <span className="sr-only"> (opens {hostOf(recall.url) || agencyOf(recall.source)})</span>
+        </a>
+      )}
     </div>
   );
 }
@@ -377,6 +414,8 @@ export default function RecallDetail({ recall, loc, eyebrow, freshness, onReques
           )}
         </Section>
 
+        <RecallAssist recall={recall} />
+
         <Section title="How to identify it">
           <dl className="flex flex-col gap-3 text-[14px] leading-relaxed">
             <div>
@@ -421,22 +460,7 @@ export default function RecallDetail({ recall, loc, eyebrow, freshness, onReques
             </dl>
           )}
           <div className="-mx-3 mt-2 flex flex-col">
-            {recall.url && (
-              <a
-                href={recall.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="press flex min-h-14 items-center gap-3 rounded-2xl px-3 hover:bg-panel-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint"
-              >
-                <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-sunken text-fog">
-                  <ArrowUpRight aria-hidden="true" className="size-[18px]" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[15px] font-medium text-paper">Official notice</span>
-                  <span className="block truncate text-[12.5px] text-subtle">{hostOf(recall.url) || agency}</span>
-                </span>
-              </a>
-            )}
+            {!watchInBar(recall) && <WatchButton recall={recall} variant="row" />}
             <FollowRow term={term} />
           </div>
         </section>
