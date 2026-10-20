@@ -206,7 +206,7 @@ agencies ──ingest──▶ raw_records ──normalize──▶ recalls ─�
 
 1. Create a Postgres database on [Neon](https://neon.tech) or [Supabase](https://supabase.com) (free tiers are ample: a year of recalls is tens of MB). Copy its connection string — on Supabase, the *transaction pooler* string (port 6543) for Vercel; the driver runs with `prepare: false`, which the pooler requires.
 2. Vercel → Project → Settings → Environment Variables: `DATABASE_URL` for **Production** (and Preview if previews should read it).
-3. GitHub → Settings → Secrets and variables → Actions: a repository secret `DATABASE_URL` (the direct, non-pooled string is fine here).
+3. GitHub → Settings → Secrets and variables → Actions: a repository secret `DATABASE_URL`. **On Supabase, use the *session pooler* string** (`…pooler.supabase.com:5432`, user `postgres.<project-ref>`), not the direct `db.<ref>.supabase.co` one: the direct host is IPv6-only and GitHub's runners have no IPv6, so the sync fails with `connect ENETUNREACH 2600:…`. The transaction pooler (6543) works too. On Neon any string works.
 4. Run **Sync recall database** from the Actions tab (or wait for the schedule). The first run applies the migrations and backfills a year of openFDA plus the whole USDA, CPSC and RSS feeds — a few minutes. Until it has published once, `/api/data` keeps serving the committed index; `X-Yanked-Data` flips to `postgres` when it is live. To seed a database without the network, `node scripts/sync/run.mjs --from-snapshots` loads the committed snapshots (real data, labelled as snapshot runs with the snapshots' own fetch dates).
 5. Without the secret the scheduled job still runs, as a labelled dry run into a throwaway PGlite database, with a warning — never silently.
 
