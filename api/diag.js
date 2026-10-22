@@ -24,7 +24,7 @@ const PROBE_TIMEOUT_MS = 8000;
  * outcome, so a WAF block (403) or a bad key is visible instead of just
  * showing up as a missing source in the UI. */
 async function probeFeeds() {
-  const key = process.env.openfda;
+  const key = (process.env.OPENFDA_KEY || process.env.openfda);
   const loc = { state: "California", stateAbbr: "CA" };
   const targets = [
     ["USDA FSIS", FSIS_ENDPOINTS[0]],
@@ -238,8 +238,8 @@ export default async function handler(req, res) {
     },
     openFdaKey: {
       // Read from the env var literally named "openfda".
-      present: Boolean(process.env.openfda),
-      length: process.env.openfda ? String(process.env.openfda).length : 0,
+      present: Boolean(process.env.OPENFDA_KEY || process.env.openfda),
+      length: String(process.env.OPENFDA_KEY || process.env.openfda || "").length,
     },
     blobConfigured: blobConfigured(),
     blobTokenVar: blobTokenVar(),

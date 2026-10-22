@@ -3,3 +3,4 @@ dist/
 .feed-report/
 .env
 .env*.local
+evals/runs/

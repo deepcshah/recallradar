@@ -93,7 +93,7 @@ export default async function handler(req, res) {
   const q = phrase(req.query.q || "");
   if (!upc && !q) return res.status(400).json({ error: "pass ?upc= or ?q=" });
 
-  const key = process.env.openfda;
+  const key = (process.env.OPENFDA_KEY || process.env.openfda);
   const since = fmt(new Date(Date.now() - LOOKBACK_DAYS * 86400000));
   const until = fmt(new Date());
 

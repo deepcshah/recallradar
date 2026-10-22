@@ -31,7 +31,10 @@ import { resolveRecall } from "./resolve-recall.js";
 import { assistTasksFor, isAssistTask, safeHttpUrl } from "../../src/lib/assist.js";
 import { idFromLink } from "../../src/lib/share.js";
 
-const MODEL = "claude-opus-5-5";
+/* Model and effort are env-tunable so a change can be measured first with
+ * scripts/eval-assist.mjs, then set in Vercel without a code change. */
+const MODEL = process.env.ASSIST_MODEL || "claude-opus-5-5";
+const EFFORT = process.env.ASSIST_EFFORT || "medium";
 const MAX_ROUNDS = 5;
 const MEMO_MS = 12 * 3600 * 1000;
 
@@ -164,7 +167,8 @@ function clean(task, input) {
   return out;
 }
 
-async function runAgent(task, record) {
+/** One run, no caching — the handler and the eval script both call it. */
+export async function runAgent(task, record) {
   const client = new Anthropic();
   const tool = TOOLS[task];
   const messages = [{ role: "user", content: taskPrompt(task, record) }];
@@ -175,7 +179,7 @@ async function runAgent(task, record) {
       max_tokens: 16000,
       betas: ["server-side-fallback-2026-07-01"],
       fallbacks: "default",
-      output_config: { effort: "medium" },
+      output_config: { effort: EFFORT },
       system: SYSTEM,
       tools: [
         { type: "web_fetch_20260209", name: "web_fetch", max_uses: 4 },

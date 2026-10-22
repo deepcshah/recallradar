@@ -341,6 +341,8 @@ Food and drug notices don't get it: "buy a different bag" needs no assistant, an
 
 **Cost.** Ids resolve only to real recalls and tasks are an enum, so the set of possible answers is ~300 CPSC × 2 + devices. Each success is cached at the edge for a day (stale-while-revalidate for a week), per instance for 12 hours, and per browser tab for the session; concurrent asks share one run. A run takes roughly 20–60 seconds (`maxDuration` is 120 in `vercel.json`).
 
+**Measuring it.** `npm run eval:assist` runs the real agent on the newest CPSC and device recalls and grades every answer with checks that need no second model (cites the notice; phone and claim link appear on a cited page; remedy agrees with the notice; no alternative from the recalled brand or matching a CPSC recall in the index). Answers and `summary.md` land in `evals/runs/<time>-<model>-<effort>/` (gitignored). `ASSIST_MODEL` / `ASSIST_EFFORT` pick what to test; the same variables set in Vercel change production. Options: `--n`, `--task next|alts`, `--ids`, `--concurrency`.
+
 **Turning it on.** Set `ANTHROPIC_API_KEY` in Vercel (Production) and redeploy. Without it the endpoint answers 503 and the sheet says the assistant isn't switched on. Analytics: `assist_requested`, `assist_done` (`seconds`), `assist_failed` (`status`).
 
 ## Analytics, and what is deliberately not measured
