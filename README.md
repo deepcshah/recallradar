@@ -206,7 +206,7 @@ agencies ──ingest──▶ raw_records ──normalize──▶ recalls ─�
 
 1. Create a Postgres database on [Neon](https://neon.tech) or [Supabase](https://supabase.com) (free tiers are ample: a year of recalls is tens of MB). Copy its connection string — on Supabase, the *transaction pooler* string (port 6543) for Vercel; the driver runs with `prepare: false`, which the pooler requires.
 2. Vercel → Project → Settings → Environment Variables: `DATABASE_URL` for **Production** (and Preview if previews should read it).
-3. GitHub → Settings → Secrets and variables → Actions: a repository secret `DATABASE_URL` (the direct, non-pooled string is fine here).
+3. GitHub → Settings → Secrets and variables → Actions: a repository secret `DATABASE_URL`. **On Supabase, use the *session pooler* string** (`…pooler.supabase.com:5432`, user `postgres.<project-ref>`), not the direct `db.<ref>.supabase.co` one: the direct host is IPv6-only and GitHub's runners have no IPv6, so the sync fails with `connect ENETUNREACH 2600:…`. The transaction pooler (6543) works too. On Neon any string works.
 4. Run **Sync recall database** from the Actions tab (or wait for the schedule). The first run applies the migrations and backfills a year of openFDA plus the whole USDA, CPSC and RSS feeds — a few minutes. Until it has published once, `/api/data` keeps serving the committed index; `X-Yanked-Data` flips to `postgres` when it is live. To seed a database without the network, `node scripts/sync/run.mjs --from-snapshots` loads the committed snapshots (real data, labelled as snapshot runs with the snapshots' own fetch dates).
 5. Without the secret the scheduled job still runs, as a labelled dry run into a throwaway PGlite database, with a warning — never silently.
 
@@ -325,6 +325,23 @@ npm run build    # → dist/
 Vercel already redirects `http` to `https` at the edge, but only *after* the plaintext request has gone out. `vercel.json` sends `Strict-Transport-Security`, which closes that first request: once a browser has seen the header it rewrites `http://` to `https://` itself, before anything leaves the machine. Two years, `includeSubDomains`, and deliberately no `preload` — that submits the domain to a list baked into browser binaries and is slow to undo, which is the wrong commitment for a beta.
 
 `vercel.json` carries a `$schema` line so an editor validates it in place. The headers array is strict: each entry takes `key` and `value` and nothing else, so there is nowhere to leave a comment — which is why this note is here.
+
+## Get help: the recall assistant
+
+A recalled bath seat or space heater leaves two questions the notice answers badly: *what exactly do I do with mine?* and *what do I buy instead?* The sheet's **Get help** section (`src/components/RecallAssist.jsx`) runs either as a task on demand:
+
+| Task | Offered for | Answer |
+|---|---|---|
+| `next` — What do I do with mine? | CPSC, FDA Device | remedy (refund / replacement / repair / dispose), 3–6 steps, the company's phone and claim page, a deadline, sources |
+| `alts` — Find something like it | CPSC only | what to look for (e.g. the standard the notice says was violated), 3–5 items with a shopping *search* link each, sources |
+
+Food and drug notices don't get it: "buy a different bag" needs no assistant, and "what should I take instead" is a question for a pharmacist, not a model (`assistTasksFor` in `src/lib/assist.js`).
+
+**How it runs.** `GET /api/share?format=assist&id=<id>&task=next|alts` (riding on `api/share.js` — twelve functions) → `api/_lib/assist.js`: Claude (`claude-opus-5-5`, effort medium, server-side refusal fallback on) with Anthropic's web fetch and web search, told to start from the official notice, and one strict client tool (`submit_next` / `submit_alts`) whose schema *is* the answer. The first call to it ends the run. Nothing from a web page reaches the app except those typed fields, and every link is re-checked to be http(s). Shopping links are searches built from the item name, never a product URL the model chose.
+
+**Cost.** Ids resolve only to real recalls and tasks are an enum, so the set of possible answers is ~300 CPSC × 2 + devices. Each success is cached at the edge for a day (stale-while-revalidate for a week), per instance for 12 hours, and per browser tab for the session; concurrent asks share one run. A run takes roughly 20–60 seconds (`maxDuration` is 120 in `vercel.json`).
+
+**Turning it on.** Set `ANTHROPIC_API_KEY` in Vercel (Production) and redeploy. Without it the endpoint answers 503 and the sheet says the assistant isn't switched on. Analytics: `assist_requested`, `assist_done` (`seconds`), `assist_failed` (`status`).
 
 ## Analytics, and what is deliberately not measured
 

@@ -50,6 +50,20 @@ async function openPostgres(url) {
     idle_timeout: 20,
     connect_timeout: 10,
     onnotice: () => {},
+    // The portability rule above passes JSON already stringified
+    // (`JSON.stringify(rows)` into `$1::jsonb`). postgres.js's built-in json
+    // serializer stringifies again, so Postgres received one quoted string
+    // and jsonb_to_recordset failed with "on a non-array" — PGlite, used by
+    // the dry runs, doesn't, which is how it passed there. Strings go
+    // through as they are; anything else is stringified once.
+    types: {
+      json: {
+        to: 114,
+        from: [114, 3802],
+        serialize: (x) => (typeof x === "string" ? x : JSON.stringify(x)),
+        parse: (x) => JSON.parse(x),
+      },
+    },
   });
   const wrap = (c) => ({
     query: async (s, params = []) => rowsOf(await c.unsafe(s, params)),

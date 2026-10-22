@@ -41,7 +41,7 @@ import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveRecall } from "./resolve-recall.js";
-import { cardVerdict } from "../../src/lib/share.js";
+import { cardVerdict, idFromLink } from "../../src/lib/share.js";
 import { coverageOf } from "../../src/lib/verdict.js";
 
 const h = React.createElement;
@@ -291,7 +291,7 @@ async function render(el) {
 
 export default async function handler(req, res) {
   const q = req.query || {};
-  const id = String(q.id || "").slice(0, 120);
+  const id = idFromLink(q.id);
   const st = String(q.st || "");
 
   let record = null;
