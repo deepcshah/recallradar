@@ -81,7 +81,7 @@ async function pageFda(kind, search, key, maxPages) {
  * `truncated` flag, so the UI can say "showing the newest N" rather than
  * presenting a cut list as the whole answer. */
 async function fetchFda(kind, loc) {
-  const key = process.env.openfda;
+  const key = (process.env.OPENFDA_KEY || process.env.openfda);
   if (!loc) return fetchFdaNational(kind, key);
 
   /* The second pass has no distribution clause at all.

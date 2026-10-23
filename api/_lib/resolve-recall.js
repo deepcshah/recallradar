@@ -44,7 +44,7 @@ async function fromDatabase(id) {
 const FDA_ID = /^fda-(food|drug|device)-([A-Z]-\d{3,5}-\d{4})$/;
 
 async function fromOpenFda(kind, recallNumber) {
-  const key = process.env.openfda;
+  const key = (process.env.OPENFDA_KEY || process.env.openfda);
   const url = `https://api.fda.gov/${kind}/enforcement.json?search=recall_number:"${recallNumber}"&limit=1` +
     (key ? `&api_key=${key}` : "");
   try {
