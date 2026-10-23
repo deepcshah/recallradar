@@ -63,8 +63,11 @@ export function blobPutOptions(extra) {
  * ALERTS_BLOB_READ_WRITE_TOKEN. When it is set, every alert read and write
  * uses it with private access; when it is not, push keeps using the main
  * store as before (PUSH_BLOB_ACCESS still applies) and email stays off. */
-export function alertsBlobToken() {
-  return process.env.ALERTS_BLOB_READ_WRITE_TOKEN || undefined;
+export function alertsBlobToken(env = process.env) {
+  /* Connecting a store with the custom prefix "ALERTS_" makes Vercel replace
+   * its default "BLOB_" prefix, giving ALERTS_READ_WRITE_TOKEN; the prefix
+   * "ALERTS_BLOB_" gives the longer name. Either is this store. */
+  return String(env.ALERTS_BLOB_READ_WRITE_TOKEN || env.ALERTS_READ_WRITE_TOKEN || "").trim() || undefined;
 }
 export function alertsBlobAuth() {
   const token = alertsBlobToken() || blobToken();

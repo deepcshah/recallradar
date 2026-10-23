@@ -591,6 +591,10 @@ setFetchForTests(null);
     assert.match(c.reason, /private Blob store/);
     assert.equal(emailConfig(process.env).ok, true);
   });
+  await check("the alerts store is found under Vercel's prefix-only name too (ALERTS_READ_WRITE_TOKEN)", async () => {
+    const env = { ...process.env, ALERTS_BLOB_READ_WRITE_TOKEN: "", ALERTS_READ_WRITE_TOKEN: "vercel_blob_rw_ALERTS_TEST_not_real" };
+    assert.equal(emailConfig(env).ok, true);
+  });
 }
 
 console.log(`\n${n} alert logic checks passed (synthetic data; Resend, Blob and push services mocked — not tested for real).`);

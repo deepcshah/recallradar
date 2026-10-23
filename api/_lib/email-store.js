@@ -51,7 +51,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import {
   makeBlobStore, cleanState, cleanFollows, cleanRecallIds, cleanPrefs, MAX_FOLLOWS, MAX_FOLLOW_CHARS, MAX_RECALLS,
 } from "../../src/lib/push-store.js";
-import { blobConfigured } from "../../src/lib/blob.js";
+import { alertsBlobToken, blobConfigured } from "../../src/lib/blob.js";
 
 export const EMAIL_PREFIX = "alerts/email/";
 export const CONFIRM_TTL_MS = 48 * 60 * 60 * 1000;
@@ -91,7 +91,7 @@ export function emailConfig(env = process.env) {
    * alerts have their own store, created private (ALERTS_BLOB_READ_WRITE_TOKEN,
    * see src/lib/blob.js); push records hold no personal data and keep working
    * on the main store either way. */
-  if (!String(env.ALERTS_BLOB_READ_WRITE_TOKEN || "").trim()) {
+  if (!alertsBlobToken(env)) {
     return { ok: false, reason: "Email alerts need their own private Blob store (ALERTS_BLOB_READ_WRITE_TOKEN): subscriber files hold email addresses." };
   }
   return { ok: true, apiKey, from, secret, baseUrl: baseUrl(env) };
