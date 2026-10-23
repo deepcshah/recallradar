@@ -14,6 +14,7 @@ import { verdictFor, coverageOf, resolveLoc, VERDICTS, isAnnounced } from "@/lib
 import { coverageLine } from "@/lib/coverage-line";
 import { classInfo } from "@/lib/classification";
 import { plainHeadline, whatToDo, hazardLabel } from "@/lib/digest";
+import { glanceOf } from "@/lib/glance";
 import { officialImage } from "@/lib/official-image";
 import { categoryFor } from "@/lib/category";
 import { recallUpcs, lookupProduct } from "@/lib/upc";
@@ -32,14 +33,19 @@ import { cn } from "@/lib/utils";
  *   Wheat kernel contamination: …    plainHeadline, the title
  *   United Sugar Producers           the firm
  *   [Class II ⓘ] [FDA Food]
+ *   Hazard        Do now              At a glance: the takeaways first —
+ *   Sold at       When      Price     src/lib/glance.js, every word from
+ *                                     the notice
  *   ┌ Not reported in New York ─────┐ the verdict, one plain block, ink —
  *   │ Sent to IA, IL, IN … Distrib… │ never green: a shipping list is not
  *   └───────────────────────────────┘ an all-clear
+ *   [What do I do with mine?] [Find something like it]
+ *                                     the assistant (RecallAssist), products
+ *                                     and devices only — right under the
+ *                                     verdict, because it is the next step
  *   Where it went                     the notice's words, quoted, + the map
  *   What happened                     the hazard; the class, explained
  *   What to do                        whatToDo — generic, never invented
- *   Get help                          the assistant (RecallAssist), products
- *                                     and devices only
  *   How to identify it                description, codes, barcodes
  *   Dates · Notify me · Follow
  *   ( Share )( Notify me )( Official notice ↗ )   floating action bar,
@@ -140,6 +146,34 @@ function Hero({ recall, photo }) {
 }
 
 /* ───────────────────────────── pieces ──────────────────────────────────── */
+
+/* The takeaways, before anything else: what's wrong, what to do now, and
+ * — for a consumer product — where and when it was sold and for how much,
+ * which is how a person recognises the one they own. */
+function Glance({ recall, hazard, todo }) {
+  const g = glanceOf(recall);
+  const cells = [
+    ["Hazard", g.hazard || (/^(?:other reason|reason not stated)$/i.test(hazard || "") ? "" : hazard), g.failsStandard ? "Fails a mandatory federal safety standard" : ""],
+    ["Do now", todo && todo.steps[0]],
+    ["Sold at", g.soldAt.join(", ")],
+    ["When", g.when],
+    ["Price", g.price],
+  ].filter(([, v]) => v);
+  if (cells.length < 2) return null;
+  return (
+    <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3" aria-label="At a glance">
+      {cells.map(([k, v, note]) => (
+        <div key={k} className={cn("min-w-0", k === "Hazard" && "col-span-2 sm:col-span-1")}>
+          <dt className="microlabel">{k}</dt>
+          <dd className={cn("mt-0.5 text-[15px] font-medium leading-snug text-paper [overflow-wrap:anywhere]", k === "Price" && "tnum")}>
+            {v}
+            {note && <span className="mt-0.5 block text-[12.5px] font-normal leading-snug text-fog">{note}</span>}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
 
 function Section({ title, children, className }) {
   return (
@@ -340,6 +374,8 @@ export default function RecallDetail({ recall, loc, eyebrow, freshness, onReques
         <Badge variant="source">{recall.source}</Badge>
       </div>
 
+      <Glance recall={recall} hazard={hazard} todo={todo} />
+
       {/* The verdict: one plain block, in ink. */}
       <div className="mt-5 rounded-3xl bg-sunken p-4 sm:p-5" role="group" aria-label="For your state">
         <p className="flex items-start gap-2.5 text-[17px] font-semibold leading-snug text-paper">
@@ -363,6 +399,8 @@ export default function RecallDetail({ recall, loc, eyebrow, freshness, onReques
           </div>
         )}
       </div>
+
+      <RecallAssist recall={recall} className="mt-5" />
 
       <div className="mt-6 flex flex-col gap-6">
         <Section title="Where it went">
@@ -413,8 +451,6 @@ export default function RecallDetail({ recall, loc, eyebrow, freshness, onReques
             </p>
           )}
         </Section>
-
-        <RecallAssist recall={recall} />
 
         <Section title="How to identify it">
           <dl className="flex flex-col gap-3 text-[14px] leading-relaxed">

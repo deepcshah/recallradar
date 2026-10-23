@@ -1,5 +1,6 @@
 import RecallThumb from "@/components/RecallThumb";
-import { plainHeadline, dayOf } from "@/lib/digest";
+import { plainHeadline, hazardLabel, dayOf } from "@/lib/digest";
+import { glanceOf } from "@/lib/glance";
 import { reasonFor } from "@/lib/reason";
 import { coverageOf, isAnnounced, verdictFor, resolveLoc, VERDICTS } from "@/lib/verdict";
 import { coverageLine } from "@/lib/coverage-line";
@@ -8,9 +9,17 @@ import { cn } from "@/lib/utils";
 /* ─────────────────────────────────────────────────────────────────────────
  * ONE RECALL, ONE ROW
  *
- *   ┌────┐  Listeria in bagged spinach                (2 lines max)
- *   │ 🥬 │  [Serious] Listeria · Oct 8 · In NY
- *   └────┘
+ *   ┌────┐  Gas Patio Heaters                          Oct 22   ← sm+: the
+ *   │ 🔥 │  (Fire and burn hazard) Amazon · $346                  date is a
+ *   └────┘                                                          column
+ *
+ *   phone:  Gas Patio Heaters
+ *           (Fire and burn hazard) Amazon · $346 · Oct 22
+ *
+ * Kind of a table, without being one: the hazard is a quiet pill, so a
+ * column of rows scans by hazard; where it was sold follows (CPSC's "Sold
+ * At", src/lib/glance.js) with the price, or, for food and drugs, where it
+ * went; and on a wider screen the dates line up in a column on the right.
  *
  * The home screen's list and its search results are the same row: a 56px
  * tile (the agency's photo, or a calm category tile — RecallThumb), the plain
@@ -92,21 +101,31 @@ export function RowBadge({ recall, skipAnnounced = false }) {
  * @param {number}   [props.index]      position, for the first-render stagger
  * @param {boolean}  [props.animate]    fade in (first render of a list only)
  */
+function HazardPill({ children }) {
+  return (
+    <span className="mr-1.5 inline-flex max-w-full -translate-y-px items-center truncate rounded-full bg-sunken px-2 py-px align-middle text-[11.5px] font-medium leading-[18px] text-paper/85">
+      {children}
+    </span>
+  );
+}
+
 export default function RecallRow({ recall, onOpen, verdict, meta, inState, className, style, index = 0, animate = false }) {
   const headline = plainHeadline(recall) || recall.product || "Recall notice";
-  /* "Other reason" / "Reason not stated" are filter buckets, not news; the
-   * headline already carries the hazard when there is one. */
+  /* "Other reason" / "Reason not stated" are filter buckets, not news. */
   const reason = reasonFor(recall);
+  const g = glanceOf(recall);
+  const hazard = g.hazard || (reason.key === "other" || reason.key === "unspecified" ? "" : hazardLabel(recall));
   /* An announced recall with no geography says so with its "Announced"
    * label — FDA hasn't published a distribution list yet — so the row does
    * not spend a second line repeating "Region not stated". */
   const where = rowWhere(recall, { inState });
   const quietWhere = isAnnounced(recall) && !isEnded(recall) && where === "Region not stated";
-  const line = meta != null ? meta : [
-    reason.key === "other" || reason.key === "unspecified" ? "" : reason.label,
-    rowDate(recall),
-    quietWhere ? "" : where,
-  ].filter(Boolean).join(" · ");
+  const sold = g.soldAt.length ? g.soldAt.slice(0, 2).join(", ") : (quietWhere ? "" : where);
+  const date = rowDate(recall);
+  /* Search passes its own meta (firm, "From FDA directly"); everywhere else
+   * the line is built here. */
+  const line = meta != null ? meta : sold;
+  const phoneTail = meta != null ? "" : date;
   return (
     <li className={cn(animate && "row-in", className)} style={animate ? { ...style, "--i": Math.min(index, 12) } : style}>
       <button
@@ -125,10 +144,20 @@ export default function RecallRow({ recall, onOpen, verdict, meta, inState, clas
           <span className="tnum mt-1 line-clamp-2 text-[13px] leading-snug text-subtle">
             <RowBadge recall={recall} skipAnnounced={!!verdict && /^Announced/.test(verdict)} />
             {verdict && <span className="verdict-line font-medium text-paper">{verdict}</span>}
-            {verdict && line && <span aria-hidden="true"> · </span>}
+            {verdict && (hazard || line) && <span aria-hidden="true"> · </span>}
+            {hazard && !verdict && <HazardPill>{hazard}</HazardPill>}
             {line}
+            {meta == null && g.price && (
+              <span className="whitespace-nowrap">{line ? " · " : ""}{g.price}</span>
+            )}
+            {phoneTail && (
+              <span className="whitespace-nowrap sm:hidden">{line || g.price ? " · " : ""}{phoneTail}</span>
+            )}
           </span>
         </span>
+        {phoneTail && (
+          <span className="tnum hidden w-16 shrink-0 text-right text-[13.5px] font-medium text-paper/80 sm:block">{date}</span>
+        )}
       </button>
     </li>
   );
