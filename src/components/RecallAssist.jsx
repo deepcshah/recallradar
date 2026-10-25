@@ -214,20 +214,20 @@ function TaskCard({ recall, task }) {
   if (state.status === "idle") {
     return (
       <button type="button" onClick={run}
-              className="press flex min-h-14 w-full items-center gap-3 rounded-2xl px-3 text-left hover:bg-panel-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint">
-        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-panel-3 text-fog">
+              className="press flex min-h-[4.25rem] w-full items-center gap-3 rounded-2xl bg-panel-2 px-3.5 py-3 text-left shadow-[inset_0_0_0_1px_var(--rr-line)] hover:bg-panel-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint">
+        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-mint-soft text-mint">
           <Icon aria-hidden="true" className="size-[18px]" />
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block text-[15px] font-medium text-paper">{t.label}</span>
-          <span className="block text-[12.5px] text-subtle">{t.hint}</span>
+          <span className="block text-[15px] font-semibold leading-snug text-paper">{t.label}</span>
+          <span className="block text-[12.5px] leading-snug text-subtle">{t.hint}</span>
         </span>
       </button>
     );
   }
 
   return (
-    <div className="rounded-2xl bg-panel-2 p-3.5 shadow-[inset_0_0_0_1px_var(--rr-line)]" aria-live="polite">
+    <div className="rounded-2xl bg-panel-2 p-3.5 sm:col-span-2 shadow-[inset_0_0_0_1px_var(--rr-line)]" aria-live="polite">
       <p className="flex items-center gap-2 text-[13px] font-semibold text-fog">
         <Icon aria-hidden="true" className="size-4" /> {t.label}
       </p>
@@ -270,17 +270,20 @@ function TaskCard({ recall, task }) {
   );
 }
 
-/** The "Get help" section, or nothing for a recall it isn't offered on. */
+/** The "Get help" section, or nothing for a recall it isn't offered on.
+ *  Sits right under the verdict: after "is it mine?", this is the next
+ *  question. An open answer takes the full width; the idle actions sit side
+ *  by side on a wide screen. */
 export default function RecallAssist({ recall, className }) {
   const tasks = assistTasksFor(recall);
   if (!recall || !recall.id || !tasks.length) return null;
   return (
-    <section className={cn("border-t border-line pt-5", className)} aria-labelledby="assist-title">
-      <h3 id="assist-title" className="flex items-center gap-2 text-[17px] font-semibold tracking-[-0.015em] text-paper">
-        <Sparkles aria-hidden="true" className="size-[18px] text-mint" /> Get help
+    <section className={className} aria-labelledby="assist-title">
+      <h3 id="assist-title" className="text-[13px] font-semibold leading-snug text-fog">
+        <Sparkles aria-hidden="true" className="mr-1.5 inline size-4 -translate-y-px text-mint" />Get help
+        <span className="hidden font-normal text-subtle sm:inline"> · reads the notice and the company's site for you</span>
       </h3>
-      <p className="mt-1 text-[13px] leading-snug text-subtle">Reads the notice and the company's site for you.</p>
-      <div className="-mx-3 mt-2 flex flex-col gap-2">
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
         {tasks.map((t) => <TaskCard key={t} recall={recall} task={t} />)}
       </div>
     </section>

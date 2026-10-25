@@ -22,6 +22,7 @@
  *     sentence says the clamped window rather than a date the data may not
  *     reach back to.
  * ───────────────────────────────────────────────────────────────────────── */
+import { cpscHazard } from "./glance.js";
 import { categoryFor } from "./category.js";
 import { reasonFor } from "./reason.js";
 import { byAisle } from "./search-index.js";
@@ -115,7 +116,7 @@ export function shortProduct(product, maxWords = 5) {
   t = t.split(/\s(?:products?|items?)(?:\s|$)/i)[0].trim();
   while (LEAD.test(t) && t.split(" ").length > 2) t = t.replace(LEAD, "");
   const words = t.split(" ").filter(Boolean).slice(0, maxWords);
-  while (words.length > 1 && /^(?:and|or|of|from|with|in|the|for|to|by|&|\d[\d.\/-]*|(?:fl\.?|oz|lbs?|g|kg|ml|ct|count|pack|pk)\.?)$/i.test(words[words.length - 1])) words.pop();
+  while (words.length > 1 && /^(?:and|or|of|from|with|in|the|for|to|by|due|&|\d[\d.\/-]*|(?:fl\.?|oz|lbs?|g|kg|ml|ct|count|pack|pk)\.?)$/i.test(words[words.length - 1])) words.pop();
   let out = words.join(" ");
   // FDA descriptions are often SHOUTED; a sentence shouldn't be.
   if (out && out === out.toUpperCase() && /[A-Z]{3}/.test(out)) {
@@ -153,6 +154,12 @@ export function hazardLabel(r) {
     const due = dueClause(r);
     if (due) return due;
   }
+  /* CPSC's own title names the hazard ("…from Fire and Burn Hazards"), which
+   * beats any bucket: a patio heater was "Other reason" before. */
+  if (r && r.source === "CPSC") {
+    const own = cpscHazard(r);
+    if (own) return own;
+  }
   if (key === "other") {
     const own = ownPhrase(r);
     if (own) return own;
@@ -164,6 +171,9 @@ export function hazardLabel(r) {
  *  and not a paragraph. */
 function ownPhrase(r) {
   const own = String((r && r.reason) || "").split(/\s[—–-]\s|;/)[0].trim();
+  /* CPSC's incident count lands in `reason` for some notices — "None
+   * reported." is not a hazard, and made a headline "None reported.: …". */
+  if (/^(?:none|no\s+(?:injuries|incidents|reports))\b/i.test(own)) return "";
   return own && own.length <= 40 ? own : "";
 }
 
@@ -186,6 +196,10 @@ export function plainHeadline(r) {
   const product = shortProduct(r.product);
   // USDA only: CPSC titles also say "due to", but what follows is a legal
   // paragraph ("Risk of Serious Injury or Death from…"), not a hazard name.
+  /* A CPSC row is scanned by thing ("Gas Patio Heaters"), with the hazard
+   * on its own line (RecallRow, the sheet's At a glance) — so the title is
+   * the product alone. */
+  if (r.source === "CPSC" && product) return product;
   const due = r.source === "USDA FSIS" ? dueClause(r) : "";
   const key = reasonFor(r).key;
   /* "Other reason" is a filter bucket, not something to tell a person; the
