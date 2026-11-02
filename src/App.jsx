@@ -2181,6 +2181,7 @@ export default function App() {
             onOpenShared={openSharedRecall}
             onScan={() => setScanOpen(true)}
             onSearch={onSearchSettled}
+            onRequestLocation={() => openLocationPicker("to check your state", "search_answer")}
             index={index}
             byId={data.byId}
             dataStatus={data.status}

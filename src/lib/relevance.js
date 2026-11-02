@@ -31,6 +31,8 @@
  * as the list; what a notice names its product comes before it. */
 const INGREDIENTS_RE = /\bingredients?\b/i;
 
+const PATHOGENS = /\b(?:salmonella|listeria\w*|listeriosis)\b/gi;
+
 function esc(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -53,7 +55,13 @@ export function relevanceOf(m, q) {
    * before matching, so a sugar-free cough drop doesn't rank with the sugar
    * recall someone is looking for (D-0461-2026 did). */
   const noFree = (s) => s.replace(new RegExp(`${esc(query)}[\\s-]*free`, "gi"), " ");
-  const firmN = noFree(firm), headN = noFree(head), reasonN = noFree(reason);
+  /* Pathogen names start with ordinary words: "salmon" is the first six
+   * letters of "Salmonella", so a search for the fish ranked a broccoli-seed
+   * recall "because of possible Salmonella" as being about salmon. A pathogen
+   * name only counts once the query has spelled out more than the ordinary
+   * word ("salmone…", "listeri…"). */
+  const noBug = (s) => s.replace(PATHOGENS, (w) => (words(query).some((t) => t.length >= 7 && w.toLowerCase().startsWith(t.slice(0, 7))) ? w : " "));
+  const firmN = noBug(noFree(firm)), headN = noBug(noFree(head)), reasonN = noBug(noFree(reason));
   const phrase = new RegExp(`(^|[^a-z0-9])${esc(query)}`, "i");
   if (phrase.test(firmN) || phrase.test(headN.slice(0, 80))) return 3;
 
