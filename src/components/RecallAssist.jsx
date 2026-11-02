@@ -214,8 +214,8 @@ function TaskCard({ recall, task }) {
   if (state.status === "idle") {
     return (
       <button type="button" onClick={run}
-              className="press flex min-h-[4.25rem] w-full items-center gap-3 rounded-2xl bg-panel-2 px-3.5 py-3 text-left shadow-[inset_0_0_0_1px_var(--rr-line)] hover:bg-panel-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint">
-        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-mint-soft text-mint">
+              className="press flex min-h-[4.25rem] w-full items-center gap-3 rounded-2xl bg-mint-soft px-3.5 py-3 text-left shadow-[inset_0_0_0_1px_var(--rr-accent-line)] transition-[filter] hover:brightness-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint">
+        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-mint text-mint-ink">
           <Icon aria-hidden="true" className="size-[18px]" />
         </span>
         <span className="min-w-0 flex-1">
@@ -270,19 +270,18 @@ function TaskCard({ recall, task }) {
   );
 }
 
-/** The "Get help" section, or nothing for a recall it isn't offered on.
- *  Sits right under the verdict: after "is it mine?", this is the next
- *  question. An open answer takes the full width; the idle actions sit side
- *  by side on a wide screen. */
+/** The two assistant actions, or nothing for a recall they aren't offered
+ *  on. They live inside the sheet's "What to do" card — the next step after
+ *  the generic steps, styled as its primary actions. An open answer takes
+ *  the full width; the idle actions sit side by side on a wide screen. */
 export default function RecallAssist({ recall, className }) {
   const tasks = assistTasksFor(recall);
   if (!recall || !recall.id || !tasks.length) return null;
   return (
     <section className={className} aria-labelledby="assist-title">
-      <h3 id="assist-title" className="text-[13px] font-semibold leading-snug text-fog">
-        <Sparkles aria-hidden="true" className="mr-1.5 inline size-4 -translate-y-px text-mint" />Get help
-        <span className="hidden font-normal text-subtle sm:inline"> · reads the notice and the company's site for you</span>
-      </h3>
+      <h4 id="assist-title" className="text-[13px] font-semibold leading-snug text-fog">
+        <Sparkles aria-hidden="true" className="mr-1.5 inline size-4 -translate-y-px text-mint" />Not sure? We'll read the notice for you
+      </h4>
       <div className="mt-2 grid gap-2 sm:grid-cols-2">
         {tasks.map((t) => <TaskCard key={t} recall={recall} task={t} />)}
       </div>

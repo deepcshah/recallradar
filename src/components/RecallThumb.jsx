@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Apple, Armchair, Baby, Beef, Bike, Candy, Carrot, CupSoda, Fish, Microwave, Milk, Package,
   PawPrint, Pill, PlugZap, Soup, Stethoscope, Wheat,
@@ -24,6 +24,12 @@ import { cn } from "@/lib/utils";
  *
  * Never stock photography, never a generated image, never a guess. A photo
  * that fails to load falls back to the tile, not to a broken-image icon.
+ *
+ * Loading: the tile IS the placeholder. It renders at once, at its final
+ * size, and the photo fades in over it only after it has decoded — so a slow
+ * or failed photo never shows as an empty white square, nothing shifts when
+ * it arrives, and a cached photo (already `complete` on mount) appears with
+ * no fade at all. useImage below is shared with the sheet's hero photo.
  * Open Food Facts photos are NOT used here — only in the opened recall,
  * labelled as theirs (see RecallDetail), because a list of forty rows must
  * not fire forty third-party requests.
@@ -47,6 +53,24 @@ const SIZES = {
   lg: { box: "size-24 rounded-[28px]", icon: "size-10" },
 };
 
+/** "loading" | "loaded" | "failed" for one src, plus a ref callback for the
+ *  <img>. The ref catches an image that finished before React attached its
+ *  onLoad (served from cache), which would otherwise stay invisible. */
+export function useImage(src) {
+  const [state, setState] = useState({ src, status: "loading" });
+  useEffect(() => { setState({ src, status: "loading" }); }, [src]);
+  const ref = useCallback((img) => {
+    if (img && img.complete) setState({ src, status: img.naturalWidth > 0 ? "loaded" : "failed" });
+  }, [src]);
+  const status = state.src === src ? state.status : "loading";
+  return {
+    status,
+    ref,
+    onLoad: () => setState({ src, status: "loaded" }),
+    onError: () => setState({ src, status: "failed" }),
+  };
+}
+
 /**
  * @param {object} props.recall
  * @param {"sm"|"md"|"lg"} [props.size="md"]
@@ -54,25 +78,27 @@ const SIZES = {
  */
 export default function RecallThumb({ recall, size = "md", src: override, className }) {
   const photo = override || officialImage(recall && recall.image, recall && recall.source);
-  const [failed, setFailed] = useState(null);
+  const img = useImage(photo || "");
   const cat = primaryCategoryOf(recall);
   const Icon = kindIcon(recall);
   const sz = SIZES[size] || SIZES.md;
-  const showPhoto = photo && failed !== photo;
+  const tryPhoto = !!photo && img.status !== "failed";
+  const shown = tryPhoto && img.status === "loaded";
   return (
-    <span data-cat={cat} className={cn("cat-tile", sz.box, showPhoto && "has-photo", className)}>
-      {showPhoto ? (
+    <span data-cat={cat} className={cn("cat-tile relative", sz.box, shown && "has-photo", className)}>
+      <Icon aria-hidden="true" className={cn(sz.icon, "transition-opacity duration-200", shown && "opacity-0")} strokeWidth={1.75} />
+      {tryPhoto && (
         <img
+          ref={img.ref}
           src={photo}
           alt={String((recall && recall.product) || "").replace(/…$/, "")}
           loading="lazy"
           decoding="async"
           referrerPolicy="no-referrer"
-          className="size-full object-cover"
-          onError={() => setFailed(photo)}
+          onLoad={img.onLoad}
+          onError={img.onError}
+          className={cn("absolute inset-0 size-full object-cover transition-opacity duration-200", shown ? "opacity-100" : "opacity-0")}
         />
-      ) : (
-        <Icon aria-hidden="true" className={sz.icon} strokeWidth={1.75} />
       )}
     </span>
   );

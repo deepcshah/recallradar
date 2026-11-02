@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react";
 import {
-  ArrowUpRight, BellRing, Check, CircleHelp, History, MapPin, MapPinOff, Megaphone, Plus, Share2,
+  ArrowRight, ArrowUpRight, BellRing, Check, CircleHelp, History, MapPin, MapPinOff, Megaphone, Plus, Share2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import StateMap from "@/components/StateMap";
 import WatchButton from "@/components/WatchButton";
-import RecallThumb from "@/components/RecallThumb";
+import RecallThumb, { useImage } from "@/components/RecallThumb";
 import RecallAssist from "@/components/RecallAssist";
 import { AnnouncedBadge, ClassBadge, agencyOf, followTermFor } from "@/components/VerdictCard";
 import { fmtAsOf } from "@/components/FreshnessLine";
@@ -33,19 +32,20 @@ import { cn } from "@/lib/utils";
  *   Wheat kernel contamination: …    plainHeadline, the title
  *   United Sugar Producers           the firm
  *   [Class II ⓘ] [FDA Food]
- *   Hazard        Do now              At a glance: the takeaways first —
- *   Sold at       When      Price     src/lib/glance.js, every word from
+ *   Hazard  Sold at  When  Price     At a glance: how to recognise it —
+ *                                     src/lib/glance.js, every word from
  *                                     the notice
  *   ┌ Not reported in New York ─────┐ the verdict, one plain block, ink —
  *   │ Sent to IA, IL, IN … Distrib… │ never green: a shipping list is not
- *   └───────────────────────────────┘ an all-clear
- *   [What do I do with mine?] [Find something like it]
- *                                     the assistant (RecallAssist), products
- *                                     and devices only — right under the
- *                                     verdict, because it is the next step
- *   Where it went                     the notice's words, quoted, + the map
- *   What happened                     the hazard; the class, explained
- *   What to do                        whatToDo — generic, never invented
+ *   └───────────────────────────────┘ an all-clear; "Does it reach my
+ *                                     state?" is a link, not a button
+ *   ┌ What to do ───────────────────┐ the job after "is it mine?":
+ *   │ ① Stop using it               │ whatToDo (generic, never invented),
+ *   │ ② …                           │ then the assistant's actions as the
+ *   │ [What do I do…][Find…]        │ card's primary buttons (products and
+ *   └───────────────────────────────┘ devices only)
+ *   Where it went                     the evidence, after the answer:
+ *   What happened                     the quote + map, the hazard and class
  *   How to identify it                description, codes, barcodes
  *   Dates · Notify me · Follow
  *   ( Share )( Notify me )( Official notice ↗ )   floating action bar,
@@ -123,26 +123,34 @@ function usePhoto(recall) {
   return null;
 }
 
+/* The photo's box is reserved at its final height and shows the category
+ * tile, gently shimmering, until the photo has decoded; then the photo fades
+ * in. A failed photo leaves the tile — never an empty white frame. */
 function Hero({ recall, photo }) {
-  const [failed, setFailed] = useState(null);
-  if (photo && failed !== photo.src) {
-    return (
-      <figure className="m-0">
-        <div className="overflow-hidden rounded-[22px] bg-white shadow-[inset_0_0_0_1px_var(--rr-line)]">
-          <img
-            src={photo.src}
-            alt={unclip(recall.product)}
-            decoding="async"
-            referrerPolicy="no-referrer"
-            onError={() => setFailed(photo.src)}
-            className="mx-auto block h-52 w-full object-contain sm:h-60"
-          />
-        </div>
-        <figcaption className="mt-2 text-[12px] leading-snug text-subtle">{photo.caption}</figcaption>
-      </figure>
-    );
-  }
-  return <RecallThumb recall={recall} size="lg" />;
+  const img = useImage(photo ? photo.src : "");
+  if (!photo || img.status === "failed") return <RecallThumb recall={recall} size="lg" />;
+  const loaded = img.status === "loaded";
+  return (
+    <figure className="m-0">
+      <div className={cn(
+        "relative grid h-52 place-items-center overflow-hidden rounded-[22px] shadow-[inset_0_0_0_1px_var(--rr-line)] transition-colors duration-200 sm:h-60",
+        loaded ? "bg-white" : "shimmer",
+      )}>
+        {!loaded && <RecallThumb recall={recall} size="lg" className="opacity-60" />}
+        <img
+          ref={img.ref}
+          src={photo.src}
+          alt={unclip(recall.product)}
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onLoad={img.onLoad}
+          onError={img.onError}
+          className={cn("absolute inset-0 mx-auto block size-full object-contain transition-opacity duration-300", loaded ? "opacity-100" : "opacity-0")}
+        />
+      </div>
+      <figcaption className="mt-2 text-[12px] leading-snug text-subtle">{photo.caption}</figcaption>
+    </figure>
+  );
 }
 
 /* ───────────────────────────── pieces ──────────────────────────────────── */
@@ -154,14 +162,13 @@ function Glance({ recall, hazard, todo }) {
   const g = glanceOf(recall);
   const cells = [
     ["Hazard", g.hazard || (/^(?:other reason|reason not stated)$/i.test(hazard || "") ? "" : hazard), g.failsStandard ? "Fails a mandatory federal safety standard" : ""],
-    ["Do now", todo && todo.steps[0]],
     ["Sold at", g.soldAt.join(", ")],
     ["When", g.when],
     ["Price", g.price],
   ].filter(([, v]) => v);
   if (cells.length < 2) return null;
   return (
-    <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-3" aria-label="At a glance">
+    <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4" aria-label="At a glance">
       {cells.map(([k, v, note]) => (
         <div key={k} className={cn("min-w-0", k === "Hazard" && "col-span-2 sm:col-span-1")}>
           <dt className="microlabel">{k}</dt>
@@ -377,7 +384,7 @@ export default function RecallDetail({ recall, loc, eyebrow, freshness, onReques
       <Glance recall={recall} hazard={hazard} todo={todo} />
 
       {/* The verdict: one plain block, in ink. */}
-      <div className="mt-5 rounded-3xl bg-sunken p-4 sm:p-5" role="group" aria-label="For your state">
+      <div className="mt-5 rounded-3xl bg-sunken px-4 py-3.5 sm:px-5" role="group" aria-label="For your state">
         <p className="flex items-start gap-2.5 text-[17px] font-semibold leading-snug text-paper">
           <Icon aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-fog" />
           <span className="verdict-line">{verdictHead}</span>
@@ -392,15 +399,32 @@ export default function RecallDetail({ recall, loc, eyebrow, freshness, onReques
           </p>
         )}
         {needsLoc && onRequestLocation && (
-          <div className="mt-2 pl-[30px]">
-            <Button type="button" size="sm" variant="secondary" onClick={onRequestLocation}>
-              <MapPin aria-hidden="true" /> Check your state
-            </Button>
-          </div>
+          <button type="button" onClick={onRequestLocation}
+                  className="mt-1 inline-flex min-h-9 items-center gap-1 pl-[30px] text-[14px] font-semibold text-mint underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint">
+            Does it reach my state? <ArrowRight aria-hidden="true" className="size-4" />
+          </button>
         )}
       </div>
 
-      <RecallAssist recall={recall} className="mt-5" />
+      {/* The job after "is it mine?": what to do. The steps, then the
+          assistant's actions as the card's primary buttons. */}
+      <section className="mt-4 rounded-3xl bg-panel-2 p-4 shadow-[var(--rr-shadow-1),inset_0_0_0_1px_var(--rr-line)] sm:p-5" aria-labelledby="todo-title">
+        <h3 id="todo-title" className="text-[17px] font-semibold tracking-[-0.015em] text-paper">What to do</h3>
+        <ol className="mt-2.5 flex flex-col gap-2">
+          {todo.steps.map((step, i) => (
+            <li key={step} className={cn("flex items-start gap-3 leading-snug text-paper", i === 0 ? "text-[16px] font-semibold" : "text-[15px]")}>
+              <span aria-hidden="true" className={cn("tnum grid size-6 shrink-0 place-items-center rounded-full text-[12px] font-semibold", i === 0 ? "bg-paper text-[var(--rr-surface)]" : "bg-sunken text-fog")}>{i + 1}</span>
+              <span className="pt-0.5">{step}</span>
+            </li>
+          ))}
+        </ol>
+        {ended && (
+          <p className="mt-3 text-[13px] leading-snug text-subtle">
+            The agency has closed this recall. Products bought before then can still be in a cupboard or freezer.
+          </p>
+        )}
+        <RecallAssist recall={recall} className="mt-4 border-t border-line pt-4" />
+      </section>
 
       <div className="mt-6 flex flex-col gap-6">
         <Section title="Where it went">
@@ -432,22 +456,6 @@ export default function RecallDetail({ recall, loc, eyebrow, freshness, onReques
             <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-[14px] leading-relaxed text-fog">
               <ClassBadge recall={recall} />
               <span>{info.plain.charAt(0).toUpperCase() + info.plain.slice(1)}. Assigned by {info.agency}.</span>
-            </p>
-          )}
-        </Section>
-
-        <Section title="What to do">
-          <ol className="flex flex-col gap-2">
-            {todo.steps.map((step, i) => (
-              <li key={step} className="flex items-start gap-3 text-[15px] leading-snug text-paper">
-                <span aria-hidden="true" className="tnum grid size-6 shrink-0 place-items-center rounded-full bg-sunken text-[12px] font-semibold text-fog">{i + 1}</span>
-                <span className="pt-0.5">{step}</span>
-              </li>
-            ))}
-          </ol>
-          {ended && (
-            <p className="mt-3 text-[13px] leading-snug text-subtle">
-              The agency has closed this recall. Products bought before then can still be in a cupboard or freezer.
             </p>
           )}
         </Section>
