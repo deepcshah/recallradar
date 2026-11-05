@@ -3,7 +3,7 @@ import {
   AlertCircle, ArrowLeft, ArrowRight, Armchair, Baby, Beef, Bell, Bike, Candy, Carrot, Check, ChevronDown, ChevronRight, ChevronUp,
   CupSoda,
   ExternalLink, Fish, Info, Loader2, MapPin, MapPinOff, Milk, Package,
-  PanelRightOpen, PawPrint, Pill, Plug, Plus, Radar, Rows2, Columns2, Search, SearchX,
+  PanelRightOpen, PawPrint, Pill, Plug, Plus, Rows2, Columns2, Search, SearchX,
   ShieldCheck, Soup, Stethoscope, Sun, Moon, MonitorSmartphone, MoreHorizontal, Store,
   ClipboardList, ListFilter, UtensilsCrossed, Wheat, X, Zap,
 } from "lucide-react";
@@ -22,6 +22,7 @@ import ScanSheet from "@/components/ScanSheet";
 import RecallSearch from "@/components/RecallSearch";
 import LatestRecalls, { SyncNote, latestInScope } from "@/components/LatestRecalls";
 import RecallDetail, { RecallActionBar } from "@/components/RecallDetail";
+import Wordmark from "@/components/Wordmark";
 import RecallThumb from "@/components/RecallThumb";
 import AlertsPanel from "@/components/AlertsPanel";
 import WatchButton from "@/components/WatchButton";
@@ -2037,10 +2038,7 @@ export default function App() {
         <div className={"mx-auto flex h-14 w-full items-center gap-1.5 px-3 sm:px-4 lg:h-16 " + (tab === "home" ? "max-w-[712px]" : "")}>
           <button type="button" onClick={() => setTab("home")} aria-label="Yanked — home"
                   className="tap -ml-0.5 flex shrink-0 items-center gap-2 rounded-full py-1 pl-0.5 pr-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint">
-            <span aria-hidden="true" className="grid size-9 place-items-center rounded-[12px] bg-paper text-ink shadow-[var(--rr-shadow-2)]">
-              <Radar className="size-5" strokeWidth={2.25} />
-            </span>
-            <span className="text-[17px] font-semibold tracking-[-0.02em] text-paper max-[359px]:sr-only">Yanked</span>
+            <Wordmark className="-my-1 h-12 text-paper lg:h-[52px]" label="" />
           </button>
 
           <div className="ml-auto flex min-w-0 items-center gap-1">
@@ -2181,6 +2179,7 @@ export default function App() {
             onOpenShared={openSharedRecall}
             onScan={() => setScanOpen(true)}
             onSearch={onSearchSettled}
+            onRequestLocation={() => openLocationPicker("to check your state", "search_answer")}
             index={index}
             byId={data.byId}
             dataStatus={data.status}
