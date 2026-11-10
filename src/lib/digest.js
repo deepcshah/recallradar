@@ -22,6 +22,7 @@
  *     sentence says the clamped window rather than a date the data may not
  *     reach back to.
  * ───────────────────────────────────────────────────────────────────────── */
+import { cpscHazard, cpscProductName } from "./glance.js";
 import { categoryFor } from "./category.js";
 import { reasonFor } from "./reason.js";
 import { byAisle } from "./search-index.js";
@@ -96,11 +97,21 @@ export function bySeriousness(a, b) {
 const LEAD = /^(?:all|certain|select|some|various|not|ready-to-eat|raw|frozen|fresh|imported|ineligible|fully|cooked|uncooked|refrigerated|shelf-stable|heat-treated)\s+/i;
 
 export function shortProduct(product, maxWords = 5) {
-  let t = String(product || "").replace(/\s+/g, " ").trim();
+  let t = String(product || "").replace(/\s+/g, " ").trim()
+    /* A press release's dateline ("ARLINGTON, VA:") and a list's "1)". */
+    .replace(/^[A-Z][A-Za-z .'-]{2,30},\s*[A-Z]{2}\s*[:–—-]\s*/, "")
+    .replace(/^\(?\d{1,2}[).]\s+/, "")
+    /* A leading code is not a name: "UPC 22655200000 Cake Carrot",
+     * "5625240 DuoGlide …" (a catalog number). A model name with a letter
+     * in it ("5008X") stays. */
+    .replace(/^(?:upc|ndc|sku|item|ref|cat(?:alog)?\.?)\s*(?:no\.?|#)?\s*:?\s*(?:[\d-]+\s+){1,6}/i, "")
+    .replace(/^\d{5,}\s+/, "")
+    /* Leading pack sizes ("1.5oz 2oz Dirty Brand Salt") are not the name. */
+    .replace(/^(?:[\d.\/]+\s*(?:fl\.?\s*)?(?:oz|lbs?|g|kg|ml|l|ct|count|pk|pack)\.?\s*[,\s]\s*)+/i, "");
   if (!t) return "";
   const m = t.match(/\brecalls?\s+(.*)$/i);
   if (m && m[1].length > 3) {
-    t = m[1].replace(/,\s*/g, " ");
+    t = m[1].replace(/^of\s+/i, "").replace(/^(?:certain|select|specific)\s+/i, "").replace(/,\s*/g, " ");
   } else {
     const parts = t.split(/,|;|\s[-–—]\s|\(/);
     t = parts[0].trim();
@@ -115,8 +126,14 @@ export function shortProduct(product, maxWords = 5) {
   t = t.split(/\s(?:products?|items?)(?:\s|$)/i)[0].trim();
   while (LEAD.test(t) && t.split(" ").length > 2) t = t.replace(LEAD, "");
   const words = t.split(" ").filter(Boolean).slice(0, maxWords);
-  while (words.length > 1 && /^(?:and|or|of|from|with|in|the|for|to|by|&|\d[\d.\/-]*|(?:fl\.?|oz|lbs?|g|kg|ml|ct|count|pack|pk)\.?)$/i.test(words[words.length - 1])) words.pop();
-  let out = words.join(" ");
+  while (words.length > 1 && /^(?:and|or|of|from|with|in|the|for|to|by|due|&|\d[\d.\/-]*|(?:fl\.?|oz|lbs?|g|kg|ml|ct|count|pack|pk)\.?)$/i.test(words[words.length - 1])) words.pop();
+  let out = words.join(" ")
+    /* What follows the name in FDA text is a label: "Ingredients:", "REF:",
+     * a model or lot number. A sentence break ends the name too. */
+    .split(/\s+(?:ingredients?|ref|model|catalog|cat\.?\s*no|lot|upc|ndc|sku|item)\b\s*[:#]?/i)[0]
+    .split(/[.:;]\s/)[0]
+    .replace(/\s*\b(?:and|or|with|the|of|in|for|labeled\s+as)\s*$/i, "")
+    .replace(/[\s.:;,]+$/, "");
   // FDA descriptions are often SHOUTED; a sentence shouldn't be.
   if (out && out === out.toUpperCase() && /[A-Z]{3}/.test(out)) {
     out = out.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
@@ -153,6 +170,12 @@ export function hazardLabel(r) {
     const due = dueClause(r);
     if (due) return due;
   }
+  /* CPSC's own title names the hazard ("…from Fire and Burn Hazards"), which
+   * beats any bucket: a patio heater was "Other reason" before. */
+  if (r && r.source === "CPSC") {
+    const own = cpscHazard(r);
+    if (own) return own;
+  }
   if (key === "other") {
     const own = ownPhrase(r);
     if (own) return own;
@@ -164,6 +187,12 @@ export function hazardLabel(r) {
  *  and not a paragraph. */
 function ownPhrase(r) {
   const own = String((r && r.reason) || "").split(/\s[—–-]\s|;/)[0].trim();
+  /* CPSC's incident count lands in `reason` for some notices — "None
+   * reported." is not a hazard, and made a headline "None reported.: …". */
+  if (/^(?:none|no\s+(?:injuries|incidents|reports))\b/i.test(own)) return "";
+  /* A press release's dateline ("ARLINGTON, VA – OCTOBER 16, 2026 – …")
+   * splits into "ARLINGTON, VA", which is a place, not a hazard. */
+  if (/^[A-Z][A-Z .'-]+,\s*[A-Z]{2}$/.test(own) || /^[A-Z]+\s+\d{1,2},\s*\d{4}$/.test(own)) return "";
   return own && own.length <= 40 ? own : "";
 }
 
@@ -186,6 +215,13 @@ export function plainHeadline(r) {
   const product = shortProduct(r.product);
   // USDA only: CPSC titles also say "due to", but what follows is a legal
   // paragraph ("Risk of Serious Injury or Death from…"), not a hazard name.
+  /* A CPSC row is scanned by thing ("Gas Patio Heaters"), with the hazard
+   * on its own line (RecallRow, the sheet's At a glance) — so the title is
+   * the product alone. */
+  if (r.source === "CPSC") {
+    const named = cpscProductName(r);
+    if (named || product) return named || product;
+  }
   const due = r.source === "USDA FSIS" ? dueClause(r) : "";
   const key = reasonFor(r).key;
   /* "Other reason" is a filter bucket, not something to tell a person; the

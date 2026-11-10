@@ -1,19 +1,20 @@
 import { useEffect, useState } from "react";
 import {
-  ArrowUpRight, BellRing, Check, CircleHelp, History, MapPin, MapPinOff, Megaphone, Plus, Share2,
+  ArrowRight, ArrowUpRight, BellRing, Check, CircleHelp, History, MapPin, MapPinOff, Megaphone, Plus, Share2,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import StateMap from "@/components/StateMap";
 import WatchButton from "@/components/WatchButton";
-import RecallThumb from "@/components/RecallThumb";
-import RecallAssist from "@/components/RecallAssist";
+import RecallThumb, { useImage } from "@/components/RecallThumb";
+import { PlanCard, RemedyButton, ShopAlternative, useAssist } from "@/components/RecallAssist";
+import { assistTasksFor } from "@/lib/assist";
 import { AnnouncedBadge, ClassBadge, agencyOf, followTermFor } from "@/components/VerdictCard";
 import { fmtAsOf } from "@/components/FreshnessLine";
 import { verdictFor, coverageOf, resolveLoc, VERDICTS, isAnnounced } from "@/lib/verdict";
 import { coverageLine } from "@/lib/coverage-line";
 import { classInfo } from "@/lib/classification";
 import { plainHeadline, whatToDo, hazardLabel } from "@/lib/digest";
+import { glanceOf } from "@/lib/glance";
 import { officialImage } from "@/lib/official-image";
 import { categoryFor } from "@/lib/category";
 import { recallUpcs, lookupProduct } from "@/lib/upc";
@@ -32,18 +33,25 @@ import { cn } from "@/lib/utils";
  *   Wheat kernel contamination: …    plainHeadline, the title
  *   United Sugar Producers           the firm
  *   [Class II ⓘ] [FDA Food]
+ *   Hazard  Sold at  When  Price     At a glance: how to recognise it —
+ *                                     src/lib/glance.js, every word from
+ *                                     the notice
  *   ┌ Not reported in New York ─────┐ the verdict, one plain block, ink —
  *   │ Sent to IA, IL, IN … Distrib… │ never green: a shipping list is not
- *   └───────────────────────────────┘ an all-clear
- *   Where it went                     the notice's words, quoted, + the map
- *   What happened                     the hazard; the class, explained
- *   What to do                        whatToDo — generic, never invented
- *   Get help                          the assistant (RecallAssist), products
- *                                     and devices only
+ *   └───────────────────────────────┘ an all-clear; "Does it reach my
+ *                                     state?" is a link, not a button
+ *   ┌ What to do ───────────────────┐ the job after "is it mine?" —
+ *   │ $ Get your refund             │ PlanCard: for products and devices
+ *   │   1 … 2 … [Claim your refund] │ the remedy, worked out as the sheet
+ *   └───────────────────────────────┘ opens; otherwise whatToDo's steps
+ *   Shop an alternative ›             CPSC only, on tap
+ *   Where it went                     the evidence, after the answer:
+ *   What happened                     the quote + map, the hazard and class
  *   How to identify it                description, codes, barcodes
  *   Dates · Notify me · Follow
  *   ( Share )( Notify me )( Official notice ↗ )   floating action bar,
- *                                    Share primary —
+ *                                    Share primary — or, where the assistant
+ *                                    covers it, (↗)( $ Get your refund )(↗)
  *                                    Notify me only while the recall is
  *                                    announced and waiting on details
  *
@@ -117,29 +125,67 @@ function usePhoto(recall) {
   return null;
 }
 
+/* The photo's box is reserved at its final height and shows the category
+ * tile, gently shimmering, until the photo has decoded; then the photo fades
+ * in. A failed photo leaves the tile — never an empty white frame. */
 function Hero({ recall, photo }) {
-  const [failed, setFailed] = useState(null);
-  if (photo && failed !== photo.src) {
-    return (
-      <figure className="m-0">
-        <div className="overflow-hidden rounded-[22px] bg-white shadow-[inset_0_0_0_1px_var(--rr-line)]">
-          <img
-            src={photo.src}
-            alt={unclip(recall.product)}
-            decoding="async"
-            referrerPolicy="no-referrer"
-            onError={() => setFailed(photo.src)}
-            className="mx-auto block h-52 w-full object-contain sm:h-60"
-          />
-        </div>
-        <figcaption className="mt-2 text-[12px] leading-snug text-subtle">{photo.caption}</figcaption>
-      </figure>
-    );
-  }
-  return <RecallThumb recall={recall} size="lg" />;
+  const img = useImage(photo ? photo.src : "");
+  if (!photo || img.status === "failed") return <RecallThumb recall={recall} size="lg" />;
+  const loaded = img.status === "loaded";
+  return (
+    <figure className="m-0">
+      <div className={cn(
+        "relative grid h-52 place-items-center overflow-hidden rounded-[22px] shadow-[inset_0_0_0_1px_var(--rr-line)] transition-colors duration-200 sm:h-60",
+        loaded ? "bg-white" : "shimmer",
+      )}>
+        {!loaded && <RecallThumb recall={recall} size="lg" className="opacity-60" />}
+        <img
+          ref={img.ref}
+          src={photo.src}
+          alt={unclip(recall.product)}
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onLoad={img.onLoad}
+          onError={img.onError}
+          className={cn("absolute inset-0 mx-auto block size-full object-contain transition-opacity duration-300", loaded ? "opacity-100" : "opacity-0")}
+        />
+      </div>
+      <figcaption className="mt-2 text-[12px] leading-snug text-subtle">{photo.caption}</figcaption>
+    </figure>
+  );
 }
 
 /* ───────────────────────────── pieces ──────────────────────────────────── */
+
+/* The takeaways, before anything else: what's wrong, what to do now, and
+ * — for a consumer product — where and when it was sold and for how much,
+ * which is how a person recognises the one they own. */
+function Glance({ recall, hazard }) {
+  const g = glanceOf(recall);
+  const cells = [
+    ["Hazard", g.hazard || (/^(?:other reason|reason not stated)$/i.test(hazard || "") ? "" : hazard)],
+    ["Sold at", g.soldAt.join(", ")],
+    ["When", g.when],
+    ["Price", g.price],
+  ].filter(([, v]) => v);
+  if (cells.length < 2) return null;
+  return (
+    <div className="mt-4">
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4" aria-label="At a glance">
+        {cells.map(([k, v]) => (
+          <div key={k} className={cn("min-w-0", k === "Hazard" && "col-span-2 sm:col-span-1")}>
+            <dt className="microlabel">{k}</dt>
+            <dd className={cn("mt-0.5 text-[15px] font-medium leading-snug text-paper [overflow-wrap:anywhere]", k === "Price" && "tnum")}>{v}</dd>
+          </div>
+        ))}
+      </dl>
+      {/* Full width: in a quarter-width column it broke into three lines. */}
+      {g.failsStandard && (
+        <p className="mt-3 text-[13px] leading-snug text-fog">Fails a mandatory federal safety standard.</p>
+      )}
+    </div>
+  );
+}
 
 function Section({ title, children, className }) {
   return (
@@ -217,7 +263,12 @@ export function RecallActionBar({ recall, loc }) {
   const L = resolveLoc(loc);
   const stateAbbr = L && L.stateAbbr;
   const watch = watchInBar(recall);
-  const crowded = watch && !!recall.url;
+  /* When the assistant covers this recall, its answer — "Get your refund",
+   * "Throw it out safely" — is the primary action; Share and the notice
+   * step back to icons on a phone. Switched off here: Share stays primary. */
+  const assist = useAssist(recall, "next");
+  const remedy = assistTasksFor(recall).includes("next") && assist.status !== "unavailable";
+  const crowded = (watch && !!recall.url) || remedy;
   const [said, setSaid] = useState("");
   useEffect(() => {
     if (!said) return undefined;
@@ -238,11 +289,18 @@ export function RecallActionBar({ recall, loc }) {
           if (out === "copied") setSaid("Link copied");
           else if (out === "shared") setSaid("Shared");
         }}
-        className="inline-flex h-12 min-w-0 flex-1 items-center justify-center gap-2 rounded-full bg-mint px-5 text-[15px] font-semibold text-mint-ink shadow-[var(--rr-shadow-2)] transition-transform active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--rr-surface)]"
+        aria-label={remedy && !said ? "Share" : undefined}
+        className={cn(
+          "inline-flex h-12 min-w-0 items-center justify-center gap-2 rounded-full text-[15px] font-semibold transition-transform active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint",
+          remedy
+            ? "w-12 shrink-0 bg-panel-2 text-paper shadow-[var(--rr-shadow-1),inset_0_0_0_1px_var(--rr-line)] sm:w-auto sm:px-5"
+            : "flex-1 bg-mint px-5 text-mint-ink shadow-[var(--rr-shadow-2)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--rr-surface)]",
+        )}
       >
         {said ? <Check aria-hidden="true" className="size-[18px] shrink-0" /> : <Share2 aria-hidden="true" className="size-[18px] shrink-0" />}
-        <span aria-live="polite" className="truncate">{said || "Share"}</span>
+        <span aria-live="polite" className={cn("truncate", remedy && !said && "sr-only sm:not-sr-only")}>{said || "Share"}</span>
       </button>
+      {remedy && <RemedyButton recall={recall} className="flex-1" />}
       {watch && <WatchButton recall={recall} variant="bar" className="min-w-0 shrink-0" />}
       {recall.url && (
         <a
@@ -252,15 +310,17 @@ export function RecallActionBar({ recall, loc }) {
           onClick={() => track("official_notice_clicked", { source: recall.source || null, from: "bar" })}
           className={cn(
             "inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-full bg-panel-2 text-[15px] font-semibold text-paper shadow-[var(--rr-shadow-1),inset_0_0_0_1px_var(--rr-line)] transition-transform active:scale-[0.97] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint",
-            crowded ? "px-4 sm:px-5" : "px-5",
+            remedy ? "w-12 sm:w-auto sm:px-5" : crowded ? "px-4 sm:px-5" : "px-5",
           )}
         >
-          {crowded ? (
+          {remedy ? (
+            <span className="sr-only sm:not-sr-only sm:truncate">Official notice</span>
+          ) : crowded ? (
             <span className="truncate"><span className="sm:hidden">Notice</span><span className="hidden sm:inline">Official notice</span></span>
           ) : (
             <span className="truncate">Official notice</span>
           )}
-          <ArrowUpRight aria-hidden="true" className={cn("size-[18px] shrink-0", crowded && "hidden sm:block")} />
+          <ArrowUpRight aria-hidden="true" className={cn("size-[18px] shrink-0", crowded && !remedy && "hidden sm:block")} />
           <span className="sr-only"> (opens {hostOf(recall.url) || agencyOf(recall.source)})</span>
         </a>
       )}
@@ -340,8 +400,10 @@ export default function RecallDetail({ recall, loc, eyebrow, freshness, onReques
         <Badge variant="source">{recall.source}</Badge>
       </div>
 
+      <Glance recall={recall} hazard={hazard} />
+
       {/* The verdict: one plain block, in ink. */}
-      <div className="mt-5 rounded-3xl bg-sunken p-4 sm:p-5" role="group" aria-label="For your state">
+      <div className="mt-5 rounded-3xl bg-sunken px-4 py-3.5 sm:px-5" role="group" aria-label="For your state">
         <p className="flex items-start gap-2.5 text-[17px] font-semibold leading-snug text-paper">
           <Icon aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-fog" />
           <span className="verdict-line">{verdictHead}</span>
@@ -356,13 +418,18 @@ export default function RecallDetail({ recall, loc, eyebrow, freshness, onReques
           </p>
         )}
         {needsLoc && onRequestLocation && (
-          <div className="mt-2 pl-[30px]">
-            <Button type="button" size="sm" variant="secondary" onClick={onRequestLocation}>
-              <MapPin aria-hidden="true" /> Check your state
-            </Button>
-          </div>
+          <button type="button" onClick={onRequestLocation}
+                  className="mt-1 inline-flex min-h-9 items-center gap-1 pl-[30px] text-[14px] font-semibold text-mint underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mint">
+            Does it reach my state? <ArrowRight aria-hidden="true" className="size-4" />
+          </button>
         )}
       </div>
+
+      {/* The job after "is it mine?": what to do. For a product or device the
+          remedy is worked out as the sheet opens (PlanCard) and the footer's
+          primary button says it; otherwise the generic steps. */}
+      <PlanCard recall={recall} todo={todo} ended={ended} className="mt-4" />
+      <ShopAlternative recall={recall} className="mt-3" />
 
       <div className="mt-6 flex flex-col gap-6">
         <Section title="Where it went">
@@ -397,24 +464,6 @@ export default function RecallDetail({ recall, loc, eyebrow, freshness, onReques
             </p>
           )}
         </Section>
-
-        <Section title="What to do">
-          <ol className="flex flex-col gap-2">
-            {todo.steps.map((step, i) => (
-              <li key={step} className="flex items-start gap-3 text-[15px] leading-snug text-paper">
-                <span aria-hidden="true" className="tnum grid size-6 shrink-0 place-items-center rounded-full bg-sunken text-[12px] font-semibold text-fog">{i + 1}</span>
-                <span className="pt-0.5">{step}</span>
-              </li>
-            ))}
-          </ol>
-          {ended && (
-            <p className="mt-3 text-[13px] leading-snug text-subtle">
-              The agency has closed this recall. Products bought before then can still be in a cupboard or freezer.
-            </p>
-          )}
-        </Section>
-
-        <RecallAssist recall={recall} />
 
         <Section title="How to identify it">
           <dl className="flex flex-col gap-3 text-[14px] leading-relaxed">

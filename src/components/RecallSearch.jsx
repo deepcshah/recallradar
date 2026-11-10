@@ -2,6 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, LoaderCircle, RotateCw, ScanBarcode, SearchX, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import RecallRow, { shortVerdict, rowDate } from "@/components/RecallRow";
+import SearchAnswer from "@/components/SearchAnswer";
+import { answerFor } from "@/lib/query-answer";
+import { track } from "@/lib/analytics";
 import CategoryPills from "@/components/CategoryPills";
 import { countByPrimary, inPrimary, primaryNoun, PRIMARY_CATEGORIES } from "@/lib/primary-category";
 import FreshnessLine, { fmtAsOf, oldestAsOf } from "@/components/FreshnessLine";
@@ -238,6 +241,7 @@ function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
  * @param {Function} [props.onOpenShared]    (record) => void, once, when that
  *                                           shared record is known
  * @param {Function} [props.onScan]          () => void; the barcode button in the field
+ * @param {Function} [props.onRequestLocation] () => void; the answer's "Set your location"
  * @param {node}     [props.children]        shown under the box while nothing is typed
  * @param {boolean}  [props.autoFocus]       focus the search box on mount
  * @param {string}   [props.scope]           "near" | "us" — framing only (see top)
@@ -253,7 +257,7 @@ function NothingFound({ query, index, live, fdaChecked, freshness: fresh }) {
 export default function RecallSearch({
   loc, onOpenRecall, onOpenShared, initialRecallId, autoFocus = false, onSearch, onScan, className,
   scope = "near", freshness, children, index = null, byId = null, dataStatus = "empty", dataPartial = false, onRetry,
-  category = "all", onCategory, listCounts,
+  category = "all", onCategory, listCounts, onRequestLocation,
 }) {
   /* Nothing on the device and the sync could not get any: say so, rather
    * than spin. With data on the device, a failed refresh is the list's
@@ -264,6 +268,12 @@ export default function RecallSearch({
   const [engineRev, setEngineRev] = useState(0);
   const [query, setQuery] = useState("");
   const [q, setQ] = useState("");               // debounced
+  /* The query Enter was pressed on. Typing keeps showing the evidence (every
+   * match, live); Enter adds the answer and the best guesses on top
+   * (SearchAnswer). Editing the query puts the answer away until the next
+   * Enter, so it never describes a query that is no longer in the box. */
+  const [answered, setAnswered] = useState("");
+  const listRef = useRef(null);
   const [live, setLive] = useState({ q: "", status: "idle", records: [] });
   const liveCache = useRef(new Map());
   const inputRef = useRef(null);
@@ -437,11 +447,20 @@ export default function RecallSearch({
   const hiddenByCategory = category !== "all" && ordered.length > 0 && filtered.length === 0;
 
   const count = filtered.length;
+  const showAnswer = !!answered && answered === q && !!index && count > 0;
+  const answerKind = useMemo(() => (showAnswer ? answerFor(filtered, q, L).kind : ""), [showAnswer, filtered, q, L && L.stateAbbr]); // eslint-disable-line react-hooks/exhaustive-deps
+  const reportedRef = useRef("");
+  useEffect(() => {
+    if (!showAnswer || livePending || reportedRef.current === `${q}|${answerKind}`) return;
+    reportedRef.current = `${q}|${answerKind}`;
+    track("search_answered", { kind: answerKind, results: filtered.length, located: !!L });
+  }, [showAnswer, livePending, answerKind]); // eslint-disable-line react-hooks/exhaustive-deps
   const stateName = L && L.state;
 
   const submit = (e) => {
     e.preventDefault();
     setQ(query.trim());
+    setAnswered(query.trim());
     /* On a phone the keyboard covers the answers; Search puts it away. */
     inputRef.current?.blur();
   };
@@ -574,9 +593,23 @@ export default function RecallSearch({
               : livePending ? `Checking FDA for ${q}` : `No recall matches ${q}`}
           </p>
 
+          {showAnswer && (
+            <SearchAnswer
+              className="mb-8"
+              records={filtered}
+              q={q}
+              loc={L}
+              freshness={freshness}
+              checking={livePending}
+              onOpen={onOpenRecall}
+              onRequestLocation={onRequestLocation}
+              onShowAll={() => listRef.current && listRef.current.scrollIntoView({ behavior: "smooth", block: "start" })}
+            />
+          )}
+
           {count > 0 && (
-            <div className="flex items-baseline justify-between gap-3">
-              <h2 className="section-title text-paper">Results</h2>
+            <div ref={listRef} className="flex scroll-mt-20 items-baseline justify-between gap-3">
+              <h2 className="section-title text-paper">{showAnswer ? "All matching notices" : "Results"}</h2>
               <p className="tnum truncate text-[13px] text-subtle">
                 {count} {category !== "all" ? `${primaryNoun(category)} ` : ""}{count === 1 ? "recall" : "recalls"}{flat ? " across the US" : ` · checked for ${stateName}`}
               </p>
